@@ -27,8 +27,8 @@ def process_packets(aime_svc: AIMEService, packets: list[dict]) -> None:
             try:
                 project = aime_svc.ingest_packet(db, packet)
                 logger.info("Ingested allocation for project: %s", project.name)
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Failed to ingest packet %s: %s", packet, exc)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to ingest packet %s", packet)
 
 
 def run_worker(poll_interval: int = 60) -> None:
@@ -53,8 +53,8 @@ def run_worker(poll_interval: int = 60) -> None:
             packets: list[dict] = []  # placeholder
             if packets:
                 process_packets(aime_svc, packets)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("AIME worker error: %s", exc)
+        except Exception:  # noqa: BLE001
+            logger.exception("AIME worker error")
 
         time.sleep(poll_interval)
 

@@ -9,7 +9,7 @@ from pydantic import BaseModel, EmailStr
 class UserCreate(BaseModel):
     """Schema for creating a new user."""
 
-    email: str
+    email: EmailStr
     name: str
 
 

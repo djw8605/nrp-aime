@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # App
     app_name: str = "NRP AIME Allocation Manager"
     debug: bool = False
+    allowed_origins: list[str] = []
 
     class Config:
         env_file = ".env"
