@@ -1,0 +1,63 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: nrp
+      POSTGRES_PASSWORD: nrp
+      POSTGRES_DB: nrp_aime
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nrp -d nrp_aime"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
+      PROMETHEUS_URL: https://prometheus.nrp-nautilus.io
+      AMIE_SITE_NAME: NRP
+    depends_on:
+      db:
+        condition: service_healthy
+
+  aime-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m workers.aime_worker
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
+      AMIE_SITE_NAME: NRP
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    command: sh -c "npm install && npm run dev -- --host"
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+
+volumes:
+  postgres_data:
