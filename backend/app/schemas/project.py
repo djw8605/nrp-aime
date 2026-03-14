@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.user import UserRead
 
@@ -25,9 +25,17 @@ class ProjectRead(BaseModel):
     id: uuid.UUID
     aime_allocation_id: str
     name: str
+    grant_number: str | None = None
+    site_project_id: str | None = None
+    allocation_type: str | None = None
+    request_type: str | None = None
+    source_packet_rec_id: int | None = None
+    source_trans_rec_id: int | None = None
+    source_transaction_id: int | None = None
     resource_type: str | None
     cpu_allocated: int
     gpu_allocated: int
+    is_active: bool
     kubernetes_namespace: str | None
     created_at: datetime
 
@@ -37,7 +45,7 @@ class ProjectRead(BaseModel):
 class ProjectReadWithUsers(ProjectRead):
     """Schema for reading a project along with its users."""
 
-    users: list[UserRead] = []
+    users: list[UserRead] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -49,3 +57,14 @@ class ProjectUsage(BaseModel):
     cpu_used: float
     gpu_allocated: int
     gpu_used: float
+
+
+class ProjectSummary(BaseModel):
+    """Schema for top-level project and usage KPIs."""
+
+    total_projects: int
+    active_projects: int
+    total_users: int
+    active_users: int
+    total_cpu_used: float
+    total_gpu_used: float

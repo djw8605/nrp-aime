@@ -1,45 +1,44 @@
 <template>
-  <div class="bg-white rounded-xl shadow border border-gray-100 p-6">
-    <div v-if="loading" class="text-center text-gray-400 py-4">Loading usage…</div>
-    <div v-else-if="!usage" class="text-center text-gray-400 py-4">
-      Usage data unavailable.
-    </div>
-    <div v-else class="space-y-5">
-      <!-- CPU -->
-      <div>
-        <div class="flex justify-between text-sm mb-1">
-          <span class="font-medium text-gray-700">CPU</span>
-          <span class="text-gray-500">{{ usage.cpu_used }} / {{ usage.cpu_allocated }} cores</span>
-        </div>
-        <div class="w-full bg-gray-100 rounded-full h-3">
-          <div
-            class="bg-blue-500 h-3 rounded-full transition-all"
-            :style="{ width: cpuPercent + '%' }"
-          ></div>
-        </div>
-        <p class="text-xs text-gray-400 mt-1 text-right">{{ cpuPercent }}% used</p>
+  <Card class="border border-slate-200 shadow-sm">
+    <template #content>
+      <div v-if="loading" class="space-y-3 p-2">
+        <Skeleton height="1.5rem" />
+        <Skeleton height="0.75rem" />
+        <Skeleton height="1.5rem" />
+        <Skeleton height="0.75rem" />
       </div>
+      <Message v-else-if="!usage" severity="warn" :closable="false">
+        Usage data unavailable.
+      </Message>
+      <div v-else class="space-y-6">
+        <div class="space-y-2">
+          <div class="flex items-center justify-between text-sm">
+            <span class="font-medium text-slate-700">CPU</span>
+            <span class="text-slate-500">{{ usage.cpu_used }} / {{ usage.cpu_allocated }} cores</span>
+          </div>
+          <ProgressBar :value="cpuPercent" :showValue="false" style="height: 0.55rem" />
+          <p class="m-0 text-right text-xs text-slate-500">{{ cpuPercent }}% used</p>
+        </div>
 
-      <!-- GPU -->
-      <div>
-        <div class="flex justify-between text-sm mb-1">
-          <span class="font-medium text-gray-700">GPU</span>
-          <span class="text-gray-500">{{ usage.gpu_used }} / {{ usage.gpu_allocated }}</span>
+        <div class="space-y-2">
+          <div class="flex items-center justify-between text-sm">
+            <span class="font-medium text-slate-700">GPU</span>
+            <span class="text-slate-500">{{ usage.gpu_used }} / {{ usage.gpu_allocated }}</span>
+          </div>
+          <ProgressBar :value="gpuPercent" :showValue="false" style="height: 0.55rem" />
+          <p class="m-0 text-right text-xs text-slate-500">{{ gpuPercent }}% used</p>
         </div>
-        <div class="w-full bg-gray-100 rounded-full h-3">
-          <div
-            class="bg-purple-500 h-3 rounded-full transition-all"
-            :style="{ width: gpuPercent + '%' }"
-          ></div>
-        </div>
-        <p class="text-xs text-gray-400 mt-1 text-right">{{ gpuPercent }}% used</p>
       </div>
-    </div>
-  </div>
+    </template>
+  </Card>
 </template>
 
 <script setup>
 import { computed } from 'vue'
+import Card from 'primevue/card'
+import Message from 'primevue/message'
+import ProgressBar from 'primevue/progressbar'
+import Skeleton from 'primevue/skeleton'
 
 const props = defineProps({
   usage: {

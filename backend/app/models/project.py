@@ -1,9 +1,19 @@
 """Project (Allocation) model."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Integer, String, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Date,
+    DateTime,
+    Integer,
+    Numeric,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,10 +30,44 @@ class Project(Base):
     )
     aime_allocation_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
+    grant_number: Mapped[str | None] = mapped_column(String, unique=True, index=True)
+    allocation_record_id: Mapped[str | None] = mapped_column(
+        String, unique=True, index=True
+    )
+    site_project_id: Mapped[str | None] = mapped_column(String, unique=True, index=True)
+    allocation_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    request_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_packet_rec_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
+    )
+    source_trans_rec_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
+    )
+    source_transaction_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
+    )
+    service_units_allocated: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    project_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    pfos_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    board_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_person_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_first_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_middle_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_last_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_email: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_organization: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_org_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_department: Mapped[str | None] = mapped_column(String, nullable=True)
+    pi_business_phone_number: Mapped[str | None] = mapped_column(String, nullable=True)
     resource_type: Mapped[str | None] = mapped_column(String, nullable=True)
     cpu_allocated: Mapped[int] = mapped_column(Integer, default=0)
     gpu_allocated: Mapped[int] = mapped_column(Integer, default=0)
     kubernetes_namespace: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -31,6 +75,9 @@ class Project(Base):
     # Relationships
     project_users: Mapped[list["ProjectUser"]] = relationship(
         "ProjectUser", back_populates="project", cascade="all, delete-orphan"
+    )
+    usage_snapshot: Mapped["ProjectUsageSnapshot | None"] = relationship(
+        "ProjectUsageSnapshot", back_populates="project", uselist=False
     )
 
     def __repr__(self) -> str:

@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aime-worker
+  labels:
+    app.kubernetes.io/name: aime-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aime-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aime-worker
+    spec:
+      initContainers:
+        - name: wait-for-db
+          image: postgres:16
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: nrp-aime-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: nrp-aime-secrets
+                  key: POSTGRES_DB
+          command:
+            - sh
+            - -c
+            - until pg_isready -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do sleep 2; done
+        - name: wait-for-backend
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - until wget -qO- http://backend:8000/healthz >/dev/null 2>&1; do sleep 2; done
+        - name: migrate
+          image: ghcr.io/your-org/nrp-aime-backend:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: nrp-aime-config
+            - secretRef:
+                name: nrp-aime-secrets
+          command:
+            - sh
+            - -c
+            - alembic upgrade head
+      containers:
+        - name: aime-worker
+          image: ghcr.io/your-org/nrp-aime-backend:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - workers.aime_worker
+          envFrom:
+            - configMapRef:
+                name: nrp-aime-config
+            - secretRef:
+                name: nrp-aime-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

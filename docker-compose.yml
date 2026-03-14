@@ -30,6 +30,20 @@ services:
       DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
       PROMETHEUS_URL: https://prometheus.nrp-nautilus.io
       AMIE_SITE_NAME: NRP
+      AUTHENTIK_STUB_AUTO_ACCOUNT_MADE: "true"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
     depends_on:
       db:
         condition: service_healthy
@@ -44,9 +58,28 @@ services:
     environment:
       DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
       AMIE_SITE_NAME: NRP
+      AUTHENTIK_STUB_AUTO_ACCOUNT_MADE: "true"
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  usage-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m workers.usage_worker
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
+      PROMETHEUS_URL: https://prometheus.nrp-nautilus.io
+      AMIE_SITE_NAME: NRP
+      AMIE_API_KEY: ${AMIE_API_KEY:-}
+      AMIE_USAGE_URL: ${AMIE_USAGE_URL:-https://usage.xsede.org/api/v1}
+      AMIE_USAGE_INTERVAL_MINUTES: 1440
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     image: node:20-alpine
@@ -56,8 +89,10 @@ services:
     command: sh -c "npm install && npm run dev -- --host"
     ports:
       - "5173:5173"
+    depends_on:
+      - backend
     environment:
-      VITE_API_BASE_URL: http://localhost:8000
+      VITE_DEV_PROXY_TARGET: http://backend:8000
 
 volumes:
   postgres_data:

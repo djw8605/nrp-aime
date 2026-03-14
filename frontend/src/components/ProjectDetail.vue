@@ -1,40 +1,78 @@
 <template>
-  <div class="bg-white rounded-xl shadow border border-gray-100 p-6">
-    <div class="flex items-start justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-gray-800">{{ project.name }}</h1>
-        <p class="text-sm text-gray-400 mt-1">Allocation ID: {{ project.aime_allocation_id }}</p>
+  <Card class="border border-slate-200 shadow-sm">
+    <template #title>
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div class="flex flex-wrap items-center gap-2">
+            <h1 class="m-0 text-2xl font-bold text-slate-800">{{ project.name }}</h1>
+            <Tag
+              :value="project.is_active ? 'Active' : 'Inactive'"
+              :severity="project.is_active ? 'success' : 'danger'"
+              rounded
+            />
+          </div>
+          <p class="m-0 mt-1 text-sm text-slate-500">
+            Allocation ID: {{ project.aime_allocation_id }}
+          </p>
+        </div>
+        <Button
+          icon="pi pi-send"
+          label="Send Account Creation Email"
+          size="small"
+          @click="$emit('send-email')"
+        />
       </div>
-      <button
-        @click="$emit('send-email')"
-        class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
-      >
-        Send Account Creation Email
-      </button>
-    </div>
-
-    <div class="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
-      <div>
-        <p class="text-gray-400 text-xs uppercase tracking-wide">Resource Type</p>
-        <p class="font-medium text-gray-700 mt-1">{{ project.resource_type || '—' }}</p>
+    </template>
+    <template #content>
+      <Divider />
+      <div class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Resource Type</p>
+          <p class="m-0 mt-2 font-medium text-slate-700">{{ project.resource_type || '—' }}</p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Grant Number</p>
+          <p class="m-0 mt-2 font-medium text-slate-700">{{ project.grant_number || '—' }}</p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">CPU Cores</p>
+          <p class="m-0 mt-2 font-medium text-slate-700">{{ project.cpu_allocated }}</p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">GPUs</p>
+          <p class="m-0 mt-2 font-medium text-slate-700">{{ project.gpu_allocated }}</p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Site Project ID</p>
+          <p class="m-0 mt-2 font-mono font-medium text-slate-700">
+            {{ project.site_project_id || '—' }}
+          </p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Allocation Type</p>
+          <p class="m-0 mt-2 font-medium text-slate-700">{{ project.allocation_type || '—' }}</p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Request Type</p>
+          <p class="m-0 mt-2 font-medium text-slate-700">{{ project.request_type || '—' }}</p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Namespace</p>
+          <p class="m-0 mt-2 font-mono font-medium text-slate-700">
+            {{ project.kubernetes_namespace || '—' }}
+          </p>
+        </div>
       </div>
-      <div>
-        <p class="text-gray-400 text-xs uppercase tracking-wide">CPU Cores</p>
-        <p class="font-medium text-gray-700 mt-1">{{ project.cpu_allocated }}</p>
-      </div>
-      <div>
-        <p class="text-gray-400 text-xs uppercase tracking-wide">GPUs</p>
-        <p class="font-medium text-gray-700 mt-1">{{ project.gpu_allocated }}</p>
-      </div>
-      <div>
-        <p class="text-gray-400 text-xs uppercase tracking-wide">Namespace</p>
-        <p class="font-mono text-gray-700 mt-1">{{ project.kubernetes_namespace || '—' }}</p>
-      </div>
-    </div>
-  </div>
+    </template>
+  </Card>
 </template>
 
 <script setup>
+import Button from 'primevue/button'
+import Card from 'primevue/card'
+import Divider from 'primevue/divider'
+import Tag from 'primevue/tag'
+
 defineProps({
   project: {
     type: Object,

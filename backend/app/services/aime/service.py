@@ -1,23 +1,59 @@
-"""AIME allocation ingestion service.
+"""AIME packet ingestion service.
 
-Wraps the ``amieclient`` library and translates incoming AMIE allocation
-packets into database records (Projects and Users).
+Wraps the ``amieclient`` library and translates incoming AMIE packets into
+database records (Projects, Users, account membership rows, and packet logs).
 """
 
+import json
 import logging
-from typing import Optional
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
+from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.models.amie_allocation_packet import AMIEAllocationPacket
+from app.models.amie_lifecycle_packet import AMIELifecyclePacket
+from app.models.amie_new_user_packet import AMIENewUserPacket
+from app.models.amie_packet import AMIEPacket
 from app.models.project import Project
 from app.models.project_user import ProjectUser
 from app.models.user import User
+from app.services.aime.bindings import (
+    DataAccountCreatePacketBinding,
+    DataProjectCreatePacketBinding,
+    InformTransactionCompletePacketBinding,
+    RequestAccountCreateBodyBinding,
+    RequestAccountCreatePacketBinding,
+    RequestAccountInactivatePacketBinding,
+    RequestAccountReactivatePacketBinding,
+    RequestPersonMergePacketBinding,
+    RequestProjectCreateBodyBinding,
+    RequestProjectCreatePacketBinding,
+    RequestProjectInactivatePacketBinding,
+    RequestProjectReactivatePacketBinding,
+    RequestUserModifyPacketBinding,
+    UnsupportedPacketType,
+    bind_packet,
+    coerce_packet_dict,
+)
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class IngestResult:
+    """Result for one packet ingestion attempt."""
+
+    handled: bool
+    packet_type: str
+    project: Project | None = None
+
+
 class AIMEService:
-    """Translates AMIE allocation packets into database records."""
+    """Translates AMIE packets into database records."""
 
     def __init__(self, site_name: str) -> None:
         self.site_name = site_name
@@ -25,103 +61,1170 @@ class AIMEService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _full_name(
+        first_name: str | None, middle_name: str | None, last_name: str | None
+    ) -> str:
+        return " ".join(
+            part.strip()
+            for part in [first_name, middle_name, last_name]
+            if part and part.strip()
+        ).strip()
 
-    def _get_or_create_user(self, db: Session, email: str, name: str) -> User:
-        """Return an existing User or create a new one."""
-        user = db.query(User).filter(User.email == email).first()
-        if user is None:
-            user = User(email=email, name=name)
-            db.add(user)
-            db.flush()
-            logger.info("Created new user: %s", email)
-        return user
+    @staticmethod
+    def _to_date(value: date | datetime | None) -> date | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        return value
 
-    def _get_or_create_project(
+    @staticmethod
+    def _to_decimal(value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+
+    @staticmethod
+    def _json_default(value: Any) -> str:
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return str(value)
+
+    def _json_compatible(self, data: dict[str, Any]) -> dict[str, Any]:
+        return json.loads(json.dumps(data, default=self._json_default))
+
+    @staticmethod
+    def _merge_dn_list(
+        existing: list[str] | None,
+        incoming: list[str] | None,
+    ) -> list[str]:
+        merged: list[str] = []
+        for source in (existing or [], incoming or []):
+            dn = (source or "").strip()
+            if dn and dn not in merged:
+                merged.append(dn)
+        return merged
+
+    @staticmethod
+    def _remove_dn_list(existing: list[str] | None, to_remove: list[str] | None) -> list[str]:
+        current = [(dn or "").strip() for dn in (existing or []) if (dn or "").strip()]
+        remove = {(dn or "").strip() for dn in (to_remove or []) if (dn or "").strip()}
+        return [dn for dn in current if dn not in remove]
+
+    def _resolve_project(
         self,
         db: Session,
-        aime_allocation_id: str,
-        name: str,
-        resource_type: Optional[str],
-        cpu_allocated: int,
-        gpu_allocated: int,
-        kubernetes_namespace: Optional[str],
-    ) -> Project:
-        """Return an existing Project or create a new one."""
-        project = (
-            db.query(Project)
-            .filter(Project.aime_allocation_id == aime_allocation_id)
-            .first()
+        *,
+        grant_number: str | None = None,
+        site_project_id: str | None = None,
+        allocation_record_id: str | None = None,
+    ) -> Project | None:
+        if site_project_id:
+            project = (
+                db.query(Project).filter(Project.site_project_id == site_project_id).first()
+            )
+            if project is not None:
+                return project
+        if grant_number:
+            project = db.query(Project).filter(Project.grant_number == grant_number).first()
+            if project is not None:
+                return project
+        if allocation_record_id:
+            return (
+                db.query(Project)
+                .filter(Project.allocation_record_id == allocation_record_id)
+                .first()
+            )
+        return None
+
+    def _resolve_user(
+        self,
+        db: Session,
+        *,
+        person_id: str | None = None,
+        email: str | None = None,
+        global_id: str | None = None,
+    ) -> User | None:
+        if person_id:
+            user = db.query(User).filter(User.person_id == person_id).first()
+            if user is not None:
+                return user
+        if email:
+            user = db.query(User).filter(User.email == email).first()
+            if user is not None:
+                return user
+        if global_id:
+            user = db.query(User).filter(User.global_id == global_id).first()
+            if user is not None:
+                return user
+        return None
+
+    def _get_or_create_user_by_person_id(
+        self,
+        db: Session,
+        *,
+        person_id: str,
+        default_name: str | None = None,
+        global_id: str | None = None,
+    ) -> User:
+        user = self._resolve_user(db, person_id=person_id, global_id=global_id)
+        if user is not None:
+            if global_id and not user.global_id:
+                user.global_id = global_id
+            return user
+
+        user = User(
+            person_id=person_id,
+            global_id=global_id,
+            name=default_name or person_id,
+            is_active=True,
+            dn_list=[],
         )
+        db.add(user)
+        db.flush()
+        logger.info("Created placeholder user for PersonID=%s", person_id)
+        return user
+
+    def _refresh_user_active_from_accounts(self, db: Session, user: User) -> None:
+        has_active_account = (
+            db.query(ProjectUser.id)
+            .filter(ProjectUser.user_id == user.id, ProjectUser.is_active.is_(True))
+            .first()
+            is not None
+        )
+        user.is_active = has_active_account or bool(user.dn_list)
+
+    def _get_or_create_user_from_pi(
+        self, db: Session, body: RequestProjectCreateBodyBinding
+    ) -> User:
+        """Return an existing PI user or create a new one."""
+        full_name = self._full_name(body.PiFirstName, body.PiMiddleName, body.PiLastName)
+        user = self._resolve_user(
+            db,
+            person_id=body.PiPersonID,
+            email=body.PiEmail,
+        )
+        if user is None:
+            user = User(
+                email=body.PiEmail,
+                name=full_name or body.PiOrganization or (body.PiPersonID or "Unknown PI"),
+                first_name=body.PiFirstName,
+                middle_name=body.PiMiddleName,
+                last_name=body.PiLastName,
+                person_id=body.PiPersonID,
+                organization=body.PiOrganization,
+                org_code=body.PiOrgCode,
+                department=body.PiDepartment,
+                nsf_status_code=body.NsfStatusCode,
+                dn_list=self._merge_dn_list([], body.PiDnList),
+                is_active=True,
+            )
+            db.add(user)
+            db.flush()
+            logger.info("Created PI user from packet: %s", full_name or body.PiPersonID)
+            return user
+
+        user.name = full_name or user.name
+        user.first_name = body.PiFirstName or user.first_name
+        user.middle_name = body.PiMiddleName or user.middle_name
+        user.last_name = body.PiLastName or user.last_name
+        user.person_id = body.PiPersonID or user.person_id
+        user.email = body.PiEmail or user.email
+        user.organization = body.PiOrganization or user.organization
+        user.org_code = body.PiOrgCode or user.org_code
+        user.department = body.PiDepartment or user.department
+        user.nsf_status_code = body.NsfStatusCode or user.nsf_status_code
+        user.dn_list = self._merge_dn_list(user.dn_list, body.PiDnList)
+        user.is_active = True
+        return user
+
+    def _get_or_create_user_from_account(
+        self, db: Session, body: RequestAccountCreateBodyBinding
+    ) -> User:
+        """Return an existing user from request_account_create or create one."""
+        full_name = self._full_name(
+            body.UserFirstName, body.UserMiddleName, body.UserLastName
+        )
+        user = self._resolve_user(
+            db,
+            person_id=body.UserPersonID,
+            email=body.UserEmail,
+            global_id=body.UserGlobalID,
+        )
+        if user is None:
+            user = User(
+                email=body.UserEmail,
+                name=full_name or body.UserOrganization or (body.UserPersonID or "Unknown User"),
+                first_name=body.UserFirstName,
+                middle_name=body.UserMiddleName,
+                last_name=body.UserLastName,
+                person_id=body.UserPersonID,
+                global_id=body.UserGlobalID,
+                organization=body.UserOrganization,
+                org_code=body.UserOrgCode,
+                department=body.UserDepartment,
+                nsf_status_code=body.NsfStatusCode,
+                dn_list=self._merge_dn_list([], body.UserDnList),
+                remote_site_login=body.UserRemoteSiteLogin,
+                is_active=True,
+            )
+            db.add(user)
+            db.flush()
+            logger.info("Created new user from packet: %s", full_name or body.UserPersonID)
+            return user
+
+        user.name = full_name or user.name
+        user.first_name = body.UserFirstName or user.first_name
+        user.middle_name = body.UserMiddleName or user.middle_name
+        user.last_name = body.UserLastName or user.last_name
+        user.person_id = body.UserPersonID or user.person_id
+        user.global_id = body.UserGlobalID or user.global_id
+        user.email = body.UserEmail or user.email
+        user.organization = body.UserOrganization or user.organization
+        user.org_code = body.UserOrgCode or user.org_code
+        user.department = body.UserDepartment or user.department
+        user.nsf_status_code = body.NsfStatusCode or user.nsf_status_code
+        user.dn_list = self._merge_dn_list(user.dn_list, body.UserDnList)
+        user.remote_site_login = body.UserRemoteSiteLogin or user.remote_site_login
+        user.is_active = True
+        return user
+
+    def _upsert_project_from_allocation(
+        self, db: Session, body: RequestProjectCreateBodyBinding
+    ) -> Project:
+        """Create/update project metadata from request_project_create."""
+        allocation_record_id = (
+            str(body.RecordID).strip() if body.RecordID is not None else None
+        ) or None
+        project = self._resolve_project(
+            db,
+            grant_number=body.GrantNumber,
+            site_project_id=body.ProjectID,
+            allocation_record_id=allocation_record_id,
+        )
+        resource = body.ResourceList[0] if body.ResourceList else None
         if project is None:
             project = Project(
-                aime_allocation_id=aime_allocation_id,
-                name=name,
-                resource_type=resource_type,
-                cpu_allocated=cpu_allocated,
-                gpu_allocated=gpu_allocated,
-                kubernetes_namespace=kubernetes_namespace,
+                aime_allocation_id=allocation_record_id or body.GrantNumber,
+                name=body.ProjectTitle or body.GrantNumber,
+                grant_number=body.GrantNumber,
+                allocation_record_id=allocation_record_id,
+                site_project_id=body.ProjectID,
+                allocation_type=body.AllocationType,
+                request_type=body.RequestType,
+                service_units_allocated=self._to_decimal(body.ServiceUnitsAllocated),
+                start_date=self._to_date(body.StartDate),
+                end_date=self._to_date(body.EndDate),
+                project_title=body.ProjectTitle,
+                pfos_number=body.PfosNumber,
+                board_type=body.BoardType,
+                pi_person_id=body.PiPersonID,
+                pi_first_name=body.PiFirstName,
+                pi_middle_name=body.PiMiddleName,
+                pi_last_name=body.PiLastName,
+                pi_email=body.PiEmail,
+                pi_organization=body.PiOrganization,
+                pi_org_code=body.PiOrgCode,
+                pi_department=body.PiDepartment,
+                pi_business_phone_number=body.PiBusinessPhoneNumber,
+                resource_type=resource,
+                cpu_allocated=0,
+                gpu_allocated=0,
+                is_active=True,
             )
             db.add(project)
             db.flush()
-            logger.info("Created new project: %s (%s)", name, aime_allocation_id)
+            logger.info("Created project for grant %s", body.GrantNumber)
+            return project
+
+        project.aime_allocation_id = allocation_record_id or project.aime_allocation_id
+        project.name = body.ProjectTitle or project.name
+        project.grant_number = body.GrantNumber or project.grant_number
+        project.allocation_record_id = allocation_record_id or project.allocation_record_id
+        project.site_project_id = body.ProjectID or project.site_project_id
+        project.allocation_type = body.AllocationType or project.allocation_type
+        project.request_type = body.RequestType or project.request_type
+        new_service_units = self._to_decimal(body.ServiceUnitsAllocated)
+        if new_service_units is not None:
+            project.service_units_allocated = new_service_units
+        project.start_date = self._to_date(body.StartDate) or project.start_date
+        project.end_date = self._to_date(body.EndDate) or project.end_date
+        project.project_title = body.ProjectTitle or project.project_title
+        project.pfos_number = body.PfosNumber or project.pfos_number
+        project.board_type = body.BoardType or project.board_type
+        project.pi_person_id = body.PiPersonID or project.pi_person_id
+        project.pi_first_name = body.PiFirstName or project.pi_first_name
+        project.pi_middle_name = body.PiMiddleName or project.pi_middle_name
+        project.pi_last_name = body.PiLastName or project.pi_last_name
+        project.pi_email = body.PiEmail or project.pi_email
+        project.pi_organization = body.PiOrganization or project.pi_organization
+        project.pi_org_code = body.PiOrgCode or project.pi_org_code
+        project.pi_department = body.PiDepartment or project.pi_department
+        project.pi_business_phone_number = (
+            body.PiBusinessPhoneNumber or project.pi_business_phone_number
+        )
+        project.resource_type = resource or project.resource_type
+        project.is_active = True
+        return project
+
+    def _upsert_project_from_account(
+        self, db: Session, body: RequestAccountCreateBodyBinding
+    ) -> Project:
+        """Ensure account packets can always bind to a project row."""
+        project = self._resolve_project(
+            db,
+            grant_number=body.GrantNumber,
+            site_project_id=body.ProjectID,
+        )
+        resource = body.ResourceList[0] if body.ResourceList else None
+        if project is None:
+            project = Project(
+                aime_allocation_id=body.GrantNumber,
+                name=body.ProjectID or body.GrantNumber,
+                grant_number=body.GrantNumber,
+                site_project_id=body.ProjectID,
+                project_title=body.ProjectID,
+                resource_type=resource,
+                cpu_allocated=0,
+                gpu_allocated=0,
+                is_active=True,
+            )
+            db.add(project)
+            db.flush()
+            logger.info(
+                "Created placeholder project from account packet for grant %s",
+                body.GrantNumber,
+            )
+            return project
+
+        project.grant_number = body.GrantNumber or project.grant_number
+        project.site_project_id = body.ProjectID or project.site_project_id
+        project.resource_type = resource or project.resource_type
+        if not project.project_title:
+            project.project_title = body.ProjectID
+        if not project.name:
+            project.name = body.ProjectID or body.GrantNumber
+        project.is_active = True
         return project
 
     def _assign_user_to_project(
-        self, db: Session, project: Project, user: User, role: Optional[str] = None
+        self,
+        db: Session,
+        project: Project,
+        user: User,
+        role: str | None = None,
+        resource: str | None = None,
+        remote_site_login: str | None = None,
+        is_active: bool = True,
+        account_state: str | None = None,
+        source_packet_rec_id: int | None = None,
+        source_trans_rec_id: int | None = None,
+        source_transaction_id: int | None = None,
     ) -> None:
         """Assign a user to a project if not already assigned."""
+        now = datetime.now(UTC)
+        state_value = account_state or ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET
         existing = (
             db.query(ProjectUser)
             .filter(
                 ProjectUser.project_id == project.id,
                 ProjectUser.user_id == user.id,
+                ProjectUser.resource == resource,
             )
             .first()
         )
         if existing is None:
-            pu = ProjectUser(project_id=project.id, user_id=user.id, role=role)
+            pu = ProjectUser(
+                project_id=project.id,
+                user_id=user.id,
+                role=role,
+                resource=resource,
+                remote_site_login=remote_site_login,
+                is_active=is_active,
+                account_state=state_value,
+                source_packet_rec_id=source_packet_rec_id,
+                source_trans_rec_id=source_trans_rec_id,
+                source_transaction_id=source_transaction_id,
+                account_state_updated_at=now,
+                email_sent_at=(
+                    now
+                    if state_value == ProjectUser.ACCOUNT_STATE_SENT_EMAIL
+                    else None
+                ),
+                account_made_at=(
+                    now
+                    if state_value == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE
+                    else None
+                ),
+            )
             db.add(pu)
             logger.info("Assigned user %s to project %s", user.email, project.name)
+            return
+
+        existing.role = role or existing.role
+        existing.remote_site_login = remote_site_login or existing.remote_site_login
+        existing.is_active = is_active
+        if account_state is not None and existing.account_state != account_state:
+            existing.account_state = account_state
+            existing.account_state_updated_at = now
+            if account_state == ProjectUser.ACCOUNT_STATE_SENT_EMAIL:
+                existing.email_sent_at = now
+            if account_state == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE:
+                existing.account_made_at = existing.account_made_at or now
+        if source_packet_rec_id is not None:
+            existing.source_packet_rec_id = source_packet_rec_id
+        if source_trans_rec_id is not None:
+            existing.source_trans_rec_id = source_trans_rec_id
+        if source_transaction_id is not None:
+            existing.source_transaction_id = source_transaction_id
+
+    def _record_packet(
+        self,
+        db: Session,
+        *,
+        packet_type: str,
+        header: dict[str, Any],
+        raw_packet: dict[str, Any],
+    ) -> tuple[AMIEPacket, bool]:
+        packet_rec_id = int(header["packet_rec_id"])
+        existing = db.query(AMIEPacket).filter(AMIEPacket.packet_rec_id == packet_rec_id).first()
+        if existing is not None:
+            existing.packet_type = packet_type
+            existing.trans_rec_id = header.get("trans_rec_id")
+            existing.packet_id = header.get("packet_id")
+            existing.transaction_id = header.get("transaction_id")
+            existing.local_site_name = header.get("local_site_name")
+            existing.remote_site_name = header.get("remote_site_name")
+            existing.originating_site_name = header.get("originating_site_name")
+            existing.outgoing_flag = header.get("outgoing_flag")
+            existing.transaction_state = header.get("transaction_state")
+            existing.packet_state = header.get("packet_state")
+            existing.client_state = header.get("client_state")
+            existing.packet_timestamp = header.get("packet_timestamp")
+            existing.raw_packet = self._json_compatible(raw_packet)
+            existing.processing_status = AMIEPacket.PROCESSING_STATUS_RECEIVED
+            existing.processing_error = None
+            existing.processed_at = None
+            db.flush()
+            return existing, False
+
+        packet = AMIEPacket(
+            packet_rec_id=packet_rec_id,
+            trans_rec_id=header.get("trans_rec_id"),
+            packet_id=header.get("packet_id"),
+            transaction_id=header.get("transaction_id"),
+            packet_type=packet_type,
+            local_site_name=header.get("local_site_name"),
+            remote_site_name=header.get("remote_site_name"),
+            originating_site_name=header.get("originating_site_name"),
+            outgoing_flag=header.get("outgoing_flag"),
+            transaction_state=header.get("transaction_state"),
+            packet_state=header.get("packet_state"),
+            client_state=header.get("client_state"),
+            packet_timestamp=header.get("packet_timestamp"),
+            processing_status=AMIEPacket.PROCESSING_STATUS_RECEIVED,
+            raw_packet=self._json_compatible(raw_packet),
+        )
+        db.add(packet)
+        db.flush()
+        return packet, True
+
+    def _record_allocation_packet(
+        self, db: Session, packet_id: Any, body: RequestProjectCreateBodyBinding
+    ) -> None:
+        db.add(
+            AMIEAllocationPacket(
+                packet_id=packet_id,
+                grant_number=body.GrantNumber,
+                record_id=str(body.RecordID) if body.RecordID is not None else None,
+                project_id=body.ProjectID,
+                resource=body.ResourceList[0] if body.ResourceList else None,
+                allocation_type=body.AllocationType,
+                request_type=body.RequestType,
+                service_units_allocated=str(body.ServiceUnitsAllocated),
+                start_date=self._to_date(body.StartDate),
+                end_date=self._to_date(body.EndDate),
+                project_title=body.ProjectTitle,
+                abstract=body.Abstract,
+                board_type=body.BoardType,
+                pfos_number=body.PfosNumber,
+                pi_person_id=body.PiPersonID,
+                pi_first_name=body.PiFirstName,
+                pi_middle_name=body.PiMiddleName,
+                pi_last_name=body.PiLastName,
+                pi_email=body.PiEmail,
+                pi_organization=body.PiOrganization,
+                pi_org_code=body.PiOrgCode,
+                role_list=body.RoleList,
+                pi_dn_list=body.PiDnList,
+                pi_requested_login_list=body.PiRequestedLoginList,
+                site_person_ids=body.SitePersonId,
+                raw_body=body.model_dump(mode="json"),
+            )
+        )
+
+    def _record_new_user_packet(
+        self, db: Session, packet_id: Any, body: RequestAccountCreateBodyBinding
+    ) -> None:
+        db.add(
+            AMIENewUserPacket(
+                packet_id=packet_id,
+                grant_number=body.GrantNumber,
+                project_id=body.ProjectID,
+                resource=body.ResourceList[0] if body.ResourceList else None,
+                user_person_id=body.UserPersonID,
+                user_global_id=body.UserGlobalID,
+                user_first_name=body.UserFirstName,
+                user_middle_name=body.UserMiddleName,
+                user_last_name=body.UserLastName,
+                user_organization=body.UserOrganization,
+                user_org_code=body.UserOrgCode,
+                user_department=body.UserDepartment,
+                user_email=body.UserEmail,
+                user_business_phone_number=body.UserBusinessPhoneNumber,
+                user_remote_site_login=body.UserRemoteSiteLogin,
+                nsf_status_code=body.NsfStatusCode,
+                role_list=body.RoleList,
+                user_dn_list=body.UserDnList,
+                user_requested_login_list=body.UserRequestedLoginList,
+                site_person_ids=body.SitePersonId,
+                raw_body=body.model_dump(mode="json"),
+            )
+        )
+
+    def _record_lifecycle_packet(
+        self,
+        db: Session,
+        *,
+        packet_id: Any,
+        packet_type: str,
+        raw_body: dict[str, Any],
+        project_id: str | None = None,
+        person_id: str | None = None,
+        keep_person_id: str | None = None,
+        delete_person_id: str | None = None,
+        action_type: str | None = None,
+        resource: str | None = None,
+        dn_list: list[str] | None = None,
+        status_code: str | None = None,
+        detail_code: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        existing = (
+            db.query(AMIELifecyclePacket)
+            .filter(AMIELifecyclePacket.packet_id == packet_id)
+            .first()
+        )
+        if existing is not None:
+            return
+
+        db.add(
+            AMIELifecyclePacket(
+                packet_id=packet_id,
+                packet_type=packet_type,
+                project_id=project_id,
+                person_id=person_id,
+                keep_person_id=keep_person_id,
+                delete_person_id=delete_person_id,
+                action_type=action_type,
+                resource=resource,
+                dn_list=dn_list,
+                status_code=status_code,
+                detail_code=detail_code,
+                message=message,
+                raw_body=self._json_compatible(raw_body),
+            )
+        )
+
+    def _handle_data_project_create(
+        self,
+        db: Session,
+        packet: DataProjectCreatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> Project | None:
+        project = self._resolve_project(db, site_project_id=packet.body.ProjectID)
+        user = self._get_or_create_user_by_person_id(
+            db,
+            person_id=packet.body.PersonID,
+        )
+
+        user.dn_list = self._merge_dn_list(user.dn_list, packet.body.DnList)
+        user.is_active = True
+
+        if project is not None:
+            project.is_active = True
+            project_users = (
+                db.query(ProjectUser)
+                .filter(
+                    ProjectUser.project_id == project.id,
+                    ProjectUser.user_id == user.id,
+                )
+                .all()
+            )
+            for pu in project_users:
+                pu.is_active = True
+                pu.set_account_state(ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE)
+                if pu.account_made_at is None:
+                    pu.account_made_at = datetime.now(UTC)
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=packet.body.ProjectID,
+            person_id=packet.body.PersonID,
+            dn_list=packet.body.DnList,
+            raw_body=packet.body.model_dump(mode="json", by_alias=True),
+        )
+        return project
+
+    def _handle_data_account_create(
+        self,
+        db: Session,
+        packet: DataAccountCreatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> Project | None:
+        project = self._resolve_project(db, site_project_id=packet.body.ProjectID)
+        user = self._get_or_create_user_by_person_id(
+            db,
+            person_id=packet.body.PersonID,
+        )
+
+        user.dn_list = self._merge_dn_list(user.dn_list, packet.body.DnList)
+        user.is_active = True
+
+        if project is not None:
+            project.is_active = True
+            project_users = (
+                db.query(ProjectUser)
+                .filter(
+                    ProjectUser.project_id == project.id,
+                    ProjectUser.user_id == user.id,
+                )
+                .all()
+            )
+            if project_users:
+                for pu in project_users:
+                    pu.is_active = True
+                    pu.set_account_state(ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE)
+                    if pu.account_made_at is None:
+                        pu.account_made_at = datetime.now(UTC)
+            else:
+                self._assign_user_to_project(
+                    db,
+                    project,
+                    user,
+                    is_active=True,
+                    account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                )
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=packet.body.ProjectID,
+            person_id=packet.body.PersonID,
+            dn_list=packet.body.DnList,
+            raw_body=packet.body.model_dump(mode="json", by_alias=True),
+        )
+        return project
+
+    def _handle_request_user_modify(
+        self,
+        db: Session,
+        packet: RequestUserModifyPacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        user = self._resolve_user(db, person_id=body.PersonID)
+        if user is None:
+            user = self._get_or_create_user_by_person_id(
+                db,
+                person_id=body.PersonID,
+                default_name=self._full_name(body.FirstName, body.MiddleName, body.LastName)
+                or body.PersonID,
+            )
+
+        full_name = self._full_name(body.FirstName, body.MiddleName, body.LastName)
+        user.name = full_name or user.name
+        user.first_name = body.FirstName or user.first_name
+        user.middle_name = body.MiddleName or user.middle_name
+        user.last_name = body.LastName or user.last_name
+        user.organization = body.Organization or user.organization
+        user.org_code = body.OrgCode or user.org_code
+        user.department = body.Department or user.department
+        user.email = body.Email or user.email
+        user.nsf_status_code = body.NsfStatusCode or user.nsf_status_code
+
+        if body.ActionType == "add":
+            user.dn_list = self._merge_dn_list(user.dn_list, body.DnList)
+            user.is_active = True
+        elif body.ActionType == "replace":
+            user.dn_list = self._merge_dn_list([], body.DnList)
+            user.is_active = True
+        else:
+            user.dn_list = self._remove_dn_list(user.dn_list, body.DnList)
+            self._refresh_user_active_from_accounts(db, user)
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            person_id=body.PersonID,
+            action_type=body.ActionType,
+            dn_list=body.DnList,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+
+    def _merge_users(self, db: Session, *, keep: User, delete: User) -> None:
+        keep.dn_list = self._merge_dn_list(keep.dn_list, delete.dn_list)
+
+        attrs = [
+            "name",
+            "first_name",
+            "middle_name",
+            "last_name",
+            "email",
+            "global_id",
+            "organization",
+            "org_code",
+            "department",
+            "nsf_status_code",
+            "remote_site_login",
+        ]
+        for attr in attrs:
+            keep_value = getattr(keep, attr)
+            delete_value = getattr(delete, attr)
+            if (keep_value is None or keep_value == "") and delete_value not in (None, ""):
+                setattr(keep, attr, delete_value)
+
+        for pu in list(delete.project_users):
+            existing = (
+                db.query(ProjectUser)
+                .filter(
+                    ProjectUser.project_id == pu.project_id,
+                    ProjectUser.user_id == keep.id,
+                    ProjectUser.resource == pu.resource,
+                )
+                .first()
+            )
+            if existing is None:
+                pu.user_id = keep.id
+            else:
+                existing.role = existing.role or pu.role
+                existing.remote_site_login = (
+                    existing.remote_site_login or pu.remote_site_login
+                )
+                existing.is_active = existing.is_active or pu.is_active
+                db.delete(pu)
+
+        keep.is_active = keep.is_active or delete.is_active
+        db.delete(delete)
+
+    def _handle_request_person_merge(
+        self,
+        db: Session,
+        packet: RequestPersonMergePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        keep_user = self._resolve_user(
+            db,
+            person_id=body.KeepPersonID,
+            global_id=body.KeepGlobalID,
+        )
+        delete_user = self._resolve_user(
+            db,
+            person_id=body.DeletePersonID,
+            global_id=body.DeleteGlobalID,
+        )
+
+        if keep_user is None and delete_user is None:
+            keep_user = self._get_or_create_user_by_person_id(
+                db,
+                person_id=body.KeepPersonID,
+                default_name=body.KeepPersonID,
+                global_id=body.KeepGlobalID,
+            )
+        elif keep_user is None and delete_user is not None:
+            keep_user = delete_user
+
+        if keep_user is None:
+            return
+
+        keep_user.person_id = body.KeepPersonID
+        if body.KeepGlobalID:
+            keep_user.global_id = body.KeepGlobalID
+
+        if delete_user is not None and delete_user.id != keep_user.id:
+            self._merge_users(db, keep=keep_user, delete=delete_user)
+
+        keep_user.is_active = True
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            keep_person_id=body.KeepPersonID,
+            delete_person_id=body.DeletePersonID,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+
+    def _handle_request_project_inactivate(
+        self,
+        db: Session,
+        packet: RequestProjectInactivatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> Project | None:
+        body = packet.body
+        resource = body.ResourceList[0] if body.ResourceList else None
+        project = self._resolve_project(
+            db,
+            site_project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+        )
+
+        if project is not None:
+            project.is_active = False
+            project_users = (
+                db.query(ProjectUser)
+                .filter(
+                    ProjectUser.project_id == project.id,
+                    or_(ProjectUser.resource == resource, ProjectUser.resource.is_(None)),
+                )
+                .all()
+            )
+            users_seen: set[Any] = set()
+            for pu in project_users:
+                pu.is_active = False
+                if pu.user_id:
+                    users_seen.add(pu.user_id)
+            if users_seen:
+                users = db.query(User).filter(User.id.in_(users_seen)).all()
+                for user in users:
+                    self._refresh_user_active_from_accounts(db, user)
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            resource=resource,
+            message=body.Comment,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+        return project
+
+    def _handle_request_project_reactivate(
+        self,
+        db: Session,
+        packet: RequestProjectReactivatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> Project | None:
+        body = packet.body
+        resource = body.ResourceList[0] if body.ResourceList else None
+        project = self._resolve_project(
+            db,
+            site_project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+        )
+        if project is not None:
+            project.is_active = True
+
+        if project is not None and body.PersonID:
+            user = self._get_or_create_user_by_person_id(
+                db,
+                person_id=body.PersonID,
+                default_name=body.PersonID,
+            )
+            self._assign_user_to_project(
+                db,
+                project,
+                user,
+                role="pi",
+                resource=resource,
+                is_active=True,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+            )
+            user.is_active = True
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            person_id=body.PersonID,
+            resource=resource,
+            message=body.Comment,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+        return project
+
+    def _handle_request_account_inactivate(
+        self,
+        db: Session,
+        packet: RequestAccountInactivatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> Project | None:
+        body = packet.body
+        resource = body.ResourceList[0] if body.ResourceList else None
+        project = self._resolve_project(db, site_project_id=body.ProjectID)
+        user = self._resolve_user(db, person_id=body.PersonID)
+
+        if project is not None and user is not None:
+            project_users = (
+                db.query(ProjectUser)
+                .filter(
+                    ProjectUser.project_id == project.id,
+                    ProjectUser.user_id == user.id,
+                    or_(ProjectUser.resource == resource, ProjectUser.resource.is_(None)),
+                )
+                .all()
+            )
+            for pu in project_users:
+                pu.is_active = False
+            self._refresh_user_active_from_accounts(db, user)
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            person_id=body.PersonID,
+            resource=resource,
+            message=body.Comment,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+        return project
+
+    def _handle_request_account_reactivate(
+        self,
+        db: Session,
+        packet: RequestAccountReactivatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> Project | None:
+        body = packet.body
+        resource = body.ResourceList[0] if body.ResourceList else None
+        project = self._resolve_project(db, site_project_id=body.ProjectID)
+        user = self._get_or_create_user_by_person_id(
+            db,
+            person_id=body.PersonID,
+            default_name=body.PersonID,
+        )
+
+        if project is not None:
+            project.is_active = True
+            self._assign_user_to_project(
+                db,
+                project,
+                user,
+                resource=resource,
+                is_active=True,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+            )
+        user.is_active = True
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            person_id=body.PersonID,
+            resource=resource,
+            message=body.Comment,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+        return project
+
+    def _handle_inform_transaction_complete(
+        self,
+        db: Session,
+        packet: InformTransactionCompletePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            status_code=str(body.StatusCode),
+            detail_code=str(body.DetailCode),
+            message=body.Message,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def ingest_packet(self, db: Session, packet: dict) -> Project:
-        """Process a raw AMIE allocation packet dictionary.
+    def mark_packet_error(
+        self,
+        db: Session,
+        packet: dict | Any,
+        *,
+        error_message: str,
+    ) -> None:
+        """Persist packet metadata (if needed) and mark processing as failed."""
+        packet_dict = coerce_packet_dict(packet)
+        packet_type = str(packet_dict.get("type") or "unknown")
+        header = packet_dict.get("header", {})
+        try:
+            packet_record, _ = self._record_packet(
+                db,
+                packet_type=packet_type,
+                header=header,
+                raw_packet=packet_dict,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Unable to persist packet error status type=%s packet_rec_id=%s",
+                packet_type,
+                header.get("packet_rec_id"),
+            )
+            return
+
+        packet_record.processing_status = AMIEPacket.PROCESSING_STATUS_ERROR
+        packet_record.processing_error = error_message
+        packet_record.processed_at = None
+        db.commit()
+
+    def ingest_packet(self, db: Session, packet: dict | Any) -> IngestResult:
+        """Process a raw AMIE packet.
 
         Args:
             db: Active SQLAlchemy session.
-            packet: Dictionary representation of an AMIE allocation packet.
-                Expected keys:
-                  - ``allocation_id`` (str)
-                  - ``project_name`` (str)
-                  - ``resource_type`` (str, optional)
-                  - ``cpu`` (int, optional)
-                  - ``gpu`` (int, optional)
-                  - ``namespace`` (str, optional)
-                  - ``users`` (list of dicts with ``email`` and ``name``)
+            packet: A dictionary or ``amieclient`` packet object.
 
         Returns:
-            The created or updated :class:`~app.models.project.Project`.
+            :class:`IngestResult` indicating whether packet type is supported,
+            and the affected project when available.
         """
-        project = self._get_or_create_project(
-            db=db,
-            aime_allocation_id=str(packet.get("allocation_id", "")),
-            name=str(packet.get("project_name", "Unknown")),
-            resource_type=packet.get("resource_type"),
-            cpu_allocated=int(packet.get("cpu", 0)),
-            gpu_allocated=int(packet.get("gpu", 0)),
-            kubernetes_namespace=packet.get("namespace"),
+        packet_dict = coerce_packet_dict(packet)
+        packet_type = str(packet_dict.get("type") or "unknown")
+        header = packet_dict.get("header", {})
+        logger.debug(
+            "AIME ingest_packet received packet type=%s packet_rec_id=%s payload=%s",
+            packet_type,
+            header.get("packet_rec_id"),
+            packet_dict,
         )
 
-        for user_info in packet.get("users", []):
-            user = self._get_or_create_user(
-                db=db,
-                email=user_info.get("email", ""),
-                name=user_info.get("name", ""),
-            )
-            self._assign_user_to_project(db, project, user, role=user_info.get("role"))
+        packet_record, created = self._record_packet(
+            db,
+            packet_type=packet_type,
+            header=header,
+            raw_packet=packet_dict,
+        )
 
+        try:
+            bound_packet = bind_packet(packet_dict)
+        except UnsupportedPacketType as exc:
+            logger.info("Skipping unsupported packet payload: %s", exc)
+            packet_record.processing_status = AMIEPacket.PROCESSING_STATUS_UNPROCESSED
+            packet_record.processing_error = str(exc)
+            packet_record.processed_at = None
+            db.commit()
+            return IngestResult(handled=False, packet_type=packet_type)
+
+        packet_record.packet_type = bound_packet.type
+
+        project: Project | None = None
+
+        if isinstance(bound_packet, RequestProjectCreatePacketBinding):
+            project = self._upsert_project_from_allocation(db, bound_packet.body)
+            project.source_packet_rec_id = packet_record.packet_rec_id
+            project.source_trans_rec_id = packet_record.trans_rec_id
+            project.source_transaction_id = packet_record.transaction_id
+            if created:
+                self._record_allocation_packet(db, packet_record.id, bound_packet.body)
+            pi_user = self._get_or_create_user_from_pi(db, bound_packet.body)
+            role = bound_packet.body.RoleList[0] if bound_packet.body.RoleList else "pi"
+            resource = (
+                bound_packet.body.ResourceList[0]
+                if bound_packet.body.ResourceList
+                else None
+            )
+            self._assign_user_to_project(
+                db,
+                project,
+                pi_user,
+                role=role,
+                resource=resource,
+                is_active=True,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+            )
+
+        elif isinstance(bound_packet, RequestAccountCreatePacketBinding):
+            project = self._upsert_project_from_account(db, bound_packet.body)
+            project.source_packet_rec_id = packet_record.packet_rec_id
+            project.source_trans_rec_id = packet_record.trans_rec_id
+            project.source_transaction_id = packet_record.transaction_id
+            if created:
+                self._record_new_user_packet(db, packet_record.id, bound_packet.body)
+            user = self._get_or_create_user_from_account(db, bound_packet.body)
+            role = bound_packet.body.RoleList[0] if bound_packet.body.RoleList else None
+            resource = (
+                bound_packet.body.ResourceList[0]
+                if bound_packet.body.ResourceList
+                else None
+            )
+            self._assign_user_to_project(
+                db,
+                project,
+                user,
+                role=role,
+                resource=resource,
+                remote_site_login=bound_packet.body.UserRemoteSiteLogin,
+                is_active=True,
+                account_state=ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET,
+                source_packet_rec_id=packet_record.packet_rec_id,
+                source_trans_rec_id=packet_record.trans_rec_id,
+                source_transaction_id=packet_record.transaction_id,
+            )
+
+        elif isinstance(bound_packet, DataProjectCreatePacketBinding):
+            project = self._handle_data_project_create(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, DataAccountCreatePacketBinding):
+            project = self._handle_data_account_create(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, RequestUserModifyPacketBinding):
+            self._handle_request_user_modify(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, RequestPersonMergePacketBinding):
+            self._handle_request_person_merge(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, RequestProjectInactivatePacketBinding):
+            project = self._handle_request_project_inactivate(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, RequestProjectReactivatePacketBinding):
+            project = self._handle_request_project_reactivate(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, RequestAccountInactivatePacketBinding):
+            project = self._handle_request_account_inactivate(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, RequestAccountReactivatePacketBinding):
+            project = self._handle_request_account_reactivate(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, InformTransactionCompletePacketBinding):
+            self._handle_inform_transaction_complete(db, bound_packet, packet_record)
+
+        else:
+            logger.info("Bound but unhandled packet type: %s", bound_packet.type)
+            packet_record.processing_status = AMIEPacket.PROCESSING_STATUS_UNPROCESSED
+            packet_record.processing_error = (
+                f"Bound but unhandled packet type: {bound_packet.type}"
+            )
+            packet_record.processed_at = None
+            db.commit()
+            return IngestResult(handled=False, packet_type=bound_packet.type)
+
+        packet_record.processing_status = AMIEPacket.PROCESSING_STATUS_PROCESSED
+        packet_record.processing_error = None
+        packet_record.processed_at = datetime.now(UTC)
         db.commit()
-        return project
+        return IngestResult(handled=True, packet_type=bound_packet.type, project=project)
