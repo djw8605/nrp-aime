@@ -35,6 +35,10 @@ At minimum, set (for `dev` and `prod` overlays):
 - `AMIE_API_KEY`
 - `PORTAL_RPC_TOKEN`
 
+Optional AMIE multi-site polling:
+- `AMIE_SITE_NAMES` as comma-separated site names (for example `NRP,ACCESS`).
+- When set, the AIME worker polls each configured site sequentially.
+
 Portal RPC configuration:
 - `PORTAL_RPC_URL` (default `https://portal.nrp.ai/rpc`)
 - `PORTAL_RPC_NAMESPACE` (default `access`)
@@ -90,7 +94,6 @@ Auth flow split:
 - Upstream IdP flow/policy should enforce administrator access control.
 
 Lifecycle behavior:
-- Keep `AUTHENTIK_STUB_AUTO_ACCOUNT_MADE=false` for invite-driven onboarding.
   - If set to `true`, accounts can auto-transition to `account_made` and bypass the intended invite-click flow.
 
 ## Apply

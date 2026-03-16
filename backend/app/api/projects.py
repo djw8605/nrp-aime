@@ -48,6 +48,18 @@ def _to_project_read(
         source_packet_rec_id=project.source_packet_rec_id,
         source_trans_rec_id=project.source_trans_rec_id,
         source_transaction_id=project.source_transaction_id,
+        source_site_name=project.source_site_name,
+        allocated_resource=project.allocated_resource,
+        service_units_allocated=(
+            float(project.service_units_allocated)
+            if project.service_units_allocated is not None
+            else None
+        ),
+        service_units_remaining=(
+            float(project.service_units_remaining)
+            if project.service_units_remaining is not None
+            else None
+        ),
         resource_type=project.resource_type,
         cpu_allocated=project.cpu_allocated,
         gpu_allocated=project.gpu_allocated,
@@ -91,6 +103,15 @@ def get_projects_summary(db: Session = Depends(get_db)) -> ProjectSummary:
         func.coalesce(func.sum(ProjectUsageSnapshot.cpu_used_current), 0),
         func.coalesce(func.sum(ProjectUsageSnapshot.gpu_used_current), 0),
     ).one()
+    projects_with_service_units = (
+        db.query(Project)
+        .filter(Project.service_units_allocated.is_not(None))
+        .count()
+    )
+    total_service_units_allocated = (
+        db.query(func.coalesce(func.sum(Project.service_units_allocated), 0))
+        .scalar()
+    )
 
     return ProjectSummary(
         total_projects=total_projects,
@@ -101,6 +122,8 @@ def get_projects_summary(db: Session = Depends(get_db)) -> ProjectSummary:
         total_gpu_allocated=int(total_gpu_allocated),
         total_cpu_used=float(total_cpu_used),
         total_gpu_used=float(total_gpu_used),
+        projects_with_service_units=projects_with_service_units,
+        total_service_units_allocated=float(total_service_units_allocated or 0),
     )
 
 
@@ -162,7 +185,24 @@ def get_project_users(project_id: uuid.UUID, db: Session = Depends(get_db)):
             source_transaction_id=pu.source_transaction_id,
             role=pu.role,
             resource=pu.resource,
+            allocated_resource=pu.allocated_resource,
+            membership_service_units_allocated=(
+                float(pu.service_units_allocated)
+                if pu.service_units_allocated is not None
+                else None
+            ),
+            membership_service_units_remaining=(
+                float(pu.service_units_remaining)
+                if pu.service_units_remaining is not None
+                else None
+            ),
             account_remote_site_login=pu.remote_site_login,
+            source_site_name=pu.user.source_site_name,
+            service_units_allocated=(
+                float(pu.user.service_units_allocated)
+                if pu.user.service_units_allocated is not None
+                else None
+            ),
             created_at=pu.user.created_at,
         )
         for pu in project.project_users

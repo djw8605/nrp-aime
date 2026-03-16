@@ -2,8 +2,9 @@
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,7 +27,7 @@ class User(Base):
     middle_name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_name: Mapped[str | None] = mapped_column(String, nullable=True)
     person_id: Mapped[str | None] = mapped_column(
-        String, unique=True, index=True, nullable=True
+        String, index=True, nullable=True
     )
     global_id: Mapped[str | None] = mapped_column(String, nullable=True)
     organization: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -35,6 +36,10 @@ class User(Base):
     nsf_status_code: Mapped[str | None] = mapped_column(String, nullable=True)
     dn_list: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     remote_site_login: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_site_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    service_units_allocated: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

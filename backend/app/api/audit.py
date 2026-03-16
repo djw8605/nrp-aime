@@ -10,12 +10,6 @@ from app.services.audit.service import AuditService
 router = APIRouter()
 
 
-class AuthentikSyncRequest(BaseModel):
-    """Payload for Authentik membership reconciliation."""
-
-    apply_changes: bool = False
-
-
 class PortalSyncRequest(BaseModel):
     """Payload for portal namespace/membership reconciliation."""
 
@@ -26,18 +20,6 @@ class PortalSyncRequest(BaseModel):
 def run_audit(db: Session = Depends(get_db)) -> dict:
     """Run cross-service audit checks."""
     return AuditService().run(db)
-
-
-@router.post('/authentik-sync')
-def sync_authentik_memberships(
-    payload: AuthentikSyncRequest,
-    db: Session = Depends(get_db),
-) -> dict:
-    """Audit and optionally reconcile Authentik memberships against DB."""
-    return AuditService().sync_authentik_memberships(
-        db,
-        apply_changes=payload.apply_changes,
-    )
 
 
 @router.post('/portal-sync')

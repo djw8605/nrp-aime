@@ -21,21 +21,18 @@
         <div class="space-y-3">
           <div class="grid grid-cols-2 gap-3">
             <div class="rounded-xl bg-sky-50 p-3 text-center">
-              <p class="m-0 text-xs uppercase tracking-wide text-sky-500">CPU Cores</p>
+              <p class="m-0 text-xs uppercase tracking-wide text-sky-500">Service Units</p>
               <p class="m-0 text-2xl font-bold text-sky-700">
-                {{ formatUsage(project.cpu_used_current) }}
+                {{ formatUsage(project.service_units_allocated) }}
               </p>
               <p class="m-0 mt-1 text-xs text-sky-600">
-                of {{ formatUsage(project.cpu_allocated) }} allocated
+                remaining {{ formatUsage(project.service_units_remaining) }}
               </p>
             </div>
             <div class="rounded-xl bg-emerald-50 p-3 text-center">
-              <p class="m-0 text-xs uppercase tracking-wide text-emerald-500">GPUs</p>
-              <p class="m-0 text-2xl font-bold text-emerald-700">
-                {{ formatUsage(project.gpu_used_current) }}
-              </p>
-              <p class="m-0 mt-1 text-xs text-emerald-600">
-                of {{ formatUsage(project.gpu_allocated) }} allocated
+              <p class="m-0 text-xs uppercase tracking-wide text-emerald-500">Allocated Resource</p>
+              <p class="m-0 mt-3 break-all text-sm font-bold text-emerald-700">
+                {{ project.allocated_resource || project.resource_type || '—' }}
               </p>
             </div>
           </div>
@@ -67,6 +64,14 @@
             <span class="text-slate-500">Site Project ID</span>
             <span class="font-mono text-slate-700">{{ project.site_project_id || '—' }}</span>
           </div>
+          <div class="flex items-center justify-between gap-2 text-xs">
+            <span class="text-slate-500">Source Site</span>
+            <span class="font-mono text-slate-700">{{ project.source_site_name || '—' }}</span>
+          </div>
+          <div class="flex items-center justify-between gap-2 text-xs">
+            <span class="text-slate-500">Resource Type</span>
+            <span class="font-mono text-slate-700">{{ project.resource_type || '—' }}</span>
+          </div>
         </div>
       </template>
     </Card>
@@ -85,7 +90,7 @@ defineProps({
 })
 
 function formatUsage(value) {
-  if (value === null || value === undefined) return '0'
+  if (value === null || value === undefined) return '—'
   const numeric = Number(value)
   if (Number.isNaN(numeric)) return String(value)
   return numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })

@@ -20,6 +20,24 @@
     <template #content>
       <Divider />
       <div class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+        <div class="rounded-lg bg-sky-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-sky-600">Service Units Allocated</p>
+          <p class="m-0 mt-2 text-xl font-semibold text-sky-800">
+            {{ formatUnits(project.service_units_allocated) }}
+          </p>
+        </div>
+        <div class="rounded-lg bg-emerald-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-emerald-600">Service Units Remaining</p>
+          <p class="m-0 mt-2 text-xl font-semibold text-emerald-800">
+            {{ formatUnits(project.service_units_remaining) }}
+          </p>
+        </div>
+        <div class="rounded-lg bg-indigo-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-indigo-600">Allocated Resource</p>
+          <p class="m-0 mt-2 break-all font-medium text-indigo-800">
+            {{ project.allocated_resource || '—' }}
+          </p>
+        </div>
         <div class="rounded-lg bg-slate-50 p-3">
           <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Resource Type</p>
           <p class="m-0 mt-2 font-medium text-slate-700">{{ project.resource_type || '—' }}</p>
@@ -27,14 +45,6 @@
         <div class="rounded-lg bg-slate-50 p-3">
           <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Grant Number</p>
           <p class="m-0 mt-2 font-medium text-slate-700">{{ project.grant_number || '—' }}</p>
-        </div>
-        <div class="rounded-lg bg-slate-50 p-3">
-          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">CPU Cores</p>
-          <p class="m-0 mt-2 font-medium text-slate-700">{{ project.cpu_allocated }}</p>
-        </div>
-        <div class="rounded-lg bg-slate-50 p-3">
-          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">GPUs</p>
-          <p class="m-0 mt-2 font-medium text-slate-700">{{ project.gpu_allocated }}</p>
         </div>
         <div class="rounded-lg bg-slate-50 p-3">
           <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Site Project ID</p>
@@ -69,6 +79,12 @@
           <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Authentik Group</p>
           <p class="m-0 mt-2 font-mono font-medium text-slate-700">
             {{ project.authentik_group_name || '—' }}
+          </p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Source Site</p>
+          <p class="m-0 mt-2 font-mono font-medium text-slate-700">
+            {{ project.source_site_name || '—' }}
           </p>
         </div>
       </div>
@@ -109,5 +125,12 @@ function provisioningSeverity(value) {
   if (state === 'provisioning') return 'warning'
   if (state === 'failed') return 'danger'
   return 'info'
+}
+
+function formatUnits(value) {
+  if (value === null || value === undefined) return '—'
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) return String(value)
+  return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 })
 }
 </script>

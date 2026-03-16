@@ -73,6 +73,21 @@
             <span class="font-mono text-xs">{{ data.resource || '—' }}</span>
           </template>
         </Column>
+        <Column header="Allocated Resource">
+          <template #body="{ data }">
+            <span class="font-mono text-xs">{{ data.allocated_resource || '—' }}</span>
+          </template>
+        </Column>
+        <Column header="SU Allocated">
+          <template #body="{ data }">
+            <span class="font-mono text-xs">{{ formatUnits(data.membership_service_units_allocated) }}</span>
+          </template>
+        </Column>
+        <Column header="SU Remaining">
+          <template #body="{ data }">
+            <span class="font-mono text-xs">{{ formatUnits(data.membership_service_units_remaining) }}</span>
+          </template>
+        </Column>
         <Column header="Organization">
           <template #body="{ data }">
             {{ data.organization || '—' }}
@@ -121,6 +136,13 @@ function accountStateSeverity(state) {
   if (state === 'not_sent_email_invite') return 'warning'
   if (state === 'just_received_packet') return 'warning'
   return 'secondary'
+}
+
+function formatUnits(value) {
+  if (value === null || value === undefined) return '—'
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) return String(value)
+  return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 })
 }
 
 defineProps({

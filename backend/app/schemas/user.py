@@ -31,6 +31,8 @@ class UserRead(BaseModel):
     nsf_status_code: str | None = None
     dn_list: list[str] = Field(default_factory=list)
     remote_site_login: str | None = None
+    source_site_name: str | None = None
+    service_units_allocated: float | None = None
     is_active: bool
     project_count: int = 0
     project_names: list[str] = Field(default_factory=list)
@@ -65,7 +67,12 @@ class ProjectMemberRead(BaseModel):
     source_transaction_id: int | None = None
     role: str | None = None
     resource: str | None = None
+    allocated_resource: str | None = None
+    membership_service_units_allocated: float | None = None
+    membership_service_units_remaining: float | None = None
     account_remote_site_login: str | None = None
+    source_site_name: str | None = None
+    service_units_allocated: float | None = None
     created_at: datetime
 
 
@@ -79,6 +86,9 @@ class UserProjectMembershipRead(BaseModel):
     project_is_active: bool
     role: str | None = None
     resource: str | None = None
+    allocated_resource: str | None = None
+    membership_service_units_allocated: float | None = None
+    membership_service_units_remaining: float | None = None
     account_remote_site_login: str | None = None
     account_is_active: bool
     account_state: str
@@ -103,6 +113,9 @@ class UserPacketDetailRead(BaseModel):
     grant_number: str
     project_id: str | None = None
     resource: str | None = None
+    allocated_resource: str | None = None
+    service_units_allocated: str | None = None
+    service_units_remaining: str | None = None
     user_person_id: str | None = None
     user_global_id: str | None = None
     user_first_name: str

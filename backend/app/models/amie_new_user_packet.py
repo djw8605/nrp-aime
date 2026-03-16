@@ -26,6 +26,8 @@ class AMIENewUserPacket(Base):
     project_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     resource: Mapped[str | None] = mapped_column(String, nullable=True)
     allocated_resource: Mapped[str | None] = mapped_column(String, nullable=True)
+    service_units_allocated: Mapped[str | None] = mapped_column(String, nullable=True)
+    service_units_remaining: Mapped[str | None] = mapped_column(String, nullable=True)
     user_person_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     user_global_id: Mapped[str | None] = mapped_column(String, nullable=True)
     user_first_name: Mapped[str] = mapped_column(String, nullable=False)

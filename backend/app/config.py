@@ -14,6 +14,9 @@ class Settings(BaseSettings):
 
     # AIME / AMIE
     amie_site_name: str = "NRP"
+    # Optional comma-separated list of AMIE site names for multi-site polling.
+    # Example: "NRP,ACCESS"
+    amie_site_names: str = ""
     amie_api_key: str = ""
     amie_url: str = "https://amieclient.xsede.org/v0.10/"
     amie_processed_client_state: str = "nrp-processed"
@@ -105,3 +108,21 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def configured_amie_site_names() -> list[str]:
+    """Return ordered, deduplicated AMIE site names from config."""
+    configured: list[str] = []
+    raw = str(settings.amie_site_names or "")
+    for token in raw.replace(";", ",").split(","):
+        site = token.strip()
+        if site and site not in configured:
+            configured.append(site)
+
+    default_site = str(settings.amie_site_name or "").strip()
+    if default_site and default_site not in configured:
+        configured.insert(0, default_site)
+
+    if not configured:
+        configured.append("NRP")
+    return configured

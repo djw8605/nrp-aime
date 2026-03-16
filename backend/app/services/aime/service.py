@@ -28,6 +28,12 @@ from app.services.aime.bindings import (
     DataAccountCreatePacketBinding,
     DataProjectCreatePacketBinding,
     InformTransactionCompletePacketBinding,
+    NotifyAccountCreatePacketBinding,
+    NotifyAccountInactivatePacketBinding,
+    NotifyAccountReactivatePacketBinding,
+    NotifyProjectCreatePacketBinding,
+    NotifyProjectInactivatePacketBinding,
+    NotifyProjectReactivatePacketBinding,
     RequestAccountCreateBodyBinding,
     RequestAccountCreatePacketBinding,
     RequestAccountInactivatePacketBinding,
@@ -116,6 +122,18 @@ class AIMEService:
     def _json_compatible(self, data: dict[str, Any]) -> dict[str, Any]:
         return json.loads(json.dumps(data, default=self._json_default))
 
+    def _packet_site_name(self, packet_record: AMIEPacket) -> str:
+        for candidate in (
+            packet_record.remote_site_name,
+            packet_record.originating_site_name,
+            packet_record.local_site_name,
+            self.site_name,
+        ):
+            value = str(candidate or "").strip()
+            if value:
+                return value
+        return self.site_name
+
     @staticmethod
     def _merge_dn_list(
         existing: list[str] | None,
@@ -134,6 +152,46 @@ class AIMEService:
         remove = {(dn or "").strip() for dn in (to_remove or []) if (dn or "").strip()}
         return [dn for dn in current if dn not in remove]
 
+    @staticmethod
+    def _site_scoped_first(
+        query,
+        *,
+        site_field,
+        site_name: str | None,
+        allow_other_sites_when_missing: bool,
+    ):
+        """Return site-matched row first, then legacy null-site row when present.
+
+        If ``allow_other_sites_when_missing`` is False and no site/legacy row matches,
+        return ``None`` instead of crossing into another site's row.
+        """
+        if not site_name:
+            return query.first()
+
+        scoped = query.filter(site_field == site_name).first()
+        if scoped is not None:
+            return scoped
+
+        legacy = query.filter(or_(site_field.is_(None), site_field == "")).first()
+        if legacy is not None:
+            return legacy
+
+        if allow_other_sites_when_missing:
+            return query.first()
+        return None
+
+    @staticmethod
+    def _preserve_or_set_source_site_name(
+        existing: str | None,
+        incoming: str | None,
+    ) -> str | None:
+        """Set source site only when unset, preserving existing tagged records."""
+        existing_clean = str(existing or "").strip()
+        incoming_clean = str(incoming or "").strip()
+        if existing_clean:
+            return existing_clean
+        return incoming_clean or None
+
     def _resolve_project(
         self,
         db: Session,
@@ -141,22 +199,38 @@ class AIMEService:
         grant_number: str | None = None,
         site_project_id: str | None = None,
         allocation_record_id: str | None = None,
+        source_site_name: str | None = None,
     ) -> Project | None:
+        site_name = (source_site_name or "").strip() or None
         if site_project_id:
-            project = (
-                db.query(Project).filter(Project.site_project_id == site_project_id).first()
+            query = db.query(Project).filter(Project.site_project_id == site_project_id)
+            project = self._site_scoped_first(
+                query,
+                site_field=Project.source_site_name,
+                site_name=site_name,
+                allow_other_sites_when_missing=False,
             )
             if project is not None:
                 return project
         if grant_number:
-            project = db.query(Project).filter(Project.grant_number == grant_number).first()
+            query = db.query(Project).filter(Project.grant_number == grant_number)
+            project = self._site_scoped_first(
+                query,
+                site_field=Project.source_site_name,
+                site_name=site_name,
+                allow_other_sites_when_missing=False,
+            )
             if project is not None:
                 return project
         if allocation_record_id:
-            return (
-                db.query(Project)
-                .filter(Project.allocation_record_id == allocation_record_id)
-                .first()
+            query = db.query(Project).filter(
+                Project.allocation_record_id == allocation_record_id
+            )
+            return self._site_scoped_first(
+                query,
+                site_field=Project.source_site_name,
+                site_name=site_name,
+                allow_other_sites_when_missing=False,
             )
         return None
 
@@ -167,17 +241,37 @@ class AIMEService:
         person_id: str | None = None,
         email: str | None = None,
         global_id: str | None = None,
+        source_site_name: str | None = None,
     ) -> User | None:
+        site_name = (source_site_name or "").strip() or None
         if person_id:
-            user = db.query(User).filter(User.person_id == person_id).first()
+            query = db.query(User).filter(User.person_id == person_id)
+            user = self._site_scoped_first(
+                query,
+                site_field=User.source_site_name,
+                site_name=site_name,
+                allow_other_sites_when_missing=False,
+            )
             if user is not None:
                 return user
         if email:
-            user = db.query(User).filter(User.email == email).first()
+            query = db.query(User).filter(User.email == email)
+            user = self._site_scoped_first(
+                query,
+                site_field=User.source_site_name,
+                site_name=site_name,
+                allow_other_sites_when_missing=True,
+            )
             if user is not None:
                 return user
         if global_id:
-            user = db.query(User).filter(User.global_id == global_id).first()
+            query = db.query(User).filter(User.global_id == global_id)
+            user = self._site_scoped_first(
+                query,
+                site_field=User.source_site_name,
+                site_name=site_name,
+                allow_other_sites_when_missing=True,
+            )
             if user is not None:
                 return user
         return None
@@ -189,17 +283,28 @@ class AIMEService:
         person_id: str,
         default_name: str | None = None,
         global_id: str | None = None,
+        source_site_name: str | None = None,
     ) -> User:
-        user = self._resolve_user(db, person_id=person_id, global_id=global_id)
+        user = self._resolve_user(
+            db,
+            person_id=person_id,
+            global_id=global_id,
+            source_site_name=source_site_name,
+        )
         if user is not None:
             if global_id and not user.global_id:
                 user.global_id = global_id
+            user.source_site_name = self._preserve_or_set_source_site_name(
+                user.source_site_name,
+                source_site_name,
+            )
             return user
 
         user = User(
             person_id=person_id,
             global_id=global_id,
             name=default_name or person_id,
+            source_site_name=source_site_name,
             is_active=True,
             dn_list=[],
         )
@@ -218,7 +323,11 @@ class AIMEService:
         user.is_active = has_active_account or bool(user.dn_list)
 
     def _get_or_create_user_from_pi(
-        self, db: Session, body: RequestProjectCreateBodyBinding
+        self,
+        db: Session,
+        body: RequestProjectCreateBodyBinding,
+        *,
+        source_site_name: str | None = None,
     ) -> User:
         """Return an existing PI user or create a new one."""
         full_name = self._full_name(body.PiFirstName, body.PiMiddleName, body.PiLastName)
@@ -226,6 +335,7 @@ class AIMEService:
             db,
             person_id=body.PiPersonID,
             email=body.PiEmail,
+            source_site_name=source_site_name,
         )
         if user is None:
             user = User(
@@ -239,6 +349,7 @@ class AIMEService:
                 org_code=body.PiOrgCode,
                 department=body.PiDepartment,
                 nsf_status_code=body.NsfStatusCode,
+                source_site_name=source_site_name,
                 dn_list=self._merge_dn_list([], body.PiDnList),
                 is_active=True,
             )
@@ -257,12 +368,20 @@ class AIMEService:
         user.org_code = body.PiOrgCode or user.org_code
         user.department = body.PiDepartment or user.department
         user.nsf_status_code = body.NsfStatusCode or user.nsf_status_code
+        user.source_site_name = self._preserve_or_set_source_site_name(
+            user.source_site_name,
+            source_site_name,
+        )
         user.dn_list = self._merge_dn_list(user.dn_list, body.PiDnList)
         user.is_active = True
         return user
 
     def _get_or_create_user_from_account(
-        self, db: Session, body: RequestAccountCreateBodyBinding
+        self,
+        db: Session,
+        body: RequestAccountCreateBodyBinding,
+        *,
+        source_site_name: str | None = None,
     ) -> User:
         """Return an existing user from request_account_create or create one."""
         full_name = self._full_name(
@@ -273,7 +392,9 @@ class AIMEService:
             person_id=body.UserPersonID,
             email=body.UserEmail,
             global_id=body.UserGlobalID,
+            source_site_name=source_site_name,
         )
+        service_units = self._to_decimal(body.ServiceUnitsAllocated)
         if user is None:
             user = User(
                 email=body.UserEmail,
@@ -287,6 +408,8 @@ class AIMEService:
                 org_code=body.UserOrgCode,
                 department=body.UserDepartment,
                 nsf_status_code=body.NsfStatusCode,
+                source_site_name=source_site_name,
+                service_units_allocated=service_units,
                 dn_list=self._merge_dn_list([], body.UserDnList),
                 remote_site_login=body.UserRemoteSiteLogin,
                 is_active=True,
@@ -307,13 +430,23 @@ class AIMEService:
         user.org_code = body.UserOrgCode or user.org_code
         user.department = body.UserDepartment or user.department
         user.nsf_status_code = body.NsfStatusCode or user.nsf_status_code
+        user.source_site_name = self._preserve_or_set_source_site_name(
+            user.source_site_name,
+            source_site_name,
+        )
         user.dn_list = self._merge_dn_list(user.dn_list, body.UserDnList)
         user.remote_site_login = body.UserRemoteSiteLogin or user.remote_site_login
+        if service_units is not None:
+            user.service_units_allocated = service_units
         user.is_active = True
         return user
 
     def _upsert_project_from_allocation(
-        self, db: Session, body: RequestProjectCreateBodyBinding
+        self,
+        db: Session,
+        body: RequestProjectCreateBodyBinding,
+        *,
+        source_site_name: str | None = None,
     ) -> Project:
         """Create/update project metadata from request_project_create."""
         allocation_record_id = (
@@ -324,8 +457,9 @@ class AIMEService:
             grant_number=body.GrantNumber,
             site_project_id=body.ProjectID,
             allocation_record_id=allocation_record_id,
+            source_site_name=source_site_name,
         )
-        resource = body.ResourceList[0] if body.ResourceList else None
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
         if project is None:
             project = Project(
                 aime_allocation_id=allocation_record_id or body.GrantNumber,
@@ -335,7 +469,10 @@ class AIMEService:
                 site_project_id=body.ProjectID,
                 allocation_type=body.AllocationType,
                 request_type=body.RequestType,
+                source_site_name=source_site_name,
+                allocated_resource=body.AllocatedResource,
                 service_units_allocated=self._to_decimal(body.ServiceUnitsAllocated),
+                service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
                 start_date=self._to_date(body.StartDate),
                 end_date=self._to_date(body.EndDate),
                 project_title=body.ProjectTitle,
@@ -367,9 +504,17 @@ class AIMEService:
         project.site_project_id = body.ProjectID or project.site_project_id
         project.allocation_type = body.AllocationType or project.allocation_type
         project.request_type = body.RequestType or project.request_type
+        project.source_site_name = self._preserve_or_set_source_site_name(
+            project.source_site_name,
+            source_site_name,
+        )
+        project.allocated_resource = body.AllocatedResource or project.allocated_resource
         new_service_units = self._to_decimal(body.ServiceUnitsAllocated)
         if new_service_units is not None:
             project.service_units_allocated = new_service_units
+        new_service_units_remaining = self._to_decimal(body.ServiceUnitsRemaining)
+        if new_service_units_remaining is not None:
+            project.service_units_remaining = new_service_units_remaining
         project.start_date = self._to_date(body.StartDate) or project.start_date
         project.end_date = self._to_date(body.EndDate) or project.end_date
         project.project_title = body.ProjectTitle or project.project_title
@@ -391,15 +536,20 @@ class AIMEService:
         return project
 
     def _upsert_project_from_account(
-        self, db: Session, body: RequestAccountCreateBodyBinding
+        self,
+        db: Session,
+        body: RequestAccountCreateBodyBinding,
+        *,
+        source_site_name: str | None = None,
     ) -> Project:
         """Ensure account packets can always bind to a project row."""
         project = self._resolve_project(
             db,
             grant_number=body.GrantNumber,
             site_project_id=body.ProjectID,
+            source_site_name=source_site_name,
         )
-        resource = body.ResourceList[0] if body.ResourceList else None
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
         if project is None:
             project = Project(
                 aime_allocation_id=body.GrantNumber,
@@ -407,6 +557,10 @@ class AIMEService:
                 grant_number=body.GrantNumber,
                 site_project_id=body.ProjectID,
                 project_title=body.ProjectID,
+                source_site_name=source_site_name,
+                allocated_resource=body.AllocatedResource,
+                service_units_allocated=self._to_decimal(body.ServiceUnitsAllocated),
+                service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
                 resource_type=resource,
                 cpu_allocated=0,
                 gpu_allocated=0,
@@ -422,6 +576,17 @@ class AIMEService:
 
         project.grant_number = body.GrantNumber or project.grant_number
         project.site_project_id = body.ProjectID or project.site_project_id
+        project.source_site_name = self._preserve_or_set_source_site_name(
+            project.source_site_name,
+            source_site_name,
+        )
+        project.allocated_resource = body.AllocatedResource or project.allocated_resource
+        new_service_units = self._to_decimal(body.ServiceUnitsAllocated)
+        if new_service_units is not None:
+            project.service_units_allocated = new_service_units
+        new_service_units_remaining = self._to_decimal(body.ServiceUnitsRemaining)
+        if new_service_units_remaining is not None:
+            project.service_units_remaining = new_service_units_remaining
         project.resource_type = resource or project.resource_type
         if not project.project_title:
             project.project_title = body.ProjectID
@@ -451,6 +616,9 @@ class AIMEService:
         user: User,
         role: str | None = None,
         resource: str | None = None,
+        allocated_resource: str | None = None,
+        service_units_allocated: Decimal | None = None,
+        service_units_remaining: Decimal | None = None,
         remote_site_login: str | None = None,
         is_active: bool = True,
         account_state: str | None = None,
@@ -483,6 +651,9 @@ class AIMEService:
                 user_id=user.id,
                 role=role,
                 resource=resource,
+                allocated_resource=allocated_resource,
+                service_units_allocated=service_units_allocated,
+                service_units_remaining=service_units_remaining,
                 remote_site_login=remote_site_login,
                 is_active=is_active,
                 account_state=state_value,
@@ -507,6 +678,11 @@ class AIMEService:
             return pu
 
         existing.role = role or existing.role
+        existing.allocated_resource = allocated_resource or existing.allocated_resource
+        if service_units_allocated is not None:
+            existing.service_units_allocated = service_units_allocated
+        if service_units_remaining is not None:
+            existing.service_units_remaining = service_units_remaining
         existing.remote_site_login = remote_site_login or existing.remote_site_login
         existing.is_active = is_active
         if account_state is not None and existing.account_state != account_state:
@@ -596,6 +772,11 @@ class AIMEService:
                 allocation_type=body.AllocationType,
                 request_type=body.RequestType,
                 service_units_allocated=str(body.ServiceUnitsAllocated),
+                service_units_remaining=(
+                    str(body.ServiceUnitsRemaining)
+                    if body.ServiceUnitsRemaining is not None
+                    else None
+                ),
                 start_date=self._to_date(body.StartDate),
                 end_date=self._to_date(body.EndDate),
                 project_title=body.ProjectTitle,
@@ -633,6 +814,16 @@ class AIMEService:
                 project_id=body.ProjectID,
                 resource=body.ResourceList[0] if body.ResourceList else None,
                 allocated_resource=body.AllocatedResource,
+                service_units_allocated=(
+                    str(body.ServiceUnitsAllocated)
+                    if body.ServiceUnitsAllocated is not None
+                    else None
+                ),
+                service_units_remaining=(
+                    str(body.ServiceUnitsRemaining)
+                    if body.ServiceUnitsRemaining is not None
+                    else None
+                ),
                 user_person_id=body.UserPersonID,
                 user_global_id=body.UserGlobalID,
                 user_first_name=body.UserFirstName,
@@ -673,11 +864,17 @@ class AIMEService:
         packet_type: str,
         raw_body: dict[str, Any],
         project_id: str | None = None,
+        grant_number: str | None = None,
         person_id: str | None = None,
         keep_person_id: str | None = None,
         delete_person_id: str | None = None,
         action_type: str | None = None,
         resource: str | None = None,
+        allocated_resource: str | None = None,
+        service_units_allocated: str | None = None,
+        service_units_remaining: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
         dn_list: list[str] | None = None,
         status_code: str | None = None,
         detail_code: str | None = None,
@@ -696,11 +893,17 @@ class AIMEService:
                 packet_id=packet_id,
                 packet_type=packet_type,
                 project_id=project_id,
+                grant_number=grant_number,
                 person_id=person_id,
                 keep_person_id=keep_person_id,
                 delete_person_id=delete_person_id,
                 action_type=action_type,
                 resource=resource,
+                allocated_resource=allocated_resource,
+                service_units_allocated=service_units_allocated,
+                service_units_remaining=service_units_remaining,
+                start_date=start_date,
+                end_date=end_date,
                 dn_list=dn_list,
                 status_code=status_code,
                 detail_code=detail_code,
@@ -715,17 +918,31 @@ class AIMEService:
         packet: DataProjectCreatePacketBinding,
         packet_record: AMIEPacket,
     ) -> Project | None:
-        project = self._resolve_project(db, site_project_id=packet.body.ProjectID)
+        source_site_name = self._packet_site_name(packet_record)
+        project = self._resolve_project(
+            db,
+            site_project_id=packet.body.ProjectID,
+            source_site_name=source_site_name,
+        )
         user = self._get_or_create_user_by_person_id(
             db,
             person_id=packet.body.PersonID,
             global_id=packet.body.GlobalID,
+            source_site_name=source_site_name,
         )
 
         user.dn_list = self._merge_dn_list(user.dn_list, packet.body.DnList)
+        user.source_site_name = self._preserve_or_set_source_site_name(
+            user.source_site_name,
+            source_site_name,
+        )
         user.is_active = True
 
         if project is not None:
+            project.source_site_name = self._preserve_or_set_source_site_name(
+                project.source_site_name,
+                source_site_name,
+            )
             project.is_active = True
             project_users = (
                 db.query(ProjectUser)
@@ -784,17 +1001,31 @@ class AIMEService:
         packet: DataAccountCreatePacketBinding,
         packet_record: AMIEPacket,
     ) -> Project | None:
-        project = self._resolve_project(db, site_project_id=packet.body.ProjectID)
+        source_site_name = self._packet_site_name(packet_record)
+        project = self._resolve_project(
+            db,
+            site_project_id=packet.body.ProjectID,
+            source_site_name=source_site_name,
+        )
         user = self._get_or_create_user_by_person_id(
             db,
             person_id=packet.body.PersonID,
             global_id=packet.body.GlobalID,
+            source_site_name=source_site_name,
         )
 
         user.dn_list = self._merge_dn_list(user.dn_list, packet.body.DnList)
+        user.source_site_name = self._preserve_or_set_source_site_name(
+            user.source_site_name,
+            source_site_name,
+        )
         user.is_active = True
 
         if project is not None:
+            project.source_site_name = self._preserve_or_set_source_site_name(
+                project.source_site_name,
+                source_site_name,
+            )
             project.is_active = True
             project_users = (
                 db.query(ProjectUser)
@@ -898,13 +1129,19 @@ class AIMEService:
         packet_record: AMIEPacket,
     ) -> None:
         body = packet.body
-        user = self._resolve_user(db, person_id=body.PersonID)
+        source_site_name = self._packet_site_name(packet_record)
+        user = self._resolve_user(
+            db,
+            person_id=body.PersonID,
+            source_site_name=source_site_name,
+        )
         if user is None:
             user = self._get_or_create_user_by_person_id(
                 db,
                 person_id=body.PersonID,
                 default_name=self._full_name(body.FirstName, body.MiddleName, body.LastName)
                 or body.PersonID,
+                source_site_name=source_site_name,
             )
 
         full_name = self._full_name(body.FirstName, body.MiddleName, body.LastName)
@@ -917,6 +1154,10 @@ class AIMEService:
         user.department = body.Department or user.department
         user.email = body.Email or user.email
         user.nsf_status_code = body.NsfStatusCode or user.nsf_status_code
+        user.source_site_name = self._preserve_or_set_source_site_name(
+            user.source_site_name,
+            source_site_name,
+        )
 
         if body.ActionType == "add":
             user.dn_list = self._merge_dn_list(user.dn_list, body.DnList)
@@ -974,6 +1215,13 @@ class AIMEService:
                 pu.user_id = keep.id
             else:
                 existing.role = existing.role or pu.role
+                existing.allocated_resource = (
+                    existing.allocated_resource or pu.allocated_resource
+                )
+                if existing.service_units_allocated is None:
+                    existing.service_units_allocated = pu.service_units_allocated
+                if existing.service_units_remaining is None:
+                    existing.service_units_remaining = pu.service_units_remaining
                 existing.remote_site_login = (
                     existing.remote_site_login or pu.remote_site_login
                 )
@@ -990,15 +1238,18 @@ class AIMEService:
         packet_record: AMIEPacket,
     ) -> None:
         body = packet.body
+        source_site_name = self._packet_site_name(packet_record)
         keep_user = self._resolve_user(
             db,
             person_id=body.KeepPersonID,
             global_id=body.KeepGlobalID,
+            source_site_name=source_site_name,
         )
         delete_user = self._resolve_user(
             db,
             person_id=body.DeletePersonID,
             global_id=body.DeleteGlobalID,
+            source_site_name=source_site_name,
         )
 
         if keep_user is None and delete_user is None:
@@ -1007,6 +1258,7 @@ class AIMEService:
                 person_id=body.KeepPersonID,
                 default_name=body.KeepPersonID,
                 global_id=body.KeepGlobalID,
+                source_site_name=source_site_name,
             )
         elif keep_user is None and delete_user is not None:
             keep_user = delete_user
@@ -1017,6 +1269,10 @@ class AIMEService:
         keep_user.person_id = body.KeepPersonID
         if body.KeepGlobalID:
             keep_user.global_id = body.KeepGlobalID
+        keep_user.source_site_name = self._preserve_or_set_source_site_name(
+            keep_user.source_site_name,
+            source_site_name,
+        )
 
         if delete_user is not None and delete_user.id != keep_user.id:
             self._merge_users(db, keep=keep_user, delete=delete_user)
@@ -1039,14 +1295,27 @@ class AIMEService:
         packet_record: AMIEPacket,
     ) -> Project | None:
         body = packet.body
-        resource = body.ResourceList[0] if body.ResourceList else None
+        source_site_name = self._packet_site_name(packet_record)
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
         project = self._resolve_project(
             db,
             site_project_id=body.ProjectID,
             grant_number=body.GrantNumber,
+            source_site_name=source_site_name,
         )
 
         if project is not None:
+            project.source_site_name = self._preserve_or_set_source_site_name(
+                project.source_site_name,
+                source_site_name,
+            )
+            project.allocated_resource = body.AllocatedResource or project.allocated_resource
+            new_su_allocated = self._to_decimal(body.ServiceUnitsAllocated)
+            if new_su_allocated is not None:
+                project.service_units_allocated = new_su_allocated
+            new_su_remaining = self._to_decimal(body.ServiceUnitsRemaining)
+            if new_su_remaining is not None:
+                project.service_units_remaining = new_su_remaining
             project.is_active = False
             # Project inactivation should only affect project-level scheduling
             # priority, not account usability.
@@ -1058,8 +1327,22 @@ class AIMEService:
             packet_id=packet_record.id,
             packet_type=packet.type,
             project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
             person_id=body.PersonID,
             resource=resource,
+            allocated_resource=body.AllocatedResource,
+            service_units_allocated=(
+                str(body.ServiceUnitsAllocated)
+                if body.ServiceUnitsAllocated is not None
+                else None
+            ),
+            service_units_remaining=(
+                str(body.ServiceUnitsRemaining)
+                if body.ServiceUnitsRemaining is not None
+                else None
+            ),
+            start_date=self._to_date(body.StartDate),
+            end_date=self._to_date(body.EndDate),
             message=body.Comment,
             raw_body=body.model_dump(mode="json", by_alias=True),
         )
@@ -1072,13 +1355,26 @@ class AIMEService:
         packet_record: AMIEPacket,
     ) -> Project | None:
         body = packet.body
-        resource = body.ResourceList[0] if body.ResourceList else None
+        source_site_name = self._packet_site_name(packet_record)
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
         project = self._resolve_project(
             db,
             site_project_id=body.ProjectID,
             grant_number=body.GrantNumber,
+            source_site_name=source_site_name,
         )
         if project is not None:
+            project.source_site_name = self._preserve_or_set_source_site_name(
+                project.source_site_name,
+                source_site_name,
+            )
+            project.allocated_resource = body.AllocatedResource or project.allocated_resource
+            new_su_allocated = self._to_decimal(body.ServiceUnitsAllocated)
+            if new_su_allocated is not None:
+                project.service_units_allocated = new_su_allocated
+            new_su_remaining = self._to_decimal(body.ServiceUnitsRemaining)
+            if new_su_remaining is not None:
+                project.service_units_remaining = new_su_remaining
             project.is_active = True
             project_users = (
                 db.query(ProjectUser)
@@ -1090,6 +1386,13 @@ class AIMEService:
             )
             users_seen: set[Any] = set()
             for pu in project_users:
+                pu.allocated_resource = body.AllocatedResource or pu.allocated_resource
+                new_su_allocated = self._to_decimal(body.ServiceUnitsAllocated)
+                if new_su_allocated is not None:
+                    pu.service_units_allocated = new_su_allocated
+                new_su_remaining = self._to_decimal(body.ServiceUnitsRemaining)
+                if new_su_remaining is not None:
+                    pu.service_units_remaining = new_su_remaining
                 pu.is_active = True
                 if pu.user_id:
                     users_seen.add(pu.user_id)
@@ -1103,6 +1406,7 @@ class AIMEService:
                 db,
                 person_id=body.PersonID,
                 default_name=body.PersonID,
+                source_site_name=source_site_name,
             )
             self._assign_user_to_project(
                 db,
@@ -1110,6 +1414,9 @@ class AIMEService:
                 user,
                 role="pi",
                 resource=resource,
+                allocated_resource=body.AllocatedResource,
+                service_units_allocated=self._to_decimal(body.ServiceUnitsAllocated),
+                service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
                 is_active=True,
                 account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
             )
@@ -1120,8 +1427,22 @@ class AIMEService:
             packet_id=packet_record.id,
             packet_type=packet.type,
             project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
             person_id=body.PersonID,
             resource=resource,
+            allocated_resource=body.AllocatedResource,
+            service_units_allocated=(
+                str(body.ServiceUnitsAllocated)
+                if body.ServiceUnitsAllocated is not None
+                else None
+            ),
+            service_units_remaining=(
+                str(body.ServiceUnitsRemaining)
+                if body.ServiceUnitsRemaining is not None
+                else None
+            ),
+            start_date=self._to_date(body.StartDate),
+            end_date=self._to_date(body.EndDate),
             message=body.Comment,
             raw_body=body.model_dump(mode="json", by_alias=True),
         )
@@ -1134,15 +1455,29 @@ class AIMEService:
         packet_record: AMIEPacket,
     ) -> Project | None:
         body = packet.body
-        resource = body.ResourceList[0] if body.ResourceList else None
+        source_site_name = self._packet_site_name(packet_record)
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
         project = self._resolve_project(
             db,
             site_project_id=body.ProjectID,
             grant_number=body.GrantNumber,
+            source_site_name=source_site_name,
         )
-        user = self._resolve_user(db, person_id=body.PersonID)
+        user = self._resolve_user(
+            db,
+            person_id=body.PersonID,
+            source_site_name=source_site_name,
+        )
 
         if project is not None and user is not None:
+            project.source_site_name = self._preserve_or_set_source_site_name(
+                project.source_site_name,
+                source_site_name,
+            )
+            user.source_site_name = self._preserve_or_set_source_site_name(
+                user.source_site_name,
+                source_site_name,
+            )
             project_users = (
                 db.query(ProjectUser)
                 .filter(
@@ -1153,6 +1488,7 @@ class AIMEService:
                 .all()
             )
             for pu in project_users:
+                pu.allocated_resource = body.AllocatedResource or pu.allocated_resource
                 pu.is_active = False
                 result = self.authentik_service.remove_user_from_project(
                     user=user,
@@ -1187,8 +1523,10 @@ class AIMEService:
             packet_id=packet_record.id,
             packet_type=packet.type,
             project_id=body.ProjectID or (project.site_project_id if project else None),
+            grant_number=body.GrantNumber,
             person_id=body.PersonID,
             resource=resource,
+            allocated_resource=body.AllocatedResource,
             message=body.Comment,
             raw_body=body.model_dump(mode="json", by_alias=True),
         )
@@ -1201,25 +1539,33 @@ class AIMEService:
         packet_record: AMIEPacket,
     ) -> Project | None:
         body = packet.body
-        resource = body.ResourceList[0] if body.ResourceList else None
+        source_site_name = self._packet_site_name(packet_record)
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
         project = self._resolve_project(
             db,
             site_project_id=body.ProjectID,
             grant_number=body.GrantNumber,
+            source_site_name=source_site_name,
         )
         user = self._get_or_create_user_by_person_id(
             db,
             person_id=body.PersonID,
             default_name=body.PersonID,
+            source_site_name=source_site_name,
         )
 
         if project is not None:
+            project.source_site_name = self._preserve_or_set_source_site_name(
+                project.source_site_name,
+                source_site_name,
+            )
             project.is_active = True
             self._assign_user_to_project(
                 db,
                 project,
                 user,
                 resource=resource,
+                allocated_resource=body.AllocatedResource,
                 is_active=True,
                 account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
             )
@@ -1233,6 +1579,7 @@ class AIMEService:
                 .all()
             )
             for pu in project_users:
+                pu.allocated_resource = body.AllocatedResource or pu.allocated_resource
                 result = self.authentik_service.ensure_user_in_project(
                     user=user,
                     project=project,
@@ -1259,6 +1606,10 @@ class AIMEService:
                         or namespace_result.get("status")
                         or "unknown",
                     )
+        user.source_site_name = self._preserve_or_set_source_site_name(
+            user.source_site_name,
+            source_site_name,
+        )
         user.is_active = True
 
         self._record_lifecycle_packet(
@@ -1266,12 +1617,411 @@ class AIMEService:
             packet_id=packet_record.id,
             packet_type=packet.type,
             project_id=body.ProjectID or (project.site_project_id if project else None),
+            grant_number=body.GrantNumber,
             person_id=body.PersonID,
             resource=resource,
+            allocated_resource=body.AllocatedResource,
             message=body.Comment,
             raw_body=body.model_dump(mode="json", by_alias=True),
         )
         return project
+
+    def _handle_notify_project_create(
+        self,
+        db: Session,
+        packet: NotifyProjectCreatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        source_site_name = self._packet_site_name(packet_record)
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
+        allocation_record_id = (
+            str(body.RecordID).strip() if body.RecordID is not None else None
+        ) or None
+        project = self._resolve_project(
+            db,
+            grant_number=body.GrantNumber,
+            site_project_id=body.ProjectID,
+            allocation_record_id=allocation_record_id,
+            source_site_name=source_site_name,
+        )
+        if project is None:
+            project = Project(
+                aime_allocation_id=allocation_record_id or body.GrantNumber,
+                name=body.ProjectTitle or body.ProjectID or body.GrantNumber,
+                grant_number=body.GrantNumber,
+                allocation_record_id=allocation_record_id,
+                site_project_id=body.ProjectID,
+                allocation_type=body.AllocationType,
+                request_type=body.RequestType,
+                source_site_name=source_site_name,
+                allocated_resource=body.AllocatedResource,
+                service_units_allocated=self._to_decimal(body.ServiceUnitsAllocated),
+                service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
+                start_date=self._to_date(body.StartDate),
+                end_date=self._to_date(body.EndDate),
+                project_title=body.ProjectTitle,
+                pfos_number=body.PfosNumber,
+                pi_person_id=body.PiPersonID,
+                pi_first_name=body.PiFirstName,
+                pi_middle_name=body.PiMiddleName,
+                pi_last_name=body.PiLastName,
+                pi_email=body.PiEmail,
+                pi_organization=body.PiOrganization,
+                pi_org_code=body.PiOrgCode,
+                pi_department=body.PiDepartment,
+                pi_business_phone_number=body.PiBusinessPhoneNumber,
+                resource_type=resource,
+                cpu_allocated=0,
+                gpu_allocated=0,
+                is_active=True,
+            )
+            db.add(project)
+            db.flush()
+        else:
+            project.grant_number = body.GrantNumber or project.grant_number
+            project.site_project_id = body.ProjectID or project.site_project_id
+            project.allocation_record_id = allocation_record_id or project.allocation_record_id
+            project.allocation_type = body.AllocationType or project.allocation_type
+            project.request_type = body.RequestType or project.request_type
+            project.source_site_name = self._preserve_or_set_source_site_name(
+                project.source_site_name,
+                source_site_name,
+            )
+            project.name = body.ProjectTitle or project.name
+            project.allocated_resource = body.AllocatedResource or project.allocated_resource
+            new_su_allocated = self._to_decimal(body.ServiceUnitsAllocated)
+            if new_su_allocated is not None:
+                project.service_units_allocated = new_su_allocated
+            new_su_remaining = self._to_decimal(body.ServiceUnitsRemaining)
+            if new_su_remaining is not None:
+                project.service_units_remaining = new_su_remaining
+            project.start_date = self._to_date(body.StartDate) or project.start_date
+            project.end_date = self._to_date(body.EndDate) or project.end_date
+            project.project_title = body.ProjectTitle or project.project_title
+            project.pfos_number = body.PfosNumber or project.pfos_number
+            project.pi_person_id = body.PiPersonID or project.pi_person_id
+            project.pi_first_name = body.PiFirstName or project.pi_first_name
+            project.pi_middle_name = body.PiMiddleName or project.pi_middle_name
+            project.pi_last_name = body.PiLastName or project.pi_last_name
+            project.pi_email = body.PiEmail or project.pi_email
+            project.pi_organization = body.PiOrganization or project.pi_organization
+            project.pi_org_code = body.PiOrgCode or project.pi_org_code
+            project.pi_department = body.PiDepartment or project.pi_department
+            project.pi_business_phone_number = (
+                body.PiBusinessPhoneNumber or project.pi_business_phone_number
+            )
+            project.resource_type = resource or project.resource_type
+            project.is_active = True
+
+        if body.PiPersonID:
+            pi_name = self._full_name(body.PiFirstName, body.PiMiddleName, body.PiLastName)
+            pi_user = self._get_or_create_user_by_person_id(
+                db,
+                person_id=body.PiPersonID,
+                default_name=pi_name or body.PiPersonID,
+                global_id=body.PiGlobalID,
+                source_site_name=source_site_name,
+            )
+            pi_user.name = pi_name or pi_user.name
+            pi_user.first_name = body.PiFirstName or pi_user.first_name
+            pi_user.middle_name = body.PiMiddleName or pi_user.middle_name
+            pi_user.last_name = body.PiLastName or pi_user.last_name
+            pi_user.email = body.PiEmail or pi_user.email
+            pi_user.organization = body.PiOrganization or pi_user.organization
+            pi_user.org_code = body.PiOrgCode or pi_user.org_code
+            pi_user.department = body.PiDepartment or pi_user.department
+            pi_user.dn_list = self._merge_dn_list(pi_user.dn_list, body.PiDnList)
+            if body.PiRemoteSiteLogin:
+                pi_user.remote_site_login = body.PiRemoteSiteLogin
+            pi_user.source_site_name = self._preserve_or_set_source_site_name(
+                pi_user.source_site_name,
+                source_site_name,
+            )
+            if (
+                pi_user.service_units_allocated is None
+                and project.service_units_allocated is not None
+            ):
+                pi_user.service_units_allocated = project.service_units_allocated
+            pi_user.is_active = True
+            self._assign_user_to_project(
+                db,
+                project,
+                pi_user,
+                role="pi",
+                resource=resource,
+                allocated_resource=body.AllocatedResource,
+                service_units_allocated=self._to_decimal(body.ServiceUnitsAllocated),
+                service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
+                remote_site_login=body.PiRemoteSiteLogin,
+                is_active=True,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+            )
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+            person_id=body.PiPersonID,
+            resource=resource,
+            allocated_resource=body.AllocatedResource,
+            service_units_allocated=(
+                str(body.ServiceUnitsAllocated)
+                if body.ServiceUnitsAllocated is not None
+                else None
+            ),
+            service_units_remaining=(
+                str(body.ServiceUnitsRemaining)
+                if body.ServiceUnitsRemaining is not None
+                else None
+            ),
+            start_date=self._to_date(body.StartDate),
+            end_date=self._to_date(body.EndDate),
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+
+    def _handle_notify_account_create(
+        self,
+        db: Session,
+        packet: NotifyAccountCreatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        source_site_name = self._packet_site_name(packet_record)
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
+        project = self._resolve_project(
+            db,
+            site_project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+            source_site_name=source_site_name,
+        )
+        if project is not None:
+            project.source_site_name = self._preserve_or_set_source_site_name(
+                project.source_site_name,
+                source_site_name,
+            )
+            project.allocated_resource = body.AllocatedResource or project.allocated_resource
+            new_su_allocated = self._to_decimal(body.ServiceUnitsAllocated)
+            if new_su_allocated is not None:
+                project.service_units_allocated = new_su_allocated
+            new_su_remaining = self._to_decimal(body.ServiceUnitsRemaining)
+            if new_su_remaining is not None:
+                project.service_units_remaining = new_su_remaining
+            project.resource_type = resource or project.resource_type
+            project.is_active = True
+
+        full_name = self._full_name(body.UserFirstName, body.UserMiddleName, body.UserLastName)
+        user = self._resolve_user(
+            db,
+            person_id=body.UserPersonID,
+            email=body.UserEmail,
+            global_id=body.UserGlobalID,
+            source_site_name=source_site_name,
+        )
+        if user is None and body.UserPersonID:
+            user = self._get_or_create_user_by_person_id(
+                db,
+                person_id=body.UserPersonID,
+                default_name=full_name or body.UserPersonID,
+                global_id=body.UserGlobalID,
+                source_site_name=source_site_name,
+            )
+        if user is None:
+            user = User(
+                email=body.UserEmail,
+                name=full_name or body.UserOrganization or body.UserGlobalID or "Unknown User",
+                first_name=body.UserFirstName,
+                middle_name=body.UserMiddleName,
+                last_name=body.UserLastName,
+                person_id=body.UserPersonID,
+                global_id=body.UserGlobalID,
+                organization=body.UserOrganization,
+                org_code=body.UserOrgCode,
+                department=body.UserDepartment,
+                nsf_status_code=body.NsfStatusCode,
+                source_site_name=source_site_name,
+                dn_list=self._merge_dn_list([], body.UserDnList),
+                remote_site_login=body.UserRemoteSiteLogin,
+                is_active=True,
+            )
+            db.add(user)
+            db.flush()
+            logger.info(
+                "Created placeholder user from notify_account_create for ProjectID=%s",
+                body.ProjectID,
+            )
+
+        user.name = full_name or user.name
+        user.first_name = body.UserFirstName or user.first_name
+        user.middle_name = body.UserMiddleName or user.middle_name
+        user.last_name = body.UserLastName or user.last_name
+        user.person_id = body.UserPersonID or user.person_id
+        user.global_id = body.UserGlobalID or user.global_id
+        user.email = body.UserEmail or user.email
+        user.organization = body.UserOrganization or user.organization
+        user.org_code = body.UserOrgCode or user.org_code
+        user.department = body.UserDepartment or user.department
+        user.nsf_status_code = body.NsfStatusCode or user.nsf_status_code
+        user.dn_list = self._merge_dn_list(user.dn_list, body.UserDnList)
+        user.remote_site_login = body.UserRemoteSiteLogin or user.remote_site_login
+        user.source_site_name = self._preserve_or_set_source_site_name(
+            user.source_site_name,
+            source_site_name,
+        )
+        new_user_su_allocated = self._to_decimal(body.ServiceUnitsAllocated)
+        if new_user_su_allocated is not None:
+            user.service_units_allocated = new_user_su_allocated
+        if user.service_units_allocated is None and project is not None:
+            user.service_units_allocated = project.service_units_allocated
+        user.is_active = True
+
+        if project is not None:
+            role = body.RoleList[0] if body.RoleList else None
+            self._assign_user_to_project(
+                db,
+                project,
+                user,
+                role=role,
+                resource=resource,
+                allocated_resource=body.AllocatedResource,
+                service_units_allocated=self._to_decimal(body.ServiceUnitsAllocated),
+                service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
+                remote_site_login=body.UserRemoteSiteLogin,
+                is_active=True,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+            )
+
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+            person_id=body.UserPersonID,
+            resource=resource,
+            allocated_resource=body.AllocatedResource,
+            service_units_allocated=(
+                str(body.ServiceUnitsAllocated)
+                if body.ServiceUnitsAllocated is not None
+                else None
+            ),
+            service_units_remaining=(
+                str(body.ServiceUnitsRemaining)
+                if body.ServiceUnitsRemaining is not None
+                else None
+            ),
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+
+    def _handle_notify_project_inactivate(
+        self,
+        db: Session,
+        packet: NotifyProjectInactivatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+            person_id=body.PersonID,
+            resource=resource,
+            allocated_resource=body.AllocatedResource,
+            service_units_allocated=(
+                str(body.ServiceUnitsAllocated)
+                if body.ServiceUnitsAllocated is not None
+                else None
+            ),
+            service_units_remaining=(
+                str(body.ServiceUnitsRemaining)
+                if body.ServiceUnitsRemaining is not None
+                else None
+            ),
+            start_date=self._to_date(body.StartDate),
+            end_date=self._to_date(body.EndDate),
+            message=body.Comment,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+
+    def _handle_notify_project_reactivate(
+        self,
+        db: Session,
+        packet: NotifyProjectReactivatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+            person_id=body.PersonID,
+            resource=resource,
+            allocated_resource=body.AllocatedResource,
+            service_units_allocated=(
+                str(body.ServiceUnitsAllocated)
+                if body.ServiceUnitsAllocated is not None
+                else None
+            ),
+            service_units_remaining=(
+                str(body.ServiceUnitsRemaining)
+                if body.ServiceUnitsRemaining is not None
+                else None
+            ),
+            start_date=self._to_date(body.StartDate),
+            end_date=self._to_date(body.EndDate),
+            message=body.Comment,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+
+    def _handle_notify_account_inactivate(
+        self,
+        db: Session,
+        packet: NotifyAccountInactivatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+            person_id=body.PersonID,
+            resource=resource,
+            allocated_resource=body.AllocatedResource,
+            message=body.Comment,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
+
+    def _handle_notify_account_reactivate(
+        self,
+        db: Session,
+        packet: NotifyAccountReactivatePacketBinding,
+        packet_record: AMIEPacket,
+    ) -> None:
+        body = packet.body
+        resource = body.AllocatedResource or (body.ResourceList[0] if body.ResourceList else None)
+        self._record_lifecycle_packet(
+            db,
+            packet_id=packet_record.id,
+            packet_type=packet.type,
+            project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+            person_id=body.PersonID,
+            resource=resource,
+            allocated_resource=body.AllocatedResource,
+            message=body.Comment,
+            raw_body=body.model_dump(mode="json", by_alias=True),
+        )
 
     def _handle_inform_transaction_complete(
         self,
@@ -1488,9 +2238,14 @@ class AIMEService:
 
         project: Project | None = None
         project_needs_provision_alert = False
+        source_site_name = self._packet_site_name(packet_record)
 
         if isinstance(bound_packet, RequestProjectCreatePacketBinding):
-            project = self._upsert_project_from_allocation(db, bound_packet.body)
+            project = self._upsert_project_from_allocation(
+                db,
+                bound_packet.body,
+                source_site_name=source_site_name,
+            )
             project_needs_provision_alert = self._mark_project_received_for_provisioning(
                 db,
                 project=project,
@@ -1501,12 +2256,24 @@ class AIMEService:
             project.source_transaction_id = packet_record.transaction_id
             if created:
                 self._record_allocation_packet(db, packet_record.id, bound_packet.body)
-            pi_user = self._get_or_create_user_from_pi(db, bound_packet.body)
+            pi_user = self._get_or_create_user_from_pi(
+                db,
+                bound_packet.body,
+                source_site_name=source_site_name,
+            )
+            if (
+                pi_user.service_units_allocated is None
+                and project.service_units_allocated is not None
+            ):
+                pi_user.service_units_allocated = project.service_units_allocated
             role = bound_packet.body.RoleList[0] if bound_packet.body.RoleList else "pi"
             resource = (
-                bound_packet.body.ResourceList[0]
-                if bound_packet.body.ResourceList
-                else None
+                bound_packet.body.AllocatedResource
+                or (
+                    bound_packet.body.ResourceList[0]
+                    if bound_packet.body.ResourceList
+                    else None
+                )
             )
             self._assign_user_to_project(
                 db,
@@ -1514,12 +2281,23 @@ class AIMEService:
                 pi_user,
                 role=role,
                 resource=resource,
+                allocated_resource=bound_packet.body.AllocatedResource,
+                service_units_allocated=self._to_decimal(
+                    bound_packet.body.ServiceUnitsAllocated
+                ),
+                service_units_remaining=self._to_decimal(
+                    bound_packet.body.ServiceUnitsRemaining
+                ),
                 is_active=True,
                 account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
             )
 
         elif isinstance(bound_packet, RequestAccountCreatePacketBinding):
-            project = self._upsert_project_from_account(db, bound_packet.body)
+            project = self._upsert_project_from_account(
+                db,
+                bound_packet.body,
+                source_site_name=source_site_name,
+            )
             project_needs_provision_alert = self._mark_project_received_for_provisioning(
                 db,
                 project=project,
@@ -1530,12 +2308,24 @@ class AIMEService:
             project.source_transaction_id = packet_record.transaction_id
             if created:
                 self._record_new_user_packet(db, packet_record.id, bound_packet.body)
-            user = self._get_or_create_user_from_account(db, bound_packet.body)
+            user = self._get_or_create_user_from_account(
+                db,
+                bound_packet.body,
+                source_site_name=source_site_name,
+            )
+            if (
+                user.service_units_allocated is None
+                and project.service_units_allocated is not None
+            ):
+                user.service_units_allocated = project.service_units_allocated
             role = bound_packet.body.RoleList[0] if bound_packet.body.RoleList else None
             resource = (
-                bound_packet.body.ResourceList[0]
-                if bound_packet.body.ResourceList
-                else None
+                bound_packet.body.AllocatedResource
+                or (
+                    bound_packet.body.ResourceList[0]
+                    if bound_packet.body.ResourceList
+                    else None
+                )
             )
             self._assign_user_to_project(
                 db,
@@ -1543,6 +2333,13 @@ class AIMEService:
                 user,
                 role=role,
                 resource=resource,
+                allocated_resource=bound_packet.body.AllocatedResource,
+                service_units_allocated=self._to_decimal(
+                    bound_packet.body.ServiceUnitsAllocated
+                ),
+                service_units_remaining=self._to_decimal(
+                    bound_packet.body.ServiceUnitsRemaining
+                ),
                 remote_site_login=bound_packet.body.UserRemoteSiteLogin,
                 is_active=True,
                 account_state=ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET,
@@ -1556,6 +2353,24 @@ class AIMEService:
 
         elif isinstance(bound_packet, DataAccountCreatePacketBinding):
             project = self._handle_data_account_create(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, NotifyProjectCreatePacketBinding):
+            self._handle_notify_project_create(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, NotifyAccountCreatePacketBinding):
+            self._handle_notify_account_create(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, NotifyProjectInactivatePacketBinding):
+            self._handle_notify_project_inactivate(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, NotifyProjectReactivatePacketBinding):
+            self._handle_notify_project_reactivate(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, NotifyAccountInactivatePacketBinding):
+            self._handle_notify_account_inactivate(db, bound_packet, packet_record)
+
+        elif isinstance(bound_packet, NotifyAccountReactivatePacketBinding):
+            self._handle_notify_account_reactivate(db, bound_packet, packet_record)
 
         elif isinstance(bound_packet, RequestUserModifyPacketBinding):
             self._handle_request_user_modify(db, bound_packet, packet_record)

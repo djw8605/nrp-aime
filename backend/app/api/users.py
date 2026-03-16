@@ -73,6 +73,12 @@ def list_users(db: Session = Depends(get_db)) -> list[UserRead]:
                 nsf_status_code=user.nsf_status_code,
                 dn_list=user.dn_list or [],
                 remote_site_login=user.remote_site_login,
+                source_site_name=user.source_site_name,
+                service_units_allocated=(
+                    float(user.service_units_allocated)
+                    if user.service_units_allocated is not None
+                    else None
+                ),
                 is_active=user.is_active,
                 project_count=len(project_names),
                 project_names=project_names,
@@ -116,6 +122,12 @@ def get_user(user_id: uuid.UUID, db: Session = Depends(get_db)) -> UserRead:
         nsf_status_code=user.nsf_status_code,
         dn_list=user.dn_list or [],
         remote_site_login=user.remote_site_login,
+        source_site_name=user.source_site_name,
+        service_units_allocated=(
+            float(user.service_units_allocated)
+            if user.service_units_allocated is not None
+            else None
+        ),
         is_active=user.is_active,
         project_count=len(project_names),
         project_names=project_names,
@@ -150,6 +162,17 @@ def get_user_memberships(
             project_is_active=membership.project.is_active,
             role=membership.role,
             resource=membership.resource,
+            allocated_resource=membership.allocated_resource,
+            membership_service_units_allocated=(
+                float(membership.service_units_allocated)
+                if membership.service_units_allocated is not None
+                else None
+            ),
+            membership_service_units_remaining=(
+                float(membership.service_units_remaining)
+                if membership.service_units_remaining is not None
+                else None
+            ),
             account_remote_site_login=membership.remote_site_login,
             account_is_active=membership.is_active,
             account_state=membership.account_state,
@@ -206,6 +229,9 @@ def get_user_packet_details(
             grant_number=new_user.grant_number,
             project_id=new_user.project_id,
             resource=new_user.resource,
+            allocated_resource=new_user.allocated_resource,
+            service_units_allocated=new_user.service_units_allocated,
+            service_units_remaining=new_user.service_units_remaining,
             user_person_id=new_user.user_person_id,
             user_global_id=new_user.user_global_id,
             user_first_name=new_user.user_first_name,

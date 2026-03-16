@@ -13,6 +13,7 @@ It currently:
 - Supports person-centric magic-link onboarding with Authentik login redirect/callback.
 - Supports a separate administrator portal login flow, with optional dev bypass.
 - Uses admin-triggered project provisioning states (`received` -> `provisioning` -> `ready`/`failed`) for portal-backed namespace/group creation.
+- Supports multi-site AMIE polling across multiple configured site names.
 - Tracks outbound confirmation packets and retry/reprocess operations.
 - Displays project and administrative KPIs, worker status, and packet observability in the Vue UI.
 
@@ -156,6 +157,7 @@ npm run dev
 | `DATABASE_URL` | `postgresql://nrp:nrp@localhost:5432/nrp_aime` | PostgreSQL connection string |
 | `PROMETHEUS_URL` | `https://prometheus.nrp-nautilus.io` | NRP Prometheus endpoint |
 | `AMIE_SITE_NAME` | `NRP` | Site name for AMIE client |
+| `AMIE_SITE_NAMES` | `` | Optional comma-separated AMIE site names to poll one-by-one (for example `NRP,ACCESS`) |
 | `AMIE_API_KEY` | `` | API key for AMIE client |
 | `AMIE_URL` | `https://amieclient.xsede.org/v0.10/` | AMIE API base URL |
 | `AMIE_PROCESSED_CLIENT_STATE` | `nrp-processed` | Client state set after successful ingestion |
@@ -205,7 +207,7 @@ See the full backend configuration reference in [backend/README.md](/Users/derek
 ## Architecture Notes
 
 - The **PostgreSQL database** acts as the central interface between the frontend dashboard and the backend services.
-- The **AIME worker** (`workers/aime_worker.py`) polls AMIE packets, logs each packet at debug level on receipt, and persists both raw packet data and normalized Project + User lifecycle records.
+- The **AIME worker** (`workers/aime_worker.py`) polls one or more AMIE sites (`AMIE_SITE_NAMES`) each cycle (incoming + outgoing queues), logs packet receipt, and persists normalized Project + User lifecycle records tagged with `source_site_name`, `allocated_resource`, and `service_units_*`.
 - The **Usage worker** (`workers/usage_worker.py`) sends periodic usage records to the AMIE Usage API using `amieclient.UsageClient`.
 - The **Prometheus service** queries namespace-scoped pod metrics to report CPU/GPU usage.
 - The **Invite service** (`services/invites/service.py`) provides person-centric magic-link onboarding:

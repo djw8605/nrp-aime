@@ -1,10 +1,10 @@
 """Parsed details for non-allocation/non-account AMIE lifecycle packets."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Date, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,11 +24,17 @@ class AMIELifecyclePacket(Base):
     )
     packet_type: Mapped[str] = mapped_column(String, index=True, nullable=False)
     project_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    grant_number: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     person_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     keep_person_id: Mapped[str | None] = mapped_column(String, nullable=True)
     delete_person_id: Mapped[str | None] = mapped_column(String, nullable=True)
     action_type: Mapped[str | None] = mapped_column(String, nullable=True)
     resource: Mapped[str | None] = mapped_column(String, nullable=True)
+    allocated_resource: Mapped[str | None] = mapped_column(String, nullable=True)
+    service_units_allocated: Mapped[str | None] = mapped_column(String, nullable=True)
+    service_units_remaining: Mapped[str | None] = mapped_column(String, nullable=True)
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     dn_list: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     status_code: Mapped[str | None] = mapped_column(String, nullable=True)
     detail_code: Mapped[str | None] = mapped_column(String, nullable=True)

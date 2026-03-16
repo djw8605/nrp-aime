@@ -44,16 +44,16 @@
       severity="info"
       :closable="false"
     >
-      No projects currently have CPU/GPU allocations. Showing all projects.
+      No projects currently have service-unit allocation data. Showing all projects.
     </Message>
 
     <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
       <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h2 class="m-0 text-lg font-semibold text-slate-800">Projects With Allocations</h2>
+        <h2 class="m-0 text-lg font-semibold text-slate-800">Projects With Service Units</h2>
         <div class="flex items-center gap-2">
           <InputText
             v-model="allocationSearch"
-            placeholder="Search allocation name"
+            placeholder="Search project name"
             class="w-64"
           />
           <Tag
@@ -94,8 +94,8 @@ import ProjectList from '../components/ProjectList.vue'
 
 const projects = ref([])
 const summary = ref({
-  total_cpu_allocated: 0,
-  total_gpu_allocated: 0,
+  active_projects: 0,
+  total_service_units_allocated: 0,
 })
 const loading = ref(false)
 const error = ref(null)
@@ -108,8 +108,8 @@ function formatUsage(value) {
 const projectsWithAllocations = computed(() =>
   projects.value.filter(
     (project) =>
-      Number(project.cpu_allocated || 0) > 0 ||
-      Number(project.gpu_allocated || 0) > 0,
+      Number(project.service_units_allocated || 0) > 0 ||
+      Boolean(project.allocated_resource || project.resource_type),
   ),
 )
 
@@ -119,8 +119,8 @@ const displayProjects = computed(() => {
       ? projectsWithAllocations.value
       : projects.value
   return [...base].sort((a, b) => {
-    const aTotal = Number(a.cpu_allocated || 0) + Number(a.gpu_allocated || 0)
-    const bTotal = Number(b.cpu_allocated || 0) + Number(b.gpu_allocated || 0)
+    const aTotal = Number(a.service_units_allocated || 0)
+    const bTotal = Number(b.service_units_allocated || 0)
     return bTotal - aTotal
   })
 })
@@ -137,20 +137,20 @@ const filteredProjects = computed(() => {
 
 const kpis = computed(() => [
   {
-    label: 'Projects With Allocations',
+    label: 'Projects With SU Data',
     value: projectsWithAllocations.value.length.toLocaleString(),
     icon: 'pi-briefcase',
     iconClass: 'text-sky-600',
   },
   {
-    label: 'CPU Allocated (cores)',
-    value: formatUsage(summary.value.total_cpu_allocated),
-    icon: 'pi-server',
+    label: 'Total Service Units',
+    value: formatUsage(summary.value.total_service_units_allocated),
+    icon: 'pi-database',
     iconClass: 'text-indigo-600',
   },
   {
-    label: 'GPU Allocated',
-    value: formatUsage(summary.value.total_gpu_allocated),
+    label: 'Active Projects',
+    value: formatUsage(summary.value.active_projects),
     icon: 'pi-th-large',
     iconClass: 'text-emerald-600',
   },

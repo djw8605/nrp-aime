@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import logging
 from datetime import UTC, datetime
 
 from amieclient import AMIEClient
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
-from app.config import settings
+from app.config import configured_amie_site_names, settings
 from app.models.amie_new_user_packet import AMIENewUserPacket
 from app.models.amie_packet import AMIEPacket
 from app.models.project_user import ProjectUser
-from app.services.authentik.service import AuthentikService
 from app.services.outbound_packets import OutboundPacketService
 
 logger = logging.getLogger(__name__)
@@ -21,8 +22,8 @@ logger = logging.getLogger(__name__)
 class AccountLifecycleService:
     """Handle account state transitions and AIME confirmation packets."""
 
-    def __init__(self, authentik_service: AuthentikService | None = None) -> None:
-        self.authentik_service = authentik_service or AuthentikService()
+    def __init__(self) -> None:
+        """Initialize account lifecycle service."""
 
     @staticmethod
     def mark_just_received(
@@ -54,6 +55,12 @@ class AccountLifecycleService:
         project_user: ProjectUser,
     ) -> int | None:
         """Find a source request_account_create packet for account confirmation."""
+        source_site_name = self._project_user_site_name(project_user)
+        site_filter = or_(
+            AMIEPacket.remote_site_name == source_site_name,
+            AMIEPacket.originating_site_name == source_site_name,
+            AMIEPacket.local_site_name == source_site_name,
+        )
         if project_user.source_packet_rec_id:
             return int(project_user.source_packet_rec_id)
 
@@ -63,6 +70,7 @@ class AccountLifecycleService:
                 .filter(
                     AMIEPacket.trans_rec_id == project_user.source_trans_rec_id,
                     AMIEPacket.packet_type == "request_account_create",
+                    site_filter,
                 )
                 .order_by(AMIEPacket.packet_rec_id.desc())
                 .first()
@@ -79,6 +87,7 @@ class AccountLifecycleService:
             .filter(
                 AMIENewUserPacket.project_id == project_user.project.site_project_id,
                 AMIENewUserPacket.user_person_id == project_user.user.person_id,
+                site_filter,
             )
             .order_by(AMIEPacket.packet_rec_id.desc())
             .first()
@@ -97,6 +106,14 @@ class AccountLifecycleService:
         if project_user.user.remote_site_login:
             return project_user.user.remote_site_login
         return project_user.user.person_id
+
+    @staticmethod
+    def _project_user_site_name(project_user: ProjectUser) -> str:
+        return (
+            project_user.project.source_site_name
+            or project_user.user.source_site_name
+            or settings.amie_site_name
+        )
 
     def _send_account_confirmation_packet(
         self,
@@ -231,13 +248,9 @@ class AccountLifecycleService:
             )
             return False
 
-    def reconcile_with_authentik(self, db: Session) -> dict[str, int]:
-        """Check pending accounts with Authentik and send AIME confirmations."""
-        review_states = (
-            ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET,
-            ProjectUser.ACCOUNT_STATE_SENT_EMAIL,
-            ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
-        )
+    def reconcile_pending_confirmations(self, db: Session) -> dict[str, int]:
+        """Send AIME confirmations for account rows already marked account_made."""
+        review_states = (ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,)
         review_accounts = (
             db.query(ProjectUser)
             .options(joinedload(ProjectUser.user), joinedload(ProjectUser.project))
@@ -257,51 +270,40 @@ class AccountLifecycleService:
             settings.amie_account_confirmation_enabled and settings.amie_api_key
         )
 
-        amie_client_context = (
-            AMIEClient(
-                site_name=settings.amie_site_name,
-                api_key=settings.amie_api_key,
-                amie_url=settings.amie_url,
-            )
-            if can_send_confirmation
-            else None
-        )
-
-        if amie_client_context is None and settings.amie_account_confirmation_enabled:
+        if not can_send_confirmation and settings.amie_account_confirmation_enabled:
             logger.debug(
                 "AIME confirmation is enabled but AMIE_API_KEY is missing; confirmations will be deferred"
             )
 
-        try:
-            if amie_client_context is not None:
-                amie_client_context.__enter__()
-
+        with ExitStack() as stack:
+            amie_clients_by_site: dict[str, AMIEClient] = {}
+            configured_sites = configured_amie_site_names()
             for project_user in review_accounts:
                 checked += 1
                 try:
                     if (
-                        project_user.account_state
-                        != ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE
-                    ):
-                        exists = self.authentik_service.account_exists(
-                            user=project_user.user,
-                            project=project_user.project,
-                            project_user=project_user,
-                        )
-                        if not exists:
-                            continue
-
-                        self.mark_account_made(project_user)
-                        transitioned += 1
-
-                    if (
-                        amie_client_context is not None
+                        can_send_confirmation
                         and project_user.aime_confirmation_sent_at is None
                     ):
+                        source_site_name = self._project_user_site_name(project_user)
+                        if source_site_name not in amie_clients_by_site:
+                            if source_site_name not in configured_sites:
+                                logger.warning(
+                                    "Account confirmation for project_user=%s uses site=%s not in AMIE_SITE_NAMES; opening ad-hoc client",
+                                    project_user.id,
+                                    source_site_name,
+                                )
+                            amie_clients_by_site[source_site_name] = stack.enter_context(
+                                AMIEClient(
+                                    site_name=source_site_name,
+                                    api_key=settings.amie_api_key,
+                                    amie_url=settings.amie_url,
+                                )
+                            )
                         if self._send_account_confirmation_packet(
                             db,
                             project_user=project_user,
-                            amie_client=amie_client_context,
+                            amie_client=amie_clients_by_site[source_site_name],
                         ):
                             confirmations_sent += 1
                         else:
@@ -315,9 +317,6 @@ class AccountLifecycleService:
                         "Failed account lifecycle reconciliation for project_user=%s",
                         project_user.id,
                     )
-        finally:
-            if amie_client_context is not None:
-                amie_client_context.__exit__(None, None, None)
 
         return {
             "checked": checked,

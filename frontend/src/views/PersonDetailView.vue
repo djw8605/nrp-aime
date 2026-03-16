@@ -55,6 +55,14 @@
               <p class="m-0 mt-2 font-mono font-medium text-slate-700">{{ person.remote_site_login || '—' }}</p>
             </div>
             <div class="rounded-lg bg-slate-50 p-3">
+              <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Source Site</p>
+              <p class="m-0 mt-2 font-mono font-medium text-slate-700">{{ person.source_site_name || '—' }}</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 p-3">
+              <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Service Units</p>
+              <p class="m-0 mt-2 font-medium text-slate-700">{{ formatUnits(person.service_units_allocated) }}</p>
+            </div>
+            <div class="rounded-lg bg-slate-50 p-3">
               <p class="m-0 text-xs uppercase tracking-wide text-slate-500">First Name</p>
               <p class="m-0 mt-2 font-medium text-slate-700">{{ person.first_name || '—' }}</p>
             </div>
@@ -187,6 +195,21 @@
                 <span class="font-mono text-xs">{{ data.resource || '—' }}</span>
               </template>
             </Column>
+            <Column header="Allocated Resource" sortable>
+              <template #body="{ data }">
+                <span class="font-mono text-xs">{{ data.allocated_resource || '—' }}</span>
+              </template>
+            </Column>
+            <Column header="SU Allocated" sortable>
+              <template #body="{ data }">
+                <span class="font-mono text-xs">{{ formatUnits(data.membership_service_units_allocated) }}</span>
+              </template>
+            </Column>
+            <Column header="SU Remaining" sortable>
+              <template #body="{ data }">
+                <span class="font-mono text-xs">{{ formatUnits(data.membership_service_units_remaining) }}</span>
+              </template>
+            </Column>
             <Column header="Project State" sortable>
               <template #body="{ data }">
                 <Tag
@@ -264,6 +287,10 @@
                 <div class="text-xs">
                   <p class="m-0"><strong>Grant:</strong> {{ data.grant_number }}</p>
                   <p class="m-0"><strong>Project:</strong> {{ data.project_id || '—' }}</p>
+                  <p class="m-0"><strong>Resource:</strong> {{ data.resource || '—' }}</p>
+                  <p class="m-0"><strong>Allocated:</strong> {{ data.allocated_resource || '—' }}</p>
+                  <p class="m-0"><strong>SU Alloc:</strong> {{ data.service_units_allocated || '—' }}</p>
+                  <p class="m-0"><strong>SU Remain:</strong> {{ data.service_units_remaining || '—' }}</p>
                 </div>
               </template>
             </Column>
@@ -349,6 +376,13 @@ function formatDate(value) {
   } catch {
     return String(value)
   }
+}
+
+function formatUnits(value) {
+  if (value === null || value === undefined) return '—'
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) return String(value)
+  return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 })
 }
 
 async function sendPersonInvite() {

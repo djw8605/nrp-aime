@@ -122,8 +122,8 @@
               {{ formatCheckedAt(freshness?.last_successful_usage_export_at || freshness?.usage_worker_last_success_at) }}
             </p>
             <p class="m-0">
-              <strong>Authentik Reconcile:</strong>
-              {{ formatCheckedAt(freshness?.last_successful_authentik_reconcile_at) }}
+              <strong>Account Confirmation Sync:</strong>
+              {{ formatCheckedAt(freshness?.last_successful_account_confirmation_sync_at) }}
             </p>
           </div>
         </template>

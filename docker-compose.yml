@@ -30,6 +30,7 @@ services:
       DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
       PROMETHEUS_URL: https://prometheus.nrp-nautilus.io
       AMIE_SITE_NAME: NRP
+      AMIE_SITE_NAMES: ${AMIE_SITE_NAMES:-}
       AUTHENTIK_STUB_AUTO_ACCOUNT_MADE: ${AUTHENTIK_STUB_AUTO_ACCOUNT_MADE:-false}
       APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-change-me}
       FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:5173}
@@ -101,6 +102,7 @@ services:
     environment:
       DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
       AMIE_SITE_NAME: NRP
+      AMIE_SITE_NAMES: ${AMIE_SITE_NAMES:-}
       AUTHENTIK_STUB_AUTO_ACCOUNT_MADE: ${AUTHENTIK_STUB_AUTO_ACCOUNT_MADE:-false}
       ACCOUNTING_STUB_ENABLED: ${ACCOUNTING_STUB_ENABLED:-true}
       ACCOUNTING_STUB_CPU_RATIO: ${ACCOUNTING_STUB_CPU_RATIO:-0.35}
@@ -135,6 +137,7 @@ services:
       DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
       PROMETHEUS_URL: https://prometheus.nrp-nautilus.io
       AMIE_SITE_NAME: NRP
+      AMIE_SITE_NAMES: ${AMIE_SITE_NAMES:-}
       AMIE_API_KEY: ${AMIE_API_KEY:-}
       AMIE_USAGE_URL: ${AMIE_USAGE_URL:-https://usage.xsede.org/api/v1}
       AMIE_USAGE_INTERVAL_MINUTES: 1440

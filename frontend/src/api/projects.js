@@ -75,17 +75,6 @@ export function runAudit() {
 }
 
 /**
- * Compare (and optionally reconcile) Authentik memberships vs database.
- * @param {boolean} applyChanges
- * @returns {Promise<Object>}
- */
-export function syncAuthentikMemberships(applyChanges = false) {
-  return apiClient
-    .post('/audit/authentik-sync', { apply_changes: Boolean(applyChanges) })
-    .then((res) => res.data)
-}
-
-/**
  * Compare (and optionally reconcile) portal namespace memberships vs database.
  * @param {boolean} applyChanges
  * @returns {Promise<Object>}

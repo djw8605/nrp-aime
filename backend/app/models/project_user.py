@@ -2,12 +2,14 @@
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
+    Numeric,
     String,
     UniqueConstraint,
     func,
@@ -52,6 +54,13 @@ class ProjectUser(Base):
     )
     role: Mapped[str | None] = mapped_column(String, nullable=True)
     resource: Mapped[str | None] = mapped_column(String, nullable=True)
+    allocated_resource: Mapped[str | None] = mapped_column(String, nullable=True)
+    service_units_allocated: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
+    service_units_remaining: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
     remote_site_login: Mapped[str | None] = mapped_column(String, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     account_state: Mapped[str] = mapped_column(

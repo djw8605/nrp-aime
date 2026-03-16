@@ -50,6 +50,15 @@ uvicorn app.main:app --reload
   - reprocess/replay controls
   - worker status and freshness metrics
   - outbound packet tracking + retry state
+  - transaction summary checks for expected project/account packet sequences (for example `request_project_create -> notify_project_create -> data_project_create -> inform_transaction_complete` and `request_account_create -> notify_account_create -> data_account_create -> inform_transaction_complete`).
+  - account-create parsing captures canonical fields (`GrantNumber`, optional `ProjectID`, `UserGlobalID`, `UserPersonID`, `UserRemoteSiteLogin`, `AllocatedResource`, `ServiceUnitsAllocated`, `DnList`/`UserDnList`) and preserves full packet bodies in `raw_packet`/`raw_body` for lossless auditing.
+- Multi-site AMIE polling support is enabled:
+  - configure `AMIE_SITE_NAMES` (comma-separated) to poll multiple AMIE sites sequentially each cycle.
+  - worker polls both incoming and outgoing packet queues to preserve full transaction sequences.
+  - projects/users are tagged with `source_site_name`.
+  - projects and project memberships track `allocated_resource`, `service_units_allocated`, and `service_units_remaining` when provided.
+  - users track `service_units_allocated` from account/allocation packets when provided.
+  - project/person identifiers are no longer globally unique in the DB, so overlapping IDs across sites can coexist.
 
 ## Running the AIME Worker
 
@@ -123,7 +132,6 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/audit/run` | Run all cross-service audit checks |
-| `POST` | `/api/v1/audit/authentik-sync` | Audit/reconcile Authentik memberships against DB |
 | `POST` | `/api/v1/audit/portal-sync` | Audit/reconcile portal namespace memberships against DB |
 
 ## Environment Variables
@@ -133,6 +141,7 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `DATABASE_URL` | `postgresql://nrp:nrp@localhost:5432/nrp_aime` | PostgreSQL connection string |
 | `PROMETHEUS_URL` | `https://prometheus.nrp-nautilus.io` | NRP Prometheus endpoint |
 | `AMIE_SITE_NAME` | `NRP` | Site name for AMIE client |
+| `AMIE_SITE_NAMES` | `` | Optional comma-separated AMIE site names to poll one-by-one (for example `NRP,ACCESS`) |
 | `AMIE_API_KEY` | `` | API key for AMIE client |
 | `AMIE_URL` | `https://amieclient.xsede.org/v0.10/` | AMIE API base URL |
 | `AMIE_PROCESSED_CLIENT_STATE` | `nrp-processed` | Client state set after successful ingestion |
@@ -145,7 +154,6 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `AMIE_PACKET_REPROCESS_LOCKOUT_MINUTES` | `30` | Lockout duration once retry limit is reached |
 | `AUTHENTIK_BASE_URL` | `` | Authentik API base URL (for non-stub integration) |
 | `AUTHENTIK_API_TOKEN` | `` | Authentik API token |
-| `AUTHENTIK_STUB_AUTO_ACCOUNT_MADE` | `false` | Dev helper to auto-transition accounts to `account_made` |
 | `AUTHENTIK_AUTHORIZE_URL` | `` | OIDC authorize endpoint for invite login redirect |
 | `AUTHENTIK_CLIENT_ID` | `` | OIDC client ID for invite login redirect |
 | `AUTHENTIK_CLIENT_SECRET` | `` | OIDC client secret for invite callback code exchange |

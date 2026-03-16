@@ -30,6 +30,7 @@ class AMIEAllocationPacket(Base):
     allocation_type: Mapped[str] = mapped_column(String, nullable=False)
     request_type: Mapped[str | None] = mapped_column(String, nullable=True)
     service_units_allocated: Mapped[str] = mapped_column(String, nullable=False)
+    service_units_remaining: Mapped[str | None] = mapped_column(String, nullable=True)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     project_title: Mapped[str | None] = mapped_column(String, nullable=True)

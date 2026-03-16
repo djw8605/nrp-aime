@@ -70,6 +70,16 @@
               <span class="font-mono text-xs">{{ data.person_id || '—' }}</span>
             </template>
           </Column>
+          <Column header="Source Site" sortable>
+            <template #body="{ data }">
+              <span class="font-mono text-xs">{{ data.source_site_name || '—' }}</span>
+            </template>
+          </Column>
+          <Column header="Service Units" sortable>
+            <template #body="{ data }">
+              <span class="font-mono text-xs">{{ formatUnits(data.service_units_allocated) }}</span>
+            </template>
+          </Column>
           <Column header="User State" sortable>
             <template #body="{ data }">
               <Tag
@@ -123,11 +133,20 @@ const filteredPeople = computed(() => {
       person.person_id,
       person.global_id,
       projectNames,
+      person.source_site_name,
+      person.service_units_allocated,
     ]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(query))
   })
 })
+
+function formatUnits(value) {
+  if (value === null || value === undefined) return '—'
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) return String(value)
+  return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 })
+}
 
 async function loadPeople() {
   loading.value = true

@@ -17,7 +17,7 @@ from typing import Any
 
 from amieclient import AMIEClient
 
-from app.config import settings
+from app.config import configured_amie_site_names, settings
 from app.database import SessionLocal
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.aime.service import AIMEService
@@ -48,6 +48,8 @@ def process_packets(
             packet_rec_id = getattr(packet, "packet_rec_id", None) or header.get(
                 "packet_rec_id"
             )
+            outgoing_flag = header.get("outgoing_flag")
+            is_outgoing = str(outgoing_flag).strip().lower() in {"1", "true", "yes"}
             logger.debug(
                 "Received AMIE packet type=%s packet_rec_id=%s trans_rec_id=%s payload=%s",
                 packet_payload.get("type"),
@@ -60,7 +62,7 @@ def process_packets(
                 if result.project is not None:
                     logger.info("Ingested packet for project: %s", result.project.name)
 
-                if result.handled and packet_rec_id is not None:
+                if result.handled and packet_rec_id is not None and not is_outgoing:
                     amie_client.set_packet_client_state(
                         packet_rec_id, settings.amie_processed_client_state
                     )
@@ -105,10 +107,10 @@ def _update_worker_status(
         logger.exception("Failed to update %s status", WORKER_NAME)
 
 
-def reconcile_accounts(lifecycle_svc: AccountLifecycleService) -> dict[str, int]:
-    """Reconcile account lifecycle state from Authentik checks."""
+def sync_account_confirmations(lifecycle_svc: AccountLifecycleService) -> dict[str, int]:
+    """Sync pending account confirmations to AIME."""
     with SessionLocal() as db:
-        return lifecycle_svc.reconcile_with_authentik(db)
+        return lifecycle_svc.reconcile_pending_confirmations(db)
 
 
 def run_worker(poll_interval: int = 60) -> None:
@@ -122,14 +124,20 @@ def run_worker(poll_interval: int = 60) -> None:
             "AMIE_API_KEY is not configured; worker will idle until configured."
         )
 
-    aime_svc = AIMEService(site_name=settings.amie_site_name)
+    site_names = configured_amie_site_names()
+    aime_services = {
+        site_name: AIMEService(site_name=site_name) for site_name in site_names
+    }
     lifecycle_svc = AccountLifecycleService()
-    logger.info("AIME worker started (site=%s)", settings.amie_site_name)
-    amie_client = AMIEClient(
-        site_name=settings.amie_site_name,
-        api_key=settings.amie_api_key,
-        amie_url=settings.amie_url,
-    )
+    logger.info("AIME worker started (sites=%s)", ", ".join(site_names))
+    amie_clients = {
+        site_name: AMIEClient(
+            site_name=site_name,
+            api_key=settings.amie_api_key,
+            amie_url=settings.amie_url,
+        )
+        for site_name in site_names
+    }
 
     _update_worker_status(
         is_active=True,
@@ -140,16 +148,10 @@ def run_worker(poll_interval: int = 60) -> None:
     try:
         while True:
             if not settings.amie_api_key:
-                try:
-                    sync_result = reconcile_accounts(lifecycle_svc)
-                except Exception:  # noqa: BLE001
-                    logger.exception("Account reconciliation failed")
-                    sync_result = {"checked": 0, "transitioned": 0, "confirmations_sent": 0, "failures": 1}
                 _update_worker_status(
                     is_active=True,
                     current_state="waiting_for_api_key",
                     status_message="AMIE_API_KEY is not configured",
-                    state_payload={"account_sync": sync_result},
                 )
                 time.sleep(poll_interval)
                 continue
@@ -158,21 +160,60 @@ def run_worker(poll_interval: int = 60) -> None:
                 _update_worker_status(
                     is_active=True,
                     current_state="polling",
-                    status_message="polling AMIE for incoming packets",
+                    status_message="polling AMIE for incoming/outgoing packets",
                 )
-                packets = amie_client.list_packets(incoming=True).packets
-                packet_count = len(packets)
-                now_iso = datetime.now(UTC).isoformat()
-                if packet_count:
-                    _update_worker_status(
-                        is_active=True,
-                        current_state="processing_packets",
-                        status_message="processing incoming AMIE packets",
-                        state_payload={"packet_count": packet_count},
-                    )
-                    process_packets(aime_svc, amie_client, packets)
+                site_packet_counts: dict[str, int] = {}
+                site_incoming_counts: dict[str, int] = {}
+                site_outgoing_counts: dict[str, int] = {}
+                packet_count = 0
+                for site_name in site_names:
+                    incoming_packets = amie_clients[site_name].list_packets(
+                        incoming=True
+                    ).packets
+                    outgoing_packets = amie_clients[site_name].list_packets(
+                        incoming=False
+                    ).packets
+                    by_packet_rec_id: dict[Any, Any] = {}
+                    passthrough_packets: list[Any] = []
+                    for pkt in [*incoming_packets, *outgoing_packets]:
+                        payload = _packet_to_dict(pkt)
+                        header = payload.get("header", {})
+                        key = getattr(pkt, "packet_rec_id", None) or header.get(
+                            "packet_rec_id"
+                        )
+                        if key is None:
+                            passthrough_packets.append(pkt)
+                            continue
+                        by_packet_rec_id[key] = pkt
+                    packets = list(by_packet_rec_id.values()) + passthrough_packets
+                    site_count = len(packets)
+                    site_incoming_counts[site_name] = len(incoming_packets)
+                    site_outgoing_counts[site_name] = len(outgoing_packets)
+                    site_packet_counts[site_name] = site_count
+                    packet_count += site_count
+                    if site_count:
+                        _update_worker_status(
+                            is_active=True,
+                            current_state="processing_packets",
+                            status_message=(
+                                f"processing AMIE packets (site={site_name})"
+                            ),
+                            state_payload={
+                                "site": site_name,
+                                "site_incoming_packet_count": len(incoming_packets),
+                                "site_outgoing_packet_count": len(outgoing_packets),
+                                "site_packet_count": site_count,
+                            },
+                        )
+                        process_packets(
+                            aime_services[site_name],
+                            amie_clients[site_name],
+                            packets,
+                        )
 
-                sync_result = reconcile_accounts(lifecycle_svc)
+                now_iso = datetime.now(UTC).isoformat()
+
+                sync_result = sync_account_confirmations(lifecycle_svc)
 
                 _update_worker_status(
                     is_active=True,
@@ -180,9 +221,13 @@ def run_worker(poll_interval: int = 60) -> None:
                     status_message="poll cycle completed",
                     state_payload={
                         "last_poll_packet_count": packet_count,
+                        "site_packet_counts": site_packet_counts,
+                        "site_incoming_packet_counts": site_incoming_counts,
+                        "site_outgoing_packet_counts": site_outgoing_counts,
+                        "sites_polled": site_names,
                         "last_successful_poll_at": now_iso,
-                        "last_successful_authentik_reconcile_at": now_iso,
-                        "account_sync": sync_result,
+                        "last_successful_account_confirmation_sync_at": now_iso,
+                        "account_confirmation_sync": sync_result,
                     },
                     mark_success=True,
                 )

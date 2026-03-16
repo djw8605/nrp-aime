@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, func
@@ -71,15 +71,17 @@ class ObservabilityService:
         usage_payload = usage_worker.state_payload if usage_worker and usage_worker.state_payload else {}
 
         last_packet_poll_at = aime_payload.get("last_successful_poll_at")
-        last_authentik_reconcile_at = aime_payload.get(
-            "last_successful_authentik_reconcile_at"
+        last_account_confirmation_sync_at = aime_payload.get(
+            "last_successful_account_confirmation_sync_at"
         )
         last_usage_export_at = usage_payload.get("last_successful_usage_export_at")
 
         return {
             "last_successful_packet_poll_at": last_packet_poll_at,
             "last_successful_usage_export_at": last_usage_export_at,
-            "last_successful_authentik_reconcile_at": last_authentik_reconcile_at,
+            "last_successful_account_confirmation_sync_at": (
+                last_account_confirmation_sync_at
+            ),
             "aime_worker_last_success_at": cls._iso_or_none(
                 aime_worker.last_success_at if aime_worker else None
             ),
@@ -311,6 +313,20 @@ class ObservabilityService:
             pending_actions.append("notify_account_create_if_account_made")
         if "request_project_create" in packet_types:
             pending_actions.append("review_project_create_completion")
+            if "notify_project_create" not in packet_types:
+                pending_actions.append("missing_notify_project_create")
+            if "data_project_create" not in packet_types:
+                pending_actions.append("missing_data_project_create")
+            if "inform_transaction_complete" not in packet_types:
+                pending_actions.append("missing_inform_transaction_complete")
+        if "request_account_create" in packet_types:
+            if "notify_account_create" not in packet_types:
+                pending_actions.append("missing_notify_account_create")
+            if "data_account_create" not in packet_types:
+                pending_actions.append("missing_data_account_create")
+            if "inform_transaction_complete" not in packet_types:
+                pending_actions.append("missing_inform_transaction_complete")
+        pending_actions = list(dict.fromkeys(pending_actions))
 
         reply_eligible = any(
             (pkt.packet_type or "").startswith("request_")
@@ -330,6 +346,9 @@ class ObservabilityService:
                     "id": str(pkt.id),
                     "packet_rec_id": pkt.packet_rec_id,
                     "packet_type": pkt.packet_type,
+                    "outgoing_flag": pkt.outgoing_flag,
+                    "packet_state": pkt.packet_state,
+                    "transaction_state": pkt.transaction_state,
                     "processing_status": pkt.processing_status,
                     "processing_error": pkt.processing_error,
                     "received_at": cls._iso_or_none(pkt.created_at),
@@ -386,36 +405,6 @@ class ObservabilityService:
             )
         else:
             AlertService.resolve(db, alert_key="parse_failures_threshold")
-
-        freshness = cls.data_freshness(db)
-        reconcile_ts = freshness.get("last_successful_authentik_reconcile_at")
-        stale_reconcile = True
-        if reconcile_ts:
-            try:
-                parsed = datetime.fromisoformat(str(reconcile_ts).replace("Z", "+00:00"))
-                stale_reconcile = (
-                    now - parsed
-                    > timedelta(minutes=settings.alert_reconcile_stale_minutes)
-                )
-            except ValueError:
-                stale_reconcile = True
-        if stale_reconcile:
-            sent.append(
-                AlertService.send(
-                    db,
-                    alert_key="authentik_reconcile_stale",
-                    category="authentik",
-                    severity="warn",
-                    title="Authentik reconciliation is stale",
-                    message=(
-                        "No recent successful authentik reconciliation "
-                        f"within {settings.alert_reconcile_stale_minutes} minutes"
-                    ),
-                    payload=freshness,
-                )
-            )
-        else:
-            AlertService.resolve(db, alert_key="authentik_reconcile_stale")
 
         return {"alerts_evaluated_at": now.isoformat(), "results": sent}
 

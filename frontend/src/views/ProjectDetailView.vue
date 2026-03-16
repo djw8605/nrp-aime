@@ -69,7 +69,7 @@
         <section class="space-y-3">
           <h2 class="m-0 flex items-center gap-2 text-xl font-semibold text-slate-700">
             <i class="pi pi-chart-line text-base text-emerald-600"></i>
-            Resource Usage
+            CPU/GPU Usage (Optional)
           </h2>
           <UsageDisplay :usage="usage" :loading="usageLoading" />
         </section>

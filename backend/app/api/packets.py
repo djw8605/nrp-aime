@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Text, cast, func, or_
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import configured_amie_site_names, settings
 from app.database import get_db
 from app.models.amie_packet import AMIEPacket
 from app.schemas.packets import (
@@ -35,6 +35,10 @@ SortBy = Literal[
     "processing_status",
 ]
 SortOrder = Literal["asc", "desc"]
+
+
+def _default_aime_site_name() -> str:
+    return configured_amie_site_names()[0]
 
 
 def _to_read_model(packet: AMIEPacket) -> PacketLogRead:
@@ -234,7 +238,7 @@ def validate_packet(
 ) -> PacketValidationResult:
     """Validate packet shape/type against supported bindings without ingesting."""
     _ = db  # keeps endpoint signature consistent for future DB-aware checks
-    aime_svc = AIMEService(site_name=settings.amie_site_name)
+    aime_svc = AIMEService(site_name=_default_aime_site_name())
     result = aime_svc.validate_packet_dry_run(payload.raw_packet)
     return PacketValidationResult(**result)
 
@@ -246,7 +250,7 @@ def ingest_manual_packet(
 ) -> PacketLogRead:
     """Manually ingest a packet from admin-entered fields."""
     packet_dict = payload.to_packet_dict()
-    aime_svc = AIMEService(site_name=settings.amie_site_name)
+    aime_svc = AIMEService(site_name=_default_aime_site_name())
 
     try:
         result = aime_svc.ingest_packet(
@@ -296,7 +300,13 @@ def reingest_packet(
     row = db.query(AMIEPacket).filter(AMIEPacket.id == packet_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Packet log entry not found")
-    aime_svc = AIMEService(site_name=settings.amie_site_name)
+    site_name = (
+        row.remote_site_name
+        or row.originating_site_name
+        or row.local_site_name
+        or _default_aime_site_name()
+    )
+    aime_svc = AIMEService(site_name=site_name)
     return _run_reingest(db, packet=row, aime_svc=aime_svc)
 
 
@@ -325,9 +335,15 @@ def replay_transaction(
     if not rows:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    aime_svc = AIMEService(site_name=settings.amie_site_name)
     results: list[PacketReprocessResult] = []
     for row in rows:
+        site_name = (
+            row.remote_site_name
+            or row.originating_site_name
+            or row.local_site_name
+            or _default_aime_site_name()
+        )
+        aime_svc = AIMEService(site_name=site_name)
         try:
             results.append(_run_reingest(db, packet=row, aime_svc=aime_svc))
         except HTTPException as exc:

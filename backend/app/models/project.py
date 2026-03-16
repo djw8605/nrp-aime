@@ -34,13 +34,11 @@ class Project(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    aime_allocation_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    aime_allocation_id: Mapped[str] = mapped_column(String, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    grant_number: Mapped[str | None] = mapped_column(String, unique=True, index=True)
-    allocation_record_id: Mapped[str | None] = mapped_column(
-        String, unique=True, index=True
-    )
-    site_project_id: Mapped[str | None] = mapped_column(String, unique=True, index=True)
+    grant_number: Mapped[str | None] = mapped_column(String, index=True)
+    allocation_record_id: Mapped[str | None] = mapped_column(String, index=True)
+    site_project_id: Mapped[str | None] = mapped_column(String, index=True)
     allocation_type: Mapped[str | None] = mapped_column(String, nullable=True)
     request_type: Mapped[str | None] = mapped_column(String, nullable=True)
     source_packet_rec_id: Mapped[int | None] = mapped_column(
@@ -52,7 +50,12 @@ class Project(Base):
     source_transaction_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True, index=True
     )
+    source_site_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    allocated_resource: Mapped[str | None] = mapped_column(String, nullable=True)
     service_units_allocated: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 4), nullable=True
+    )
+    service_units_remaining: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4), nullable=True
     )
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)

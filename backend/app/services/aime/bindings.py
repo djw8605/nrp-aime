@@ -55,6 +55,7 @@ class RequestProjectCreateBodyBinding(BaseModel):
     ResourceList: list[str]
     RecordID: str | int | None
     ServiceUnitsAllocated: str | int | float
+    ServiceUnitsRemaining: str | int | float | None = None
 
     Abstract: str | None = None
     AcademicDegree: list[dict[str, Any]] = Field(default_factory=list)
@@ -111,6 +112,8 @@ class RequestAccountCreateBodyBinding(BaseModel):
     UserOrgCode: str
 
     AllocatedResource: str | None = None
+    ServiceUnitsAllocated: str | int | float | None = None
+    ServiceUnitsRemaining: str | int | float | None = None
     NsfStatusCode: str | None = Field(
         default=None,
         validation_alias=AliasChoices("NsfStatusCode", "UserNsfStatusCode"),
@@ -168,6 +171,118 @@ class DataAccountCreateBodyBinding(BaseModel):
     DnList: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="allow")
+
+
+class NotifyProjectCreateBodyBinding(BaseModel):
+    """Body fields for ``notify_project_create``."""
+
+    GrantNumber: str
+    ProjectID: str
+    ResourceList: list[str]
+
+    AllocationType: str | None = None
+    EndDate: datetime | date | None = None
+    StartDate: datetime | date | None = None
+    RequestType: str | None = None
+    BoardType: str | None = None
+    RecordID: str | int | None = None
+    ProjectTitle: str | None = None
+    ProposalNumber: str | None = None
+    ChargeNumber: str | None = None
+    Abstract: str | None = None
+    AllocatedResource: str | None = None
+    ServiceUnitsAllocated: str | int | float | None = None
+    ServiceUnitsRemaining: str | int | float | None = None
+    PfosNumber: str | None = None
+    Sfos: list[dict[str, Any]] = Field(default_factory=list)
+    AcademicDegree: list[dict[str, Any]] = Field(default_factory=list)
+    PiPersonID: str | None = None
+    PiFirstName: str | None = None
+    PiMiddleName: str | None = None
+    PiLastName: str | None = None
+    PiEmail: str | None = None
+    PiGlobalID: str | None = None
+    PiOrganization: str | None = None
+    PiOrgCode: str | None = None
+    PiDepartment: str | None = None
+    PiTitle: str | None = None
+    PiBusinessPhoneNumber: str | None = None
+    PiCity: str | None = None
+    PiState: str | None = None
+    PiCountry: str | None = None
+    PiStreetAddress: str | None = None
+    PiStreetAddress2: str | None = None
+    PiZip: str | None = None
+    PiDnList: list[str] = Field(default_factory=list)
+    PiRequestedLoginList: list[str] = Field(default_factory=list)
+    PiRemoteSiteLogin: str | None = None
+    SitePersonId: list[dict[str, Any]] = Field(default_factory=list)
+    NsfStatusCode: str | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+    @field_validator("ResourceList")
+    @classmethod
+    def validate_single_resource(cls, value: list[str]) -> list[str]:
+        if len(value) != 1:
+            raise ValueError("ResourceList must contain exactly one entry")
+        return value
+
+
+class NotifyAccountCreateBodyBinding(BaseModel):
+    """Body fields for ``notify_account_create``."""
+
+    ProjectID: str
+    UserPersonID: str | None = None
+    ResourceList: list[str]
+
+    GrantNumber: str | None = None
+    AllocatedResource: str | None = None
+    ServiceUnitsAllocated: str | int | float | None = None
+    ServiceUnitsRemaining: str | int | float | None = None
+    NsfStatusCode: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("NsfStatusCode", "UserNsfStatusCode"),
+    )
+    RoleList: list[str] = Field(default_factory=list)
+    SitePersonId: list[dict[str, Any]] = Field(default_factory=list)
+    UserBusinessPhoneNumber: str | None = None
+    UserBusinessPhoneExtension: str | None = None
+    UserCity: str | None = None
+    UserCountry: str | None = None
+    UserDepartment: str | None = None
+    UserDnList: list[str] = Field(default_factory=list)
+    UserEmail: str | None = None
+    UserFirstName: str | None = None
+    UserGlobalID: str | None = None
+    UserLastName: str | None = None
+    UserMiddleName: str | None = None
+    UserOrganization: str | None = None
+    UserOrgCode: str | None = None
+    UserPasswordAccessEnable: str | int | None = None
+    UserRemoteSiteLogin: str | None = None
+    UserRequestedLoginList: list[str] = Field(default_factory=list)
+    UserState: str | None = None
+    UserStreetAddress: str | None = None
+    UserStreetAddress2: str | None = None
+    UserTitle: str | None = None
+    UserZip: str | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+    @field_validator("ResourceList")
+    @classmethod
+    def validate_single_resource(cls, value: list[str]) -> list[str]:
+        if len(value) != 1:
+            raise ValueError("ResourceList must contain exactly one entry")
+        return value
+
+    @model_validator(mode="after")
+    def validate_user_reference(self):
+        """Require at least one user identifier for account notification."""
+        if not (self.UserPersonID or self.UserGlobalID or self.UserEmail):
+            raise ValueError("One of UserPersonID, UserGlobalID, or UserEmail is required")
+        return self
 
 
 class RequestUserModifyBodyBinding(BaseModel):
@@ -338,7 +453,7 @@ class InformTransactionCompleteBodyBinding(BaseModel):
 
     DetailCode: str | int
     Message: str
-    StatusCode: str
+    StatusCode: str | int
 
     model_config = ConfigDict(extra="allow")
 
@@ -453,11 +568,77 @@ class InformTransactionCompletePacketBinding(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class NotifyProjectCreatePacketBinding(BaseModel):
+    """Typed wrapper for ``notify_project_create`` packets."""
+
+    type: Literal["notify_project_create"]
+    header: AMIEPacketHeaderBinding
+    body: NotifyProjectCreateBodyBinding
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class NotifyAccountCreatePacketBinding(BaseModel):
+    """Typed wrapper for ``notify_account_create`` packets."""
+
+    type: Literal["notify_account_create"]
+    header: AMIEPacketHeaderBinding
+    body: NotifyAccountCreateBodyBinding
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class NotifyProjectInactivatePacketBinding(BaseModel):
+    """Typed wrapper for ``notify_project_inactivate`` packets."""
+
+    type: Literal["notify_project_inactivate"]
+    header: AMIEPacketHeaderBinding
+    body: RequestProjectInactivateBodyBinding
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class NotifyProjectReactivatePacketBinding(BaseModel):
+    """Typed wrapper for ``notify_project_reactivate`` packets."""
+
+    type: Literal["notify_project_reactivate"]
+    header: AMIEPacketHeaderBinding
+    body: RequestProjectReactivateBodyBinding
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class NotifyAccountInactivatePacketBinding(BaseModel):
+    """Typed wrapper for ``notify_account_inactivate`` packets."""
+
+    type: Literal["notify_account_inactivate"]
+    header: AMIEPacketHeaderBinding
+    body: RequestAccountInactivateBodyBinding
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class NotifyAccountReactivatePacketBinding(BaseModel):
+    """Typed wrapper for ``notify_account_reactivate`` packets."""
+
+    type: Literal["notify_account_reactivate"]
+    header: AMIEPacketHeaderBinding
+    body: RequestAccountReactivateBodyBinding
+
+    model_config = ConfigDict(extra="ignore")
+
+
 AMIESupportedPacketBinding = (
     RequestProjectCreatePacketBinding
     | RequestAccountCreatePacketBinding
     | DataProjectCreatePacketBinding
     | DataAccountCreatePacketBinding
+    | NotifyProjectCreatePacketBinding
+    | NotifyAccountCreatePacketBinding
+    | NotifyProjectInactivatePacketBinding
+    | NotifyProjectReactivatePacketBinding
+    | NotifyAccountInactivatePacketBinding
+    | NotifyAccountReactivatePacketBinding
     | RequestUserModifyPacketBinding
     | RequestPersonMergePacketBinding
     | RequestProjectInactivatePacketBinding
@@ -485,6 +666,18 @@ def bind_packet(packet: dict[str, Any] | Any) -> AMIESupportedPacketBinding:
         return DataProjectCreatePacketBinding.model_validate(packet_dict)
     if packet_type == "data_account_create":
         return DataAccountCreatePacketBinding.model_validate(packet_dict)
+    if packet_type == "notify_project_create":
+        return NotifyProjectCreatePacketBinding.model_validate(packet_dict)
+    if packet_type == "notify_account_create":
+        return NotifyAccountCreatePacketBinding.model_validate(packet_dict)
+    if packet_type == "notify_project_inactivate":
+        return NotifyProjectInactivatePacketBinding.model_validate(packet_dict)
+    if packet_type == "notify_project_reactivate":
+        return NotifyProjectReactivatePacketBinding.model_validate(packet_dict)
+    if packet_type == "notify_account_inactivate":
+        return NotifyAccountInactivatePacketBinding.model_validate(packet_dict)
+    if packet_type == "notify_account_reactivate":
+        return NotifyAccountReactivatePacketBinding.model_validate(packet_dict)
     if packet_type == "request_user_modify":
         return RequestUserModifyPacketBinding.model_validate(packet_dict)
     if packet_type == "request_person_merge":

@@ -32,6 +32,10 @@ class ProjectRead(BaseModel):
     source_packet_rec_id: int | None = None
     source_trans_rec_id: int | None = None
     source_transaction_id: int | None = None
+    source_site_name: str | None = None
+    allocated_resource: str | None = None
+    service_units_allocated: float | None = None
+    service_units_remaining: float | None = None
     resource_type: str | None
     cpu_allocated: int
     gpu_allocated: int
@@ -84,3 +88,5 @@ class ProjectSummary(BaseModel):
     total_gpu_allocated: int
     total_cpu_used: float
     total_gpu_used: float
+    projects_with_service_units: int = 0
+    total_service_units_allocated: float = 0.0
