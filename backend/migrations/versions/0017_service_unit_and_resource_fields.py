@@ -1,6 +1,6 @@
 """Add parsed service-unit and allocated-resource fields.
 
-Revision ID: 0017_service_unit_and_resource_fields
+Revision ID: 0017_su_resource_fields
 Revises: 0016_multi_site_tags
 Create Date: 2026-03-16 23:35:00.000000
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "0017_service_unit_and_resource_fields"
+revision = "0017_su_resource_fields"
 down_revision = "0016_multi_site_tags"
 branch_labels = None
 depends_on = None
