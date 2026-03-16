@@ -12,6 +12,7 @@ or integrated into a task queue such as Celery.
 
 import logging
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from amieclient import AMIEClient
@@ -20,6 +21,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.aime.service import AIMEService
+from app.services.observability import ObservabilityService
 from app.services.worker_status import WorkerStatusService
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,8 @@ def _update_worker_status(
     current_state: str,
     status_message: str | None = None,
     state_payload: dict[str, Any] | None = None,
+    mark_success: bool = False,
+    mark_error: bool = False,
 ) -> None:
     """Write worker heartbeat/state to DB."""
     try:
@@ -94,6 +98,8 @@ def _update_worker_status(
                 current_state=current_state,
                 status_message=status_message,
                 state_payload=state_payload,
+                mark_success=mark_success,
+                mark_error=mark_error,
             )
     except Exception:  # noqa: BLE001
         logger.exception("Failed to update %s status", WORKER_NAME)
@@ -156,6 +162,7 @@ def run_worker(poll_interval: int = 60) -> None:
                 )
                 packets = amie_client.list_packets(incoming=True).packets
                 packet_count = len(packets)
+                now_iso = datetime.now(UTC).isoformat()
                 if packet_count:
                     _update_worker_status(
                         is_active=True,
@@ -173,14 +180,20 @@ def run_worker(poll_interval: int = 60) -> None:
                     status_message="poll cycle completed",
                     state_payload={
                         "last_poll_packet_count": packet_count,
+                        "last_successful_poll_at": now_iso,
+                        "last_successful_authentik_reconcile_at": now_iso,
                         "account_sync": sync_result,
                     },
+                    mark_success=True,
                 )
+                with SessionLocal() as alert_db:
+                    ObservabilityService.evaluate_alerts(alert_db)
             except Exception as exc:  # noqa: BLE001
                 _update_worker_status(
                     is_active=True,
                     current_state="error",
                     status_message=str(exc),
+                    mark_error=True,
                 )
                 logger.exception("AIME worker error")
 

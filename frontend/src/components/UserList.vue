@@ -16,7 +16,16 @@
         tableStyle="min-width: 20rem"
         responsiveLayout="scroll"
       >
-        <Column field="name" header="Name" />
+        <Column header="Name">
+          <template #body="{ data }">
+            <router-link
+              :to="{ name: 'person-detail', params: { id: data.id } }"
+              class="text-sky-700 no-underline hover:underline"
+            >
+              {{ data.name }}
+            </router-link>
+          </template>
+        </Column>
         <Column header="Person ID">
           <template #body="{ data }">
             <span class="font-mono text-xs">{{ data.person_id || '—' }}</span>
@@ -109,6 +118,7 @@ import Tag from 'primevue/tag'
 function accountStateSeverity(state) {
   if (state === 'account_made') return 'success'
   if (state === 'sent_email') return 'info'
+  if (state === 'not_sent_email_invite') return 'warning'
   if (state === 'just_received_packet') return 'warning'
   return 'secondary'
 }

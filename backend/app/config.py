@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     amie_usage_gpu_charge_factor: float = 1.0
     amie_usage_default_username: str = "nrp-system"
     amie_account_confirmation_enabled: bool = True
+    amie_packet_reprocess_max_retries: int = 5
+    amie_packet_reprocess_lockout_minutes: int = 30
 
     # Authentik
     authentik_base_url: str = ""
@@ -29,10 +31,45 @@ class Settings(BaseSettings):
     # Dev-only helper for testing lifecycle transitions without real integration.
     authentik_stub_auto_account_made: bool = False
 
+    # Accounting stub data collection
+    accounting_stub_enabled: bool = True
+    accounting_stub_cpu_ratio: float = 0.35
+    accounting_stub_gpu_ratio: float = 0.20
+
+    # Alerts / webhooks
+    alert_webhook_url: str = ""
+    alert_slack_webhook_url: str = ""
+    alert_email_to: str = ""
+    alert_email_from: str = ""
+    alert_smtp_host: str = ""
+    alert_smtp_port: int = 587
+    alert_smtp_username: str = ""
+    alert_smtp_password: str = ""
+    alert_smtp_use_tls: bool = True
+    alert_min_interval_minutes: int = 30
+    alert_worker_stale_seconds: int = 300
+    alert_parse_failures_threshold: int = 10
+    alert_reconcile_stale_minutes: int = 120
+
     # App
     app_name: str = "NRP AIME Allocation Manager"
+    app_secret_key: str = "dev-change-me"
     debug: bool = False
     allowed_origins: list[str] = []
+    frontend_base_url: str = "http://localhost:5173"
+    backend_base_url: str = "http://localhost:8000"
+
+    # Invite / onboarding
+    invite_token_ttl_hours: int = 72
+    invite_state_ttl_minutes: int = 30
+    invite_require_email_match: bool = True
+
+    # Auth callback / login redirect scaffold
+    authentik_authorize_url: str = ""
+    authentik_client_id: str = ""
+    authentik_scope: str = "openid profile email"
+    authentik_redirect_path: str = "/api/v1/invites/callback"
+    authentik_stub_login_email: str = ""
 
     class Config:
         env_file = ".env"

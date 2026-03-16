@@ -28,6 +28,18 @@
           <ProgressBar :value="gpuPercent" :showValue="false" style="height: 0.55rem" />
           <p class="m-0 text-right text-xs text-slate-500">{{ gpuPercent }}% used</p>
         </div>
+
+        <div class="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          <p class="m-0">
+            <strong>Source:</strong> {{ usage.usage_source || 'unknown' }}
+          </p>
+          <p class="m-0">
+            <strong>Last Collected:</strong> {{ formatDate(usage.usage_last_collected_at) }}
+          </p>
+          <p v-if="usage.usage_note" class="m-0">
+            <strong>Note:</strong> {{ usage.usage_note }}
+          </p>
+        </div>
       </div>
     </template>
   </Card>
@@ -60,4 +72,13 @@ const gpuPercent = computed(() => {
   if (!props.usage || props.usage.gpu_allocated === 0) return 0
   return Math.min(100, Math.round((props.usage.gpu_used / props.usage.gpu_allocated) * 100))
 })
+
+function formatDate(value) {
+  if (!value) return 'unknown'
+  try {
+    return new Date(value).toLocaleString()
+  } catch {
+    return String(value)
+  }
+}
 </script>

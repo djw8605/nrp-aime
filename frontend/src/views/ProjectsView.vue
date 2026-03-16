@@ -4,80 +4,20 @@
       <div>
         <h1 class="m-0 text-3xl font-bold tracking-tight text-slate-800">Projects</h1>
         <p class="m-0 mt-1 text-sm text-slate-500">
-          Includes cross-service lifecycle and consistency tracking.
+          Focused view of projects with resource allocations.
         </p>
       </div>
-      <div class="flex items-center gap-3">
-        <Tag :value="`${summary.total_projects} total`" severity="contrast" rounded />
+      <router-link :to="{ name: 'admin' }" class="no-underline">
         <Button
-          icon="pi pi-send"
-          label="Send Demo Packet"
-          severity="success"
-          :loading="demoLoading"
-          class="font-semibold"
-          @click="handleSendDemoPacket"
+          icon="pi pi-cog"
+          label="Admin Dashboard"
+          severity="secondary"
+          outlined
         />
-        <Button
-          icon="pi pi-shield"
-          label="Run Audit"
-          severity="warning"
-          :loading="auditLoading"
-          class="font-semibold"
-          @click="handleRunAudit"
-        />
-      </div>
+      </router-link>
     </div>
 
-    <Message v-if="auditError" severity="error" :closable="false">
-      {{ auditError }}
-    </Message>
-    <Message v-if="demoError" severity="error" :closable="false">
-      {{ demoError }}
-    </Message>
-    <Message v-if="demoMessage" severity="success" :closable="false">
-      {{ demoMessage }}
-    </Message>
-
-    <Card v-if="auditReport" class="border border-slate-200/80 shadow-sm">
-      <template #title>
-        <div class="flex items-center justify-between gap-2">
-          <span class="text-lg font-semibold text-slate-800">Audit Result</span>
-          <Tag
-            :value="auditReport.status.toUpperCase()"
-            :severity="auditSeverity(auditReport.status)"
-            rounded
-          />
-        </div>
-      </template>
-      <template #content>
-        <p class="m-0 mb-3 text-sm text-slate-500">
-          Last checked: {{ formatCheckedAt(auditReport.checked_at) }}
-        </p>
-        <div class="space-y-2">
-          <div
-            v-for="check in auditReport.checks"
-            :key="check.service"
-            class="rounded-xl border border-slate-200 bg-slate-50 p-3"
-          >
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <p class="m-0 text-sm font-semibold uppercase tracking-wide text-slate-700">
-                {{ check.service }}
-              </p>
-              <Tag
-                :value="check.status.toUpperCase()"
-                :severity="auditSeverity(check.status)"
-                rounded
-              />
-            </div>
-            <p class="m-0 mt-1 text-sm text-slate-600">
-              {{ check.summary }}
-            </p>
-          </div>
-        </div>
-      </template>
-    </Card>
-
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
       <Card
         v-for="kpi in kpis"
         :key="kpi.label"
@@ -99,13 +39,45 @@
       </Card>
     </div>
 
-    <div v-if="loading" class="flex items-center justify-center py-20">
-      <ProgressSpinner style="width: 2.8rem; height: 2.8rem" strokeWidth="5" />
-    </div>
-    <Message v-else-if="error" severity="error" :closable="false">
-      {{ error }}
+    <Message
+      v-if="projects.length > 0 && projectsWithAllocations.length === 0"
+      severity="info"
+      :closable="false"
+    >
+      No projects currently have CPU/GPU allocations. Showing all projects.
     </Message>
-    <ProjectList v-else :projects="projects" />
+
+    <div class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="m-0 text-lg font-semibold text-slate-800">Projects With Allocations</h2>
+        <div class="flex items-center gap-2">
+          <InputText
+            v-model="allocationSearch"
+            placeholder="Search allocation name"
+            class="w-64"
+          />
+          <Tag
+            :value="`${filteredProjects.length} shown`"
+            severity="contrast"
+            rounded
+          />
+        </div>
+      </div>
+      <div v-if="loading" class="flex items-center justify-center py-20">
+        <ProgressSpinner style="width: 2.8rem; height: 2.8rem" strokeWidth="5" />
+      </div>
+      <Message v-else-if="error" severity="error" :closable="false">
+        {{ error }}
+      </Message>
+      <Message
+        v-else-if="filteredProjects.length === 0"
+        severity="info"
+        :closable="false"
+      >
+        No projects matched the allocation name search.
+      </Message>
+      <ProjectList v-else :projects="filteredProjects" />
+    </div>
   </div>
 </template>
 
@@ -113,63 +85,78 @@
 import { computed, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
+import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Tag from 'primevue/tag'
-import { fetchProjects, fetchProjectsSummary, runAudit, sendDemoPacket } from '../api/projects'
+import { fetchProjects, fetchProjectsSummary } from '../api/projects'
 import ProjectList from '../components/ProjectList.vue'
 
 const projects = ref([])
 const summary = ref({
-  total_projects: 0,
-  active_projects: 0,
-  total_users: 0,
-  active_users: 0,
-  total_cpu_used: 0,
-  total_gpu_used: 0,
+  total_cpu_allocated: 0,
+  total_gpu_allocated: 0,
 })
 const loading = ref(false)
 const error = ref(null)
-const auditLoading = ref(false)
-const auditError = ref(null)
-const auditReport = ref(null)
-const demoLoading = ref(false)
-const demoError = ref(null)
-const demoMessage = ref(null)
+const allocationSearch = ref('')
 
 function formatUsage(value) {
   return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
-function formatCheckedAt(value) {
-  if (!value) return 'unknown'
-  try {
-    return new Date(value).toLocaleString()
-  } catch {
-    return value
-  }
-}
+const projectsWithAllocations = computed(() =>
+  projects.value.filter(
+    (project) =>
+      Number(project.cpu_allocated || 0) > 0 ||
+      Number(project.gpu_allocated || 0) > 0,
+  ),
+)
 
-function auditSeverity(status) {
-  if (status === 'ok') return 'success'
-  if (status === 'warn') return 'warning'
-  if (status === 'error') return 'danger'
-  return 'contrast'
-}
+const displayProjects = computed(() => {
+  const base =
+    projectsWithAllocations.value.length > 0
+      ? projectsWithAllocations.value
+      : projects.value
+  return [...base].sort((a, b) => {
+    const aTotal = Number(a.cpu_allocated || 0) + Number(a.gpu_allocated || 0)
+    const bTotal = Number(b.cpu_allocated || 0) + Number(b.gpu_allocated || 0)
+    return bTotal - aTotal
+  })
+})
 
-async function handleRunAudit() {
-  auditLoading.value = true
-  auditError.value = null
-  try {
-    auditReport.value = await runAudit()
-  } catch {
-    auditError.value = 'Failed to run audit. Please try again later.'
-  } finally {
-    auditLoading.value = false
-  }
-}
+const filteredProjects = computed(() => {
+  const query = allocationSearch.value.trim().toLowerCase()
+  if (!query) return displayProjects.value
+  return displayProjects.value.filter((project) =>
+    String(project.name || '')
+      .toLowerCase()
+      .includes(query),
+  )
+})
 
-async function loadDashboard() {
+const kpis = computed(() => [
+  {
+    label: 'Projects With Allocations',
+    value: projectsWithAllocations.value.length.toLocaleString(),
+    icon: 'pi-briefcase',
+    iconClass: 'text-sky-600',
+  },
+  {
+    label: 'CPU Allocated (cores)',
+    value: formatUsage(summary.value.total_cpu_allocated),
+    icon: 'pi-server',
+    iconClass: 'text-indigo-600',
+  },
+  {
+    label: 'GPU Allocated',
+    value: formatUsage(summary.value.total_gpu_allocated),
+    icon: 'pi-th-large',
+    iconClass: 'text-emerald-600',
+  },
+])
+
+async function loadProjects() {
   loading.value = true
   error.value = null
   try {
@@ -177,6 +164,7 @@ async function loadDashboard() {
       fetchProjects(),
       fetchProjectsSummary(),
     ])
+
     if (projectsResponse.status === 'fulfilled') {
       projects.value = projectsResponse.value
     } else {
@@ -185,8 +173,6 @@ async function loadDashboard() {
 
     if (summaryResponse.status === 'fulfilled') {
       summary.value = summaryResponse.value
-    } else {
-      summary.value.total_projects = projects.value.length
     }
   } catch {
     error.value = 'Failed to load projects. Please try again later.'
@@ -195,61 +181,7 @@ async function loadDashboard() {
   }
 }
 
-async function handleSendDemoPacket() {
-  demoLoading.value = true
-  demoError.value = null
-  demoMessage.value = null
-  try {
-    const result = await sendDemoPacket('project_and_account')
-    demoMessage.value = `${result.message} (transaction ${result.trans_rec_id})`
-    await loadDashboard()
-  } catch {
-    demoError.value = 'Failed to send demo packet. Please try again later.'
-  } finally {
-    demoLoading.value = false
-  }
-}
-
-const kpis = computed(() => [
-  {
-    label: 'Projects Registered',
-    value: summary.value.total_projects.toLocaleString(),
-    icon: 'pi-folder',
-    iconClass: 'text-sky-600',
-  },
-  {
-    label: 'Active Projects',
-    value: summary.value.active_projects.toLocaleString(),
-    icon: 'pi-check-circle',
-    iconClass: 'text-emerald-600',
-  },
-  {
-    label: 'Total Users',
-    value: summary.value.total_users.toLocaleString(),
-    icon: 'pi-users',
-    iconClass: 'text-cyan-600',
-  },
-  {
-    label: 'Active Users',
-    value: summary.value.active_users.toLocaleString(),
-    icon: 'pi-user-plus',
-    iconClass: 'text-teal-600',
-  },
-  {
-    label: 'CPU Usage (cores)',
-    value: formatUsage(summary.value.total_cpu_used),
-    icon: 'pi-desktop',
-    iconClass: 'text-indigo-600',
-  },
-  {
-    label: 'GPU Usage',
-    value: formatUsage(summary.value.total_gpu_used),
-    icon: 'pi-bolt',
-    iconClass: 'text-amber-600',
-  },
-])
-
 onMounted(async () => {
-  await loadDashboard()
+  await loadProjects()
 })
 </script>

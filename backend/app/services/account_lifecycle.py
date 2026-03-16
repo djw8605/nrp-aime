@@ -13,6 +13,7 @@ from app.models.amie_new_user_packet import AMIENewUserPacket
 from app.models.amie_packet import AMIEPacket
 from app.models.project_user import ProjectUser
 from app.services.authentik.service import AuthentikService
+from app.services.outbound_packets import OutboundPacketService
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ class AccountLifecycleService:
             )
             return False
 
+        outbound = None
         try:
             source_packet = amie_client.get_packet(source_packet_rec_id)
             nac = source_packet.reply_packet(packet_type="notify_account_create")
@@ -137,6 +139,30 @@ class AccountLifecycleService:
             nac.ProjectID = project_id
             nac.ResourceList = [resource]
             nac.UserRemoteSiteLogin = remote_login
+
+            outbound = OutboundPacketService.start_or_resume(
+                db,
+                event_type="notify_account_create",
+                source_packet_rec_id=source_packet_rec_id,
+                source_trans_rec_id=project_user.source_trans_rec_id,
+                source_transaction_id=project_user.source_transaction_id,
+                project_user_id=project_user.id,
+                payload={
+                    "packet_type": "notify_account_create",
+                    "project_id": project_id,
+                    "resource": resource,
+                    "user_person_id": project_user.user.person_id,
+                    "remote_site_login": remote_login,
+                },
+                worker_name="aime-worker",
+            )
+            if OutboundPacketService.is_locked(outbound):
+                logger.warning(
+                    "Outbound notify_account_create is locked for project_user=%s until %s",
+                    project_user.id,
+                    outbound.locked_until,
+                )
+                return False
 
             if project_user.user.person_id:
                 nac.UserPersonID = project_user.user.person_id
@@ -149,7 +175,38 @@ class AccountLifecycleService:
             if project_user.user.org_code:
                 nac.UserOrgCode = project_user.user.org_code
 
-            amie_client.send_packet(nac)
+            send_result = amie_client.send_packet(nac)
+            OutboundPacketService.mark_sent(db, outbound, send_result=send_result)
+            if outbound.outbound_packet_rec_id is not None:
+                try:
+                    outbound_packet = amie_client.get_packet(outbound.outbound_packet_rec_id)
+                    header = (
+                        outbound_packet.get("header")
+                        if isinstance(outbound_packet, dict)
+                        else getattr(outbound_packet, "header", {})
+                    )
+                    transaction_state = (
+                        header.get("transaction_state")
+                        if isinstance(header, dict)
+                        else getattr(header, "transaction_state", None)
+                    )
+                    packet_state = (
+                        header.get("packet_state")
+                        if isinstance(header, dict)
+                        else getattr(header, "packet_state", None)
+                    )
+                    acked = str(transaction_state or "").lower() in {
+                        "complete",
+                        "completed",
+                        "done",
+                    } or str(packet_state or "").lower() in {"processed", "complete"}
+                    OutboundPacketService.mark_acked(db, outbound, acked=acked)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Failed to refresh outbound ack status for outbound_packet_rec_id=%s",
+                        outbound.outbound_packet_rec_id,
+                    )
+
             project_user.aime_confirmation_sent_at = datetime.now(UTC)
             project_user.source_packet_rec_id = source_packet_rec_id
             logger.info(
@@ -158,11 +215,18 @@ class AccountLifecycleService:
                 source_packet_rec_id,
             )
             return True
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Failed to send notify_account_create for project_user=%s source_packet_rec_id=%s",
                 project_user.id,
                 source_packet_rec_id,
+            )
+            OutboundPacketService.safe_mark_failed(
+                db,
+                row=outbound,
+                event_type="notify_account_create",
+                error_message=str(exc),
+                project_user_id=project_user.id,
             )
             return False
 

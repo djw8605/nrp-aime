@@ -64,10 +64,29 @@ export function runAudit() {
 }
 
 /**
+ * Compare (and optionally reconcile) Authentik memberships vs database.
+ * @param {boolean} applyChanges
+ * @returns {Promise<Object>}
+ */
+export function syncAuthentikMemberships(applyChanges = false) {
+  return apiClient
+    .post('/audit/authentik-sync', { apply_changes: Boolean(applyChanges) })
+    .then((res) => res.data)
+}
+
+/**
  * Inject demo packet(s) for interface testing.
  * @param {string} scenario
  * @returns {Promise<Object>}
  */
 export function sendDemoPacket(scenario = 'project_and_account') {
   return apiClient.post('/demo/send', { scenario }).then((res) => res.data)
+}
+
+/**
+ * Refresh stub accounting usage snapshots for all projects.
+ * @returns {Promise<Object>}
+ */
+export function refreshAccountingStubs() {
+  return apiClient.post('/projects/accounting/stub-sync').then((res) => res.data)
 }

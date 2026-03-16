@@ -35,6 +35,10 @@ class ProjectRead(BaseModel):
     resource_type: str | None
     cpu_allocated: int
     gpu_allocated: int
+    cpu_used_current: float | None = None
+    gpu_used_current: float | None = None
+    usage_source: str | None = None
+    usage_last_collected_at: datetime | None = None
     is_active: bool
     kubernetes_namespace: str | None
     created_at: datetime
@@ -57,6 +61,9 @@ class ProjectUsage(BaseModel):
     cpu_used: float
     gpu_allocated: int
     gpu_used: float
+    usage_source: str | None = None
+    usage_last_collected_at: datetime | None = None
+    usage_note: str | None = None
 
 
 class ProjectSummary(BaseModel):
@@ -66,5 +73,7 @@ class ProjectSummary(BaseModel):
     active_projects: int
     total_users: int
     active_users: int
+    total_cpu_allocated: int
+    total_gpu_allocated: int
     total_cpu_used: float
     total_gpu_used: float

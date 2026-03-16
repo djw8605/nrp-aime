@@ -27,11 +27,16 @@ class ProjectUser(Base):
             "project_id", "user_id", "resource", name="uq_project_user_resource"
         ),
     )
-    ACCOUNT_STATE_JUST_RECEIVED_PACKET = "just_received_packet"
+    ACCOUNT_STATE_NOT_SENT_EMAIL_INVITE = "not_sent_email_invite"
+    # Backwards-compatible alias used by existing service code paths.
+    ACCOUNT_STATE_JUST_RECEIVED_PACKET = ACCOUNT_STATE_NOT_SENT_EMAIL_INVITE
+    ACCOUNT_STATE_JUST_RECEIVED_PACKET_LEGACY = "just_received_packet"
     ACCOUNT_STATE_SENT_EMAIL = "sent_email"
     ACCOUNT_STATE_ACCOUNT_MADE = "account_made"
     ACCOUNT_STATES = (
+        ACCOUNT_STATE_NOT_SENT_EMAIL_INVITE,
         ACCOUNT_STATE_JUST_RECEIVED_PACKET,
+        ACCOUNT_STATE_JUST_RECEIVED_PACKET_LEGACY,
         ACCOUNT_STATE_SENT_EMAIL,
         ACCOUNT_STATE_ACCOUNT_MADE,
     )
@@ -50,7 +55,7 @@ class ProjectUser(Base):
     remote_site_login: Mapped[str | None] = mapped_column(String, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     account_state: Mapped[str] = mapped_column(
-        String, nullable=False, default=ACCOUNT_STATE_JUST_RECEIVED_PACKET, index=True
+        String, nullable=False, default=ACCOUNT_STATE_NOT_SENT_EMAIL_INVITE, index=True
     )
     account_state_updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)

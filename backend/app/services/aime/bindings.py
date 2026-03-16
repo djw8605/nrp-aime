@@ -9,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
 
@@ -56,7 +57,10 @@ class RequestProjectCreateBodyBinding(BaseModel):
     ServiceUnitsAllocated: str | int | float
 
     Abstract: str | None = None
+    AcademicDegree: list[dict[str, Any]] = Field(default_factory=list)
+    AllocatedResource: str | None = None
     BoardType: str | None = None
+    ChargeNumber: str | None = None
     PiBusinessPhoneNumber: str | None = None
     PiBusinessPhoneExtension: str | None = None
     PiCity: str | None = None
@@ -64,8 +68,10 @@ class RequestProjectCreateBodyBinding(BaseModel):
     PiDepartment: str | None = None
     PiDnList: list[str] = Field(default_factory=list)
     PiEmail: str | None = None
+    PiGlobalID: str | None = None
     PiMiddleName: str | None = None
     PiPersonID: str | None = None
+    PiTitle: str | None = None
     NsfStatusCode: str | None = Field(
         default=None,
         validation_alias=AliasChoices("NsfStatusCode", "PiNsfStatusCode"),
@@ -77,8 +83,10 @@ class RequestProjectCreateBodyBinding(BaseModel):
     PiZip: str | None = None
     ProjectID: str | None = None
     ProjectTitle: str | None = None
+    ProposalNumber: str | None = None
     RequestType: str | None = None
     RoleList: list[str] = Field(default_factory=list)
+    Sfos: list[dict[str, Any]] = Field(default_factory=list)
     SitePersonId: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="allow")
@@ -126,6 +134,7 @@ class RequestAccountCreateBodyBinding(BaseModel):
     UserStreetAddress: str | None = None
     UserStreetAddress2: str | None = None
     UserTitle: str | None = None
+    UserPasswordAccessEnable: str | int | None = None
     UserZip: str | None = None
 
     model_config = ConfigDict(extra="allow")
@@ -142,6 +151,7 @@ class RequestAccountCreateBodyBinding(BaseModel):
 class DataProjectCreateBodyBinding(BaseModel):
     """Body fields for ``data_project_create``."""
 
+    GlobalID: str | None = None
     PersonID: str
     ProjectID: str
     DnList: list[str] = Field(default_factory=list)
@@ -152,6 +162,7 @@ class DataProjectCreateBodyBinding(BaseModel):
 class DataAccountCreateBodyBinding(BaseModel):
     """Body fields for ``data_account_create``."""
 
+    GlobalID: str | None = None
     PersonID: str
     ProjectID: str
     DnList: list[str] = Field(default_factory=list)
@@ -165,7 +176,7 @@ class RequestUserModifyBodyBinding(BaseModel):
     ActionType: str = Field(validation_alias=AliasChoices("ActionType", "Actiontype"))
     PersonID: str
 
-    AcademicDegree: str | None = None
+    AcademicDegree: list[dict[str, Any]] | str | None = None
     BusinessPhoneComment: str | None = None
     BusinessPhoneExtension: str | None = None
     BusinessPhoneNumber: str | None = None
@@ -223,6 +234,7 @@ class RequestProjectInactivateBodyBinding(BaseModel):
     Comment: str | None = None
     AllocatedResource: str | None = None
     GrantNumber: str | None = None
+    PersonID: str | None = None
     StartDate: datetime | date | None = None
     EndDate: datetime | date | None = None
     ServiceUnitsAllocated: str | int | float | None = None
@@ -269,8 +281,10 @@ class RequestAccountInactivateBodyBinding(BaseModel):
     """Body fields for ``request_account_inactivate``."""
 
     PersonID: str
-    ProjectID: str
+    ProjectID: str | None = None
+    GrantNumber: str | None = None
     ResourceList: list[str]
+    AllocatedResource: str | None = None
     Comment: str | None = None
 
     model_config = ConfigDict(extra="allow")
@@ -282,14 +296,23 @@ class RequestAccountInactivateBodyBinding(BaseModel):
         if len(value) != 1:
             raise ValueError("ResourceList must contain exactly one entry")
         return value
+
+    @model_validator(mode="after")
+    def validate_project_reference(self):
+        """Require at least one project identifier."""
+        if not (self.ProjectID or self.GrantNumber):
+            raise ValueError("Either ProjectID or GrantNumber is required")
+        return self
 
 
 class RequestAccountReactivateBodyBinding(BaseModel):
     """Body fields for ``request_account_reactivate``."""
 
     PersonID: str
-    ProjectID: str
+    ProjectID: str | None = None
+    GrantNumber: str | None = None
     ResourceList: list[str]
+    AllocatedResource: str | None = None
     Comment: str | None = None
 
     model_config = ConfigDict(extra="allow")
@@ -301,6 +324,13 @@ class RequestAccountReactivateBodyBinding(BaseModel):
         if len(value) != 1:
             raise ValueError("ResourceList must contain exactly one entry")
         return value
+
+    @model_validator(mode="after")
+    def validate_project_reference(self):
+        """Require at least one project identifier."""
+        if not (self.ProjectID or self.GrantNumber):
+            raise ValueError("Either ProjectID or GrantNumber is required")
+        return self
 
 
 class InformTransactionCompleteBodyBinding(BaseModel):
@@ -366,7 +396,7 @@ class RequestUserModifyPacketBinding(BaseModel):
 class RequestPersonMergePacketBinding(BaseModel):
     """Typed wrapper for ``request_person_merge`` packets."""
 
-    type: Literal["request_person_merge"]
+    type: Literal["request_person_merge", "request_user_merge"]
     header: AMIEPacketHeaderBinding
     body: RequestPersonMergeBodyBinding
 
@@ -458,6 +488,8 @@ def bind_packet(packet: dict[str, Any] | Any) -> AMIESupportedPacketBinding:
     if packet_type == "request_user_modify":
         return RequestUserModifyPacketBinding.model_validate(packet_dict)
     if packet_type == "request_person_merge":
+        return RequestPersonMergePacketBinding.model_validate(packet_dict)
+    if packet_type == "request_user_merge":
         return RequestPersonMergePacketBinding.model_validate(packet_dict)
     if packet_type == "request_project_inactivate":
         return RequestProjectInactivatePacketBinding.model_validate(packet_dict)

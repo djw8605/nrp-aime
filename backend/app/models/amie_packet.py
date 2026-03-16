@@ -19,6 +19,9 @@ class AMIEPacket(Base):
     PROCESSING_STATUS_PROCESSED = "processed"
     PROCESSING_STATUS_UNPROCESSED = "unprocessed"
     PROCESSING_STATUS_ERROR = "error"
+    INGEST_SOURCE_WORKER = "worker"
+    INGEST_SOURCE_MANUAL = "manual"
+    INGEST_SOURCE_REPROCESS = "reprocess"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -51,6 +54,23 @@ class AMIEPacket(Base):
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    ingest_source: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        index=True,
+        default=INGEST_SOURCE_WORKER,
+        server_default=text("'worker'"),
+    )
+    reprocess_attempt_count: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    reprocess_last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reprocess_locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reprocess_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_packet: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

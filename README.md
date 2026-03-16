@@ -4,7 +4,15 @@ NRP AIME Allocation Manager — a full-stack web application for managing alloca
 
 ## Overview
 
-This system interfaces with the AIME allocation and accounting system. It receives allocation packets and new-user packets, creates projects, assigns users, and displays usage information from the NRP accounting system.
+This system interfaces with the AIME allocation and accounting system.
+
+It currently:
+- Receives and stores AMIE packets (including packet logs, status, and parse errors).
+- Ingests project + account lifecycle packets into normalized `projects`, `users`, and `project_users`.
+- Tracks account lifecycle state (`not_sent_email_invite` -> `sent_email` -> `account_made`).
+- Supports person-centric magic-link onboarding with Authentik login redirect/callback.
+- Tracks outbound confirmation packets and retry/reprocess operations.
+- Displays project and administrative KPIs, worker status, and packet observability in the Vue UI.
 
 ## Tech Stack
 
@@ -31,8 +39,11 @@ nrp-aime/
 │   │   ├── api/              # FastAPI route handlers
 │   │   └── services/
 │   │       ├── aime/         # AMIE packet ingestion
+│   │       ├── invites/      # Magic-link invite + callback flow
+│   │       ├── email/        # Invite email template + sending stub
 │   │       ├── prometheus/   # NRP metrics queries
-│   │       └── authentik/    # Account email stub
+│   │       ├── authentik/    # Authentik group/login integration (stubbed API calls)
+│   │       └── kubernetes/   # Namespace/account provisioning stubs
 │   ├── migrations/           # Alembic migrations
 │   ├── workers/              # Background task workers
 │   ├── requirements.txt
@@ -113,12 +124,18 @@ npm run dev
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/v1/projects/` | List all projects |
+| GET | `/api/v1/projects/summary` | Top-level project/user/usage KPI summary |
 | GET | `/api/v1/projects/{id}` | Get project details |
 | GET | `/api/v1/projects/{id}/users` | List users for a project |
 | GET | `/api/v1/projects/{id}/usage` | Get CPU/GPU usage from Prometheus |
-| POST | `/api/v1/projects/{id}/send-account-email` | Queue account creation emails |
-| POST | `/api/v1/users/` | Create a user |
+| POST | `/api/v1/projects/{id}/send-account-email` | Send person-scoped invite links for project users |
+| POST | `/api/v1/users/{id}/invites` | Send invite link for a person |
+| GET | `/api/v1/invites/preview` | Validate invite token and return safe preview |
+| GET | `/api/v1/invites/accept` | Start Authentik login redirect for invite token |
+| GET | `/api/v1/invites/callback` | Complete invite callback and account binding |
+| GET | `/api/v1/users/` | List people/users |
 | GET | `/api/v1/users/{id}` | Get user details |
+| GET | `/api/v1/packets/logs` | Packet log table (search/sort/pagination) |
 | GET | `/healthz` | Health check |
 
 ## Environment Variables
@@ -135,15 +152,32 @@ npm run dev
 | `AMIE_USAGE_INTERVAL_MINUTES` | `1440` | Usage export interval and record bucket size (once daily) |
 | `AMIE_USAGE_GPU_CHARGE_FACTOR` | `1.0` | Multiplier applied to GPU usage when computing charge |
 | `AMIE_USAGE_DEFAULT_USERNAME` | `nrp-system` | Fallback username for usage records when no login is mapped |
+| `APP_SECRET_KEY` | `dev-change-me` | Secret used for signed invite state and token hashing pepper |
+| `FRONTEND_BASE_URL` | `http://localhost:5173` | Base URL used for invite accept/success/error redirects |
+| `BACKEND_BASE_URL` | `http://localhost:8000` | Base URL used for Authentik callback URL generation |
+| `INVITE_TOKEN_TTL_HOURS` | `72` | Invite link expiration in hours |
+| `INVITE_STATE_TTL_MINUTES` | `30` | Auth redirect signed-state expiration |
+| `INVITE_REQUIRE_EMAIL_MATCH` | `true` | Require authenticated email to match invited email |
+| `AUTHENTIK_AUTHORIZE_URL` | `` | OIDC authorize endpoint (when real Authentik login redirect is enabled) |
+| `AUTHENTIK_CLIENT_ID` | `` | OIDC client ID for login redirect |
+| `AUTHENTIK_SCOPE` | `openid profile email` | OIDC scopes for Authentik login |
+| `AUTHENTIK_REDIRECT_PATH` | `/api/v1/invites/callback` | Backend callback path for invite flow |
+| `AUTHENTIK_STUB_LOGIN_EMAIL` | `` | Stub callback email for local testing without real OIDC |
 | `DEBUG` | `false` | Enable debug mode |
+
+See the full backend configuration reference in [backend/README.md](/Users/derekweitzel/git/nrp-aime/backend/README.md).
 
 ## Architecture Notes
 
 - The **PostgreSQL database** acts as the central interface between the frontend dashboard and the backend services.
-- The **AIME worker** (`workers/aime_worker.py`) polls AMIE for `request_project_create` and `request_account_create` packets and persists both raw packet data and normalized Project + User records.
+- The **AIME worker** (`workers/aime_worker.py`) polls AMIE packets, logs each packet at debug level on receipt, and persists both raw packet data and normalized Project + User lifecycle records.
 - The **Usage worker** (`workers/usage_worker.py`) sends periodic usage records to the AMIE Usage API using `amieclient.UsageClient`.
 - The **Prometheus service** queries namespace-scoped pod metrics to report CPU/GPU usage.
-- The **Authentik service** (`services/authentik/service.py`) is currently a stub that logs email requests; it will be wired to Authentik flows in a future iteration.
+- The **Invite service** (`services/invites/service.py`) provides person-centric magic-link onboarding:
+  - admin sends invite from person page
+  - invite link opens portal landing page
+  - user is redirected to Authentik login
+  - callback finalizes account binding, group membership, and Kubernetes access (stub)
 
 ## Image Build Workflow
 

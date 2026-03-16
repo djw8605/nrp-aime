@@ -15,12 +15,6 @@
             Allocation ID: {{ project.aime_allocation_id }}
           </p>
         </div>
-        <Button
-          icon="pi pi-send"
-          label="Send Account Creation Email"
-          size="small"
-          @click="$emit('send-email')"
-        />
       </div>
     </template>
     <template #content>
@@ -68,7 +62,6 @@
 </template>
 
 <script setup>
-import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Divider from 'primevue/divider'
 import Tag from 'primevue/tag'
@@ -79,6 +72,4 @@ defineProps({
     required: true,
   },
 })
-
-defineEmits(['send-email'])
 </script>

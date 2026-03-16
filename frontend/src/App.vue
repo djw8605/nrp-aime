@@ -17,12 +17,39 @@
           <router-link to="/" class="no-underline">
             <Button label="Projects" size="small" text />
           </router-link>
+          <router-link :to="{ name: 'people' }" class="no-underline">
+            <Button
+              label="People"
+              icon="pi pi-user"
+              size="small"
+              severity="secondary"
+              outlined
+            />
+          </router-link>
+          <router-link :to="{ name: 'admin' }" class="no-underline">
+            <Button
+              label="Admin"
+              icon="pi pi-cog"
+              size="small"
+              severity="secondary"
+              outlined
+            />
+          </router-link>
           <router-link :to="{ name: 'packet-logs' }" class="no-underline">
             <Button
               label="Packet Log"
               icon="pi pi-list-check"
               size="small"
               severity="contrast"
+              outlined
+            />
+          </router-link>
+          <router-link :to="{ name: 'manual-packet-input' }" class="no-underline">
+            <Button
+              label="Manual Packet Input"
+              icon="pi pi-pencil"
+              size="small"
+              severity="secondary"
               outlined
             />
           </router-link>

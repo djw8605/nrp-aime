@@ -20,6 +20,8 @@ class WorkerStatusService:
         current_state: str,
         status_message: str | None = None,
         state_payload: dict[str, Any] | None = None,
+        mark_success: bool = False,
+        mark_error: bool = False,
     ) -> WorkerStatus:
         status = (
             db.query(WorkerStatus)
@@ -35,6 +37,11 @@ class WorkerStatusService:
         status.status_message = status_message
         status.state_payload = state_payload
         status.last_heartbeat = datetime.now(UTC)
+        if mark_success:
+            status.last_success_at = status.last_heartbeat
+        if mark_error:
+            status.last_error_at = status.last_heartbeat
+            status.last_error_message = status_message
 
         db.commit()
         return status

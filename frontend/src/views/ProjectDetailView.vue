@@ -19,12 +19,7 @@
     </Message>
 
     <template v-else-if="project">
-      <ProjectDetail
-        :project="project"
-        @send-email="handleSendEmail"
-      />
-
-      <Notification :message="notification" @dismiss="notification = null" />
+      <ProjectDetail :project="project" />
 
       <div class="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
         <section class="space-y-3">
@@ -32,6 +27,9 @@
             <i class="pi pi-users text-base text-sky-600"></i>
             Users
           </h2>
+          <Message severity="info" :closable="false">
+            Invite links are managed per person on the People page.
+          </Message>
           <UserList :users="users" :loading="usersLoading" />
         </section>
         <section class="space-y-3">
@@ -51,8 +49,7 @@ import { onMounted, ref } from 'vue'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
-import { fetchProject, fetchProjectUsage, fetchProjectUsers, sendAccountEmail } from '../api/projects'
-import Notification from '../components/Notification.vue'
+import { fetchProject, fetchProjectUsage, fetchProjectUsers } from '../api/projects'
 import ProjectDetail from '../components/ProjectDetail.vue'
 import UsageDisplay from '../components/UsageDisplay.vue'
 import UserList from '../components/UserList.vue'
@@ -66,17 +63,6 @@ const loading = ref(false)
 const usersLoading = ref(false)
 const usageLoading = ref(false)
 const error = ref(null)
-const notification = ref(null)
-
-async function handleSendEmail() {
-  try {
-    const result = await sendAccountEmail(props.id)
-    notification.value = `Queued ${result.queued ?? 0} account emails (${result.skipped ?? 0} skipped).`
-    users.value = await fetchProjectUsers(props.id)
-  } catch (err) {
-    notification.value = 'Failed to send emails. Please try again.'
-  }
-}
 
 onMounted(async () => {
   loading.value = true

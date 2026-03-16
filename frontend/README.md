@@ -23,5 +23,13 @@ The backend API must be running at `http://localhost:8000` (or configure `VITE_A
 
 ## Pages
 
-- **/** — Projects list
+- **/** — Projects list and top KPIs
 - **/projects/:id** — Project detail with users and resource usage
+- **/people** — People directory (searchable)
+- **/people/:id** — Person detail and person-scoped invite action
+- **/invite/accept** — Magic-link landing page with account summary
+- **/invite/success** — Account-created success page with getting-started cards
+- **/invite/error** — Invite flow error page
+- **/admin** — Operational/admin dashboards
+- **/packets/logs** — Packet log table (search/sort/paginated)
+- **/packets/manual** — Manual packet input form

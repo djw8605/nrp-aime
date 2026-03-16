@@ -19,6 +19,9 @@
     <Message v-if="error" severity="error" :closable="false">
       {{ error }}
     </Message>
+    <Message v-if="message" severity="success" :closable="false">
+      {{ message }}
+    </Message>
 
     <Card class="border border-slate-200/80 shadow-sm">
       <template #content>
@@ -80,7 +83,18 @@
           <Column field="packet_type" header="Type" sortable />
           <Column field="packet_rec_id" header="Packet Rec ID" sortable />
           <Column field="trans_rec_id" header="Trans Rec ID" sortable />
-          <Column field="transaction_id" header="Transaction ID" sortable />
+          <Column field="transaction_id" header="Transaction ID" sortable>
+            <template #body="{ data }">
+              <Button
+                v-if="data.transaction_id"
+                :label="String(data.transaction_id)"
+                text
+                size="small"
+                @click="openTransaction(data.transaction_id)"
+              />
+              <span v-else>—</span>
+            </template>
+          </Column>
           <Column field="processed_at" header="Processed At" sortable>
             <template #body="{ data }">
               {{ formatDate(data.processed_at) }}
@@ -113,6 +127,21 @@
                   text
                   @click="openPacket(data)"
                 />
+                <Button
+                  icon="pi pi-refresh"
+                  label="Re-ingest"
+                  size="small"
+                  text
+                  :loading="reingestInProgressId === data.id"
+                  @click="handleReingest(data.id)"
+                />
+                <Button
+                  icon="pi pi-pencil"
+                  label="Manual Input"
+                  size="small"
+                  text
+                  @click="openManualInput(data)"
+                />
               </div>
             </template>
           </Column>
@@ -136,6 +165,13 @@
         <div class="rounded-lg border border-slate-200 bg-slate-950 p-3">
           <pre class="m-0 overflow-auto text-xs leading-relaxed text-slate-100">{{ prettyPacket(selectedPacket.raw_packet) }}</pre>
         </div>
+        <div class="flex justify-end">
+          <Button
+            icon="pi pi-pencil"
+            label="Use For Manual Input"
+            @click="openManualInput(selectedPacket)"
+          />
+        </div>
       </div>
     </Dialog>
   </div>
@@ -143,6 +179,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Column from 'primevue/column'
@@ -151,14 +188,18 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import Tag from 'primevue/tag'
-import { fetchPacketLogs } from '../api/packets'
+import { fetchPacketLogs, reingestPacket } from '../api/packets'
+
+const router = useRouter()
 
 const packets = ref([])
 const totalRecords = ref(0)
 const loading = ref(false)
 const error = ref(null)
+const message = ref(null)
 const packetDialogVisible = ref(false)
 const selectedPacket = ref(null)
+const reingestInProgressId = ref(null)
 
 const page = ref(1)
 const pageSize = ref(100)
@@ -208,6 +249,38 @@ function statusSeverity(status) {
 function openPacket(packet) {
   selectedPacket.value = packet
   packetDialogVisible.value = true
+}
+
+function openTransaction(transactionId) {
+  if (!transactionId) return
+  router.push({
+    name: 'transaction-detail',
+    params: { transactionId: String(transactionId) },
+  })
+}
+
+function openManualInput(packet) {
+  if (!packet?.id) return
+  router.push({
+    name: 'manual-packet-input',
+    query: { packetId: packet.id },
+  })
+}
+
+async function handleReingest(packetId) {
+  if (!packetId) return
+  reingestInProgressId.value = packetId
+  error.value = null
+  message.value = null
+  try {
+    const result = await reingestPacket(packetId)
+    message.value = result.detail || `Packet ${result.packet_rec_id} re-ingested.`
+    await loadPackets()
+  } catch (err) {
+    error.value = err?.response?.data?.detail || 'Failed to re-ingest packet.'
+  } finally {
+    reingestInProgressId.value = null
+  }
 }
 
 async function loadPackets() {

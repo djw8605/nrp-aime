@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    event,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -76,9 +77,23 @@ class Project(Base):
     project_users: Mapped[list["ProjectUser"]] = relationship(
         "ProjectUser", back_populates="project", cascade="all, delete-orphan"
     )
+    invites: Mapped[list["ProjectInvite"]] = relationship(
+        "ProjectInvite",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
     usage_snapshot: Mapped["ProjectUsageSnapshot | None"] = relationship(
         "ProjectUsageSnapshot", back_populates="project", uselist=False
     )
 
     def __repr__(self) -> str:
         return f"<Project id={self.id} name={self.name!r}>"
+
+
+@event.listens_for(Project, "before_delete")
+def _prevent_project_delete(_mapper, _connection, target: Project) -> None:
+    """Disallow hard deletion; projects are inactivated instead."""
+    raise ValueError(
+        f"Project deletion is not allowed (project_id={target.id}). "
+        "Set is_active=False instead."
+    )

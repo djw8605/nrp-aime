@@ -6,10 +6,12 @@ the AMIE Usage API.
 
 import logging
 import time
+from datetime import UTC, datetime
 
 from app.config import settings
 from app.database import SessionLocal
 from app.services.aime.usage_service import AMIEUsageService
+from app.services.observability import ObservabilityService
 from app.services.worker_status import WorkerStatusService
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,8 @@ def _update_worker_status(
     current_state: str,
     status_message: str | None = None,
     state_payload: dict | None = None,
+    mark_success: bool = False,
+    mark_error: bool = False,
 ) -> None:
     """Write worker heartbeat/state to DB."""
     try:
@@ -33,6 +37,8 @@ def _update_worker_status(
                 current_state=current_state,
                 status_message=status_message,
                 state_payload=state_payload,
+                mark_success=mark_success,
+                mark_error=mark_error,
             )
     except Exception:  # noqa: BLE001
         logger.exception("Failed to update %s status", WORKER_NAME)
@@ -70,12 +76,19 @@ def run_worker(poll_interval: int | None = None) -> None:
                     )
                     with SessionLocal() as db:
                         result = usage_svc.send_all_projects_usage(db)
+                    now_iso = datetime.now(UTC).isoformat()
                     _update_worker_status(
                         is_active=True,
                         current_state="idle",
                         status_message="usage export cycle completed",
-                        state_payload=result,
+                        state_payload={
+                            **result,
+                            "last_successful_usage_export_at": now_iso,
+                        },
+                        mark_success=True,
                     )
+                    with SessionLocal() as alert_db:
+                        ObservabilityService.evaluate_alerts(alert_db)
                 else:
                     _update_worker_status(
                         is_active=True,
@@ -87,6 +100,7 @@ def run_worker(poll_interval: int | None = None) -> None:
                     is_active=True,
                     current_state="error",
                     status_message=str(exc),
+                    mark_error=True,
                 )
                 logger.exception("AMIE usage worker error")
 

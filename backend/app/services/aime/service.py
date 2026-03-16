@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,8 @@ from app.models.amie_packet import AMIEPacket
 from app.models.project import Project
 from app.models.project_user import ProjectUser
 from app.models.user import User
+from app.services.authentik.service import AuthentikService
+from app.services.alerts import AlertService
 from app.services.aime.bindings import (
     DataAccountCreatePacketBinding,
     DataProjectCreatePacketBinding,
@@ -39,6 +42,8 @@ from app.services.aime.bindings import (
     bind_packet,
     coerce_packet_dict,
 )
+from app.services.observability import ObservabilityService
+from app.services.kubernetes.service import KubernetesProvisioningService
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +60,17 @@ class IngestResult:
 class AIMEService:
     """Translates AMIE packets into database records."""
 
-    def __init__(self, site_name: str) -> None:
+    def __init__(
+        self,
+        site_name: str,
+        authentik_service: AuthentikService | None = None,
+        kubernetes_service: KubernetesProvisioningService | None = None,
+    ) -> None:
         self.site_name = site_name
+        self.authentik_service = authentik_service or AuthentikService()
+        self.kubernetes_service = (
+            kubernetes_service or KubernetesProvisioningService()
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -411,6 +425,26 @@ class AIMEService:
         project.is_active = True
         return project
 
+    def _ensure_project_infrastructure(self, project: Project) -> None:
+        """Ensure project namespace/group exist in external services (stubbed)."""
+        namespace_result = self.kubernetes_service.ensure_project_namespace(project=project)
+        if namespace_result.get("ok") and namespace_result.get("namespace"):
+            project.kubernetes_namespace = str(namespace_result["namespace"])
+        else:
+            logger.warning(
+                "Failed to ensure Kubernetes namespace for project_id=%s result=%s",
+                project.id,
+                namespace_result,
+            )
+
+        group_result = self.authentik_service.ensure_project_group(project=project)
+        if not group_result.get("ok", False):
+            logger.warning(
+                "Failed to ensure Authentik group for project_id=%s result=%s",
+                project.id,
+                group_result,
+            )
+
     def _assign_user_to_project(
         self,
         db: Session,
@@ -424,10 +458,17 @@ class AIMEService:
         source_packet_rec_id: int | None = None,
         source_trans_rec_id: int | None = None,
         source_transaction_id: int | None = None,
-    ) -> None:
+    ) -> ProjectUser:
         """Assign a user to a project if not already assigned."""
         now = datetime.now(UTC)
         state_value = account_state or ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET
+        state_rank = {
+            ProjectUser.ACCOUNT_STATE_NOT_SENT_EMAIL_INVITE: 1,
+            ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET_LEGACY: 1,
+            ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET: 1,
+            ProjectUser.ACCOUNT_STATE_SENT_EMAIL: 2,
+            ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE: 3,
+        }
         existing = (
             db.query(ProjectUser)
             .filter(
@@ -462,25 +503,31 @@ class AIMEService:
                 ),
             )
             db.add(pu)
+            db.flush()
             logger.info("Assigned user %s to project %s", user.email, project.name)
-            return
+            return pu
 
         existing.role = role or existing.role
         existing.remote_site_login = remote_site_login or existing.remote_site_login
         existing.is_active = is_active
         if account_state is not None and existing.account_state != account_state:
-            existing.account_state = account_state
-            existing.account_state_updated_at = now
-            if account_state == ProjectUser.ACCOUNT_STATE_SENT_EMAIL:
-                existing.email_sent_at = now
-            if account_state == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE:
-                existing.account_made_at = existing.account_made_at or now
+            current_rank = state_rank.get(existing.account_state, 0)
+            desired_rank = state_rank.get(account_state, 0)
+            if desired_rank >= current_rank:
+                existing.account_state = account_state
+                existing.account_state_updated_at = now
+                if account_state == ProjectUser.ACCOUNT_STATE_SENT_EMAIL:
+                    existing.email_sent_at = now
+                if account_state == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE:
+                    existing.account_made_at = existing.account_made_at or now
         if source_packet_rec_id is not None:
             existing.source_packet_rec_id = source_packet_rec_id
         if source_trans_rec_id is not None:
             existing.source_trans_rec_id = source_trans_rec_id
         if source_transaction_id is not None:
             existing.source_transaction_id = source_transaction_id
+        db.flush()
+        return existing
 
     def _record_packet(
         self,
@@ -489,6 +536,7 @@ class AIMEService:
         packet_type: str,
         header: dict[str, Any],
         raw_packet: dict[str, Any],
+        ingest_source: str = AMIEPacket.INGEST_SOURCE_WORKER,
     ) -> tuple[AMIEPacket, bool]:
         packet_rec_id = int(header["packet_rec_id"])
         existing = db.query(AMIEPacket).filter(AMIEPacket.packet_rec_id == packet_rec_id).first()
@@ -506,6 +554,7 @@ class AIMEService:
             existing.client_state = header.get("client_state")
             existing.packet_timestamp = header.get("packet_timestamp")
             existing.raw_packet = self._json_compatible(raw_packet)
+            existing.ingest_source = ingest_source
             existing.processing_status = AMIEPacket.PROCESSING_STATUS_RECEIVED
             existing.processing_error = None
             existing.processed_at = None
@@ -527,6 +576,7 @@ class AIMEService:
             client_state=header.get("client_state"),
             packet_timestamp=header.get("packet_timestamp"),
             processing_status=AMIEPacket.PROCESSING_STATUS_RECEIVED,
+            ingest_source=ingest_source,
             raw_packet=self._json_compatible(raw_packet),
         )
         db.add(packet)
@@ -543,6 +593,7 @@ class AIMEService:
                 record_id=str(body.RecordID) if body.RecordID is not None else None,
                 project_id=body.ProjectID,
                 resource=body.ResourceList[0] if body.ResourceList else None,
+                allocated_resource=body.AllocatedResource,
                 allocation_type=body.AllocationType,
                 request_type=body.RequestType,
                 service_units_allocated=str(body.ServiceUnitsAllocated),
@@ -551,14 +602,20 @@ class AIMEService:
                 project_title=body.ProjectTitle,
                 abstract=body.Abstract,
                 board_type=body.BoardType,
+                charge_number=body.ChargeNumber,
                 pfos_number=body.PfosNumber,
+                proposal_number=body.ProposalNumber,
                 pi_person_id=body.PiPersonID,
+                pi_global_id=body.PiGlobalID,
                 pi_first_name=body.PiFirstName,
                 pi_middle_name=body.PiMiddleName,
                 pi_last_name=body.PiLastName,
                 pi_email=body.PiEmail,
+                pi_title=body.PiTitle,
                 pi_organization=body.PiOrganization,
                 pi_org_code=body.PiOrgCode,
+                sfos=body.Sfos,
+                academic_degree=body.AcademicDegree,
                 role_list=body.RoleList,
                 pi_dn_list=body.PiDnList,
                 pi_requested_login_list=body.PiRequestedLoginList,
@@ -576,6 +633,7 @@ class AIMEService:
                 grant_number=body.GrantNumber,
                 project_id=body.ProjectID,
                 resource=body.ResourceList[0] if body.ResourceList else None,
+                allocated_resource=body.AllocatedResource,
                 user_person_id=body.UserPersonID,
                 user_global_id=body.UserGlobalID,
                 user_first_name=body.UserFirstName,
@@ -583,10 +641,22 @@ class AIMEService:
                 user_last_name=body.UserLastName,
                 user_organization=body.UserOrganization,
                 user_org_code=body.UserOrgCode,
+                user_title=body.UserTitle,
                 user_department=body.UserDepartment,
+                user_city=body.UserCity,
+                user_state=body.UserState,
+                user_country=body.UserCountry,
+                user_street_address=body.UserStreetAddress,
+                user_street_address2=body.UserStreetAddress2,
+                user_zip=body.UserZip,
                 user_email=body.UserEmail,
                 user_business_phone_number=body.UserBusinessPhoneNumber,
                 user_remote_site_login=body.UserRemoteSiteLogin,
+                user_password_access_enable=(
+                    str(body.UserPasswordAccessEnable)
+                    if body.UserPasswordAccessEnable is not None
+                    else None
+                ),
                 nsf_status_code=body.NsfStatusCode,
                 role_list=body.RoleList,
                 user_dn_list=body.UserDnList,
@@ -650,6 +720,7 @@ class AIMEService:
         user = self._get_or_create_user_by_person_id(
             db,
             person_id=packet.body.PersonID,
+            global_id=packet.body.GlobalID,
         )
 
         user.dn_list = self._merge_dn_list(user.dn_list, packet.body.DnList)
@@ -670,6 +741,18 @@ class AIMEService:
                 pu.set_account_state(ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE)
                 if pu.account_made_at is None:
                     pu.account_made_at = datetime.now(UTC)
+                result = self.authentik_service.ensure_user_in_project(
+                    user=user,
+                    project=project,
+                    project_user=pu,
+                )
+                if not result.get("ok", False):
+                    logger.warning(
+                        "Failed to ensure PI Authentik membership project=%s user=%s reason=%s",
+                        project.site_project_id or project.id,
+                        user.person_id or user.email or user.id,
+                        result.get("reason") or result.get("status") or "unknown",
+                    )
 
         self._record_lifecycle_packet(
             db,
@@ -692,6 +775,7 @@ class AIMEService:
         user = self._get_or_create_user_by_person_id(
             db,
             person_id=packet.body.PersonID,
+            global_id=packet.body.GlobalID,
         )
 
         user.dn_list = self._merge_dn_list(user.dn_list, packet.body.DnList)
@@ -713,6 +797,18 @@ class AIMEService:
                     pu.set_account_state(ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE)
                     if pu.account_made_at is None:
                         pu.account_made_at = datetime.now(UTC)
+                    result = self.authentik_service.ensure_user_in_project(
+                        user=user,
+                        project=project,
+                        project_user=pu,
+                    )
+                    if not result.get("ok", False):
+                        logger.warning(
+                            "Failed to ensure user Authentik membership project=%s user=%s reason=%s",
+                            project.site_project_id or project.id,
+                            user.person_id or user.email or user.id,
+                            result.get("reason") or result.get("status") or "unknown",
+                        )
             else:
                 self._assign_user_to_project(
                     db,
@@ -721,6 +817,27 @@ class AIMEService:
                     is_active=True,
                     account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
                 )
+                project_users = (
+                    db.query(ProjectUser)
+                    .filter(
+                        ProjectUser.project_id == project.id,
+                        ProjectUser.user_id == user.id,
+                    )
+                    .all()
+                )
+                for pu in project_users:
+                    result = self.authentik_service.ensure_user_in_project(
+                        user=user,
+                        project=project,
+                        project_user=pu,
+                    )
+                    if not result.get("ok", False):
+                        logger.warning(
+                            "Failed to ensure user Authentik membership project=%s user=%s reason=%s",
+                            project.site_project_id or project.id,
+                            user.person_id or user.email or user.id,
+                            result.get("reason") or result.get("status") or "unknown",
+                        )
 
         self._record_lifecycle_packet(
             db,
@@ -890,29 +1007,17 @@ class AIMEService:
 
         if project is not None:
             project.is_active = False
-            project_users = (
-                db.query(ProjectUser)
-                .filter(
-                    ProjectUser.project_id == project.id,
-                    or_(ProjectUser.resource == resource, ProjectUser.resource.is_(None)),
-                )
-                .all()
-            )
-            users_seen: set[Any] = set()
-            for pu in project_users:
-                pu.is_active = False
-                if pu.user_id:
-                    users_seen.add(pu.user_id)
-            if users_seen:
-                users = db.query(User).filter(User.id.in_(users_seen)).all()
-                for user in users:
-                    self._refresh_user_active_from_accounts(db, user)
+            # Project inactivation should only affect project-level scheduling
+            # priority, not account usability.
+            # Users and project-user links remain active so they can still
+            # log in and submit jobs.
 
         self._record_lifecycle_packet(
             db,
             packet_id=packet_record.id,
             packet_type=packet.type,
             project_id=body.ProjectID,
+            person_id=body.PersonID,
             resource=resource,
             message=body.Comment,
             raw_body=body.model_dump(mode="json", by_alias=True),
@@ -934,6 +1039,23 @@ class AIMEService:
         )
         if project is not None:
             project.is_active = True
+            project_users = (
+                db.query(ProjectUser)
+                .filter(
+                    ProjectUser.project_id == project.id,
+                    or_(ProjectUser.resource == resource, ProjectUser.resource.is_(None)),
+                )
+                .all()
+            )
+            users_seen: set[Any] = set()
+            for pu in project_users:
+                pu.is_active = True
+                if pu.user_id:
+                    users_seen.add(pu.user_id)
+            if users_seen:
+                users = db.query(User).filter(User.id.in_(users_seen)).all()
+                for existing_user in users:
+                    self._refresh_user_active_from_accounts(db, existing_user)
 
         if project is not None and body.PersonID:
             user = self._get_or_create_user_by_person_id(
@@ -972,7 +1094,11 @@ class AIMEService:
     ) -> Project | None:
         body = packet.body
         resource = body.ResourceList[0] if body.ResourceList else None
-        project = self._resolve_project(db, site_project_id=body.ProjectID)
+        project = self._resolve_project(
+            db,
+            site_project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+        )
         user = self._resolve_user(db, person_id=body.PersonID)
 
         if project is not None and user is not None:
@@ -987,13 +1113,25 @@ class AIMEService:
             )
             for pu in project_users:
                 pu.is_active = False
+                result = self.authentik_service.remove_user_from_project(
+                    user=user,
+                    project=project,
+                    project_user=pu,
+                )
+                if not result.get("ok", False):
+                    logger.warning(
+                        "Failed to remove user from Authentik membership project=%s user=%s reason=%s",
+                        project.site_project_id or project.id,
+                        user.person_id or user.email or user.id,
+                        result.get("reason") or result.get("status") or "unknown",
+                    )
             self._refresh_user_active_from_accounts(db, user)
 
         self._record_lifecycle_packet(
             db,
             packet_id=packet_record.id,
             packet_type=packet.type,
-            project_id=body.ProjectID,
+            project_id=body.ProjectID or (project.site_project_id if project else None),
             person_id=body.PersonID,
             resource=resource,
             message=body.Comment,
@@ -1009,7 +1147,11 @@ class AIMEService:
     ) -> Project | None:
         body = packet.body
         resource = body.ResourceList[0] if body.ResourceList else None
-        project = self._resolve_project(db, site_project_id=body.ProjectID)
+        project = self._resolve_project(
+            db,
+            site_project_id=body.ProjectID,
+            grant_number=body.GrantNumber,
+        )
         user = self._get_or_create_user_by_person_id(
             db,
             person_id=body.PersonID,
@@ -1026,13 +1168,35 @@ class AIMEService:
                 is_active=True,
                 account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
             )
+            project_users = (
+                db.query(ProjectUser)
+                .filter(
+                    ProjectUser.project_id == project.id,
+                    ProjectUser.user_id == user.id,
+                    or_(ProjectUser.resource == resource, ProjectUser.resource.is_(None)),
+                )
+                .all()
+            )
+            for pu in project_users:
+                result = self.authentik_service.ensure_user_in_project(
+                    user=user,
+                    project=project,
+                    project_user=pu,
+                )
+                if not result.get("ok", False):
+                    logger.warning(
+                        "Failed to ensure user Authentik membership project=%s user=%s reason=%s",
+                        project.site_project_id or project.id,
+                        user.person_id or user.email or user.id,
+                        result.get("reason") or result.get("status") or "unknown",
+                    )
         user.is_active = True
 
         self._record_lifecycle_packet(
             db,
             packet_id=packet_record.id,
             packet_type=packet.type,
-            project_id=body.ProjectID,
+            project_id=body.ProjectID or (project.site_project_id if project else None),
             person_id=body.PersonID,
             resource=resource,
             message=body.Comment,
@@ -1067,6 +1231,7 @@ class AIMEService:
         packet: dict | Any,
         *,
         error_message: str,
+        ingest_source: str = AMIEPacket.INGEST_SOURCE_WORKER,
     ) -> None:
         """Persist packet metadata (if needed) and mark processing as failed."""
         packet_dict = coerce_packet_dict(packet)
@@ -1078,6 +1243,7 @@ class AIMEService:
                 packet_type=packet_type,
                 header=header,
                 raw_packet=packet_dict,
+                ingest_source=ingest_source,
             )
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -1092,7 +1258,109 @@ class AIMEService:
         packet_record.processed_at = None
         db.commit()
 
-    def ingest_packet(self, db: Session, packet: dict | Any) -> IngestResult:
+    def validate_packet_dry_run(self, packet: dict | Any) -> dict[str, Any]:
+        """Validate packet bindings without ingesting data."""
+        packet_dict = coerce_packet_dict(packet)
+        packet_type = str(packet_dict.get("type") or "unknown")
+        errors: list[dict[str, str]] = []
+
+        try:
+            bound_packet = bind_packet(packet_dict)
+            return {
+                "valid": True,
+                "packet_type": packet_type,
+                "bound_type": bound_packet.__class__.__name__,
+                "errors": [],
+                "suggestions": [],
+            }
+        except UnsupportedPacketType as exc:
+            errors.append(
+                {
+                    "kind": "unsupported_type",
+                    "message": str(exc),
+                    "suggestion": "Use a supported AMIE packet type or map this type in bindings.py.",
+                }
+            )
+        except ValidationError as exc:
+            for item in exc.errors():
+                loc = ".".join(str(part) for part in item.get("loc", []))
+                msg = str(item.get("msg", "validation error"))
+                suggestion = (
+                    "Check required fields and value types for this packet binding."
+                    if "Field required" in msg
+                    else "Match the expected schema for this field."
+                )
+                errors.append(
+                    {
+                        "kind": "validation_error",
+                        "location": loc,
+                        "message": msg,
+                        "suggestion": suggestion,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(
+                {
+                    "kind": "validation_exception",
+                    "message": str(exc),
+                    "suggestion": "Review payload/header shape and field names.",
+                }
+            )
+
+        return {
+            "valid": False,
+            "packet_type": packet_type,
+            "bound_type": None,
+            "errors": errors,
+            "suggestions": [item["suggestion"] for item in errors if "suggestion" in item],
+        }
+
+    @staticmethod
+    def _emit_project_user_packet_alert(
+        db: Session,
+        *,
+        packet_record: AMIEPacket,
+        processed_ok: bool,
+    ) -> None:
+        """Send alert hook for project/user create or modify packet events."""
+        alert_info = ObservabilityService.project_user_packet_alert_fields(packet_record)
+        if alert_info is None:
+            return
+        category, title = alert_info
+        severity = "info" if processed_ok else "warn"
+        message = (
+            f"Packet {packet_record.packet_type} processed "
+            f"(packet_rec_id={packet_record.packet_rec_id})"
+            if processed_ok
+            else (
+                f"Packet {packet_record.packet_type} received but not fully processed "
+                f"(packet_rec_id={packet_record.packet_rec_id}, status={packet_record.processing_status})"
+            )
+        )
+        AlertService.send(
+            db,
+            alert_key=f"{category}:{packet_record.packet_rec_id}",
+            category=category,
+            severity=severity,
+            title=title,
+            message=message,
+            payload={
+                "packet_rec_id": packet_record.packet_rec_id,
+                "trans_rec_id": packet_record.trans_rec_id,
+                "transaction_id": packet_record.transaction_id,
+                "packet_type": packet_record.packet_type,
+                "processing_status": packet_record.processing_status,
+                "processing_error": packet_record.processing_error,
+            },
+        )
+
+    def ingest_packet(
+        self,
+        db: Session,
+        packet: dict | Any,
+        *,
+        ingest_source: str = AMIEPacket.INGEST_SOURCE_WORKER,
+    ) -> IngestResult:
         """Process a raw AMIE packet.
 
         Args:
@@ -1118,6 +1386,7 @@ class AIMEService:
             packet_type=packet_type,
             header=header,
             raw_packet=packet_dict,
+            ingest_source=ingest_source,
         )
 
         try:
@@ -1128,6 +1397,22 @@ class AIMEService:
             packet_record.processing_error = str(exc)
             packet_record.processed_at = None
             db.commit()
+            self._emit_project_user_packet_alert(
+                db,
+                packet_record=packet_record,
+                processed_ok=False,
+            )
+            return IngestResult(handled=False, packet_type=packet_type)
+        except ValidationError as exc:
+            packet_record.processing_status = AMIEPacket.PROCESSING_STATUS_ERROR
+            packet_record.processing_error = f"ValidationError: {exc}"
+            packet_record.processed_at = None
+            db.commit()
+            self._emit_project_user_packet_alert(
+                db,
+                packet_record=packet_record,
+                processed_ok=False,
+            )
             return IngestResult(handled=False, packet_type=packet_type)
 
         packet_record.packet_type = bound_packet.type
@@ -1136,6 +1421,7 @@ class AIMEService:
 
         if isinstance(bound_packet, RequestProjectCreatePacketBinding):
             project = self._upsert_project_from_allocation(db, bound_packet.body)
+            self._ensure_project_infrastructure(project)
             project.source_packet_rec_id = packet_record.packet_rec_id
             project.source_trans_rec_id = packet_record.trans_rec_id
             project.source_transaction_id = packet_record.transaction_id
@@ -1160,6 +1446,7 @@ class AIMEService:
 
         elif isinstance(bound_packet, RequestAccountCreatePacketBinding):
             project = self._upsert_project_from_account(db, bound_packet.body)
+            self._ensure_project_infrastructure(project)
             project.source_packet_rec_id = packet_record.packet_rec_id
             project.source_trans_rec_id = packet_record.trans_rec_id
             project.source_transaction_id = packet_record.transaction_id
@@ -1221,10 +1508,20 @@ class AIMEService:
             )
             packet_record.processed_at = None
             db.commit()
+            self._emit_project_user_packet_alert(
+                db,
+                packet_record=packet_record,
+                processed_ok=False,
+            )
             return IngestResult(handled=False, packet_type=bound_packet.type)
 
         packet_record.processing_status = AMIEPacket.PROCESSING_STATUS_PROCESSED
         packet_record.processing_error = None
         packet_record.processed_at = datetime.now(UTC)
         db.commit()
+        self._emit_project_user_packet_alert(
+            db,
+            packet_record=packet_record,
+            processed_ok=True,
+        )
         return IngestResult(handled=True, packet_type=bound_packet.type, project=project)

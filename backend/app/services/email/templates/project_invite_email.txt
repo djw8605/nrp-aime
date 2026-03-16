@@ -1,0 +1,13 @@
+Subject: National Research Platform account invite
+
+Hello,
+
+Thanks for requesting an account with the National Research Platform (https://nrp.ai).
+{project_summary}
+
+Please follow the link below to sign in. Your account and access will be configured automatically:
+{invite_url}
+
+This invite expires at: {expires_at}
+
+If you did not expect this message, you can ignore it.

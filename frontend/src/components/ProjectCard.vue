@@ -22,12 +22,30 @@
           <div class="grid grid-cols-2 gap-3">
             <div class="rounded-xl bg-sky-50 p-3 text-center">
               <p class="m-0 text-xs uppercase tracking-wide text-sky-500">CPU Cores</p>
-              <p class="m-0 text-2xl font-bold text-sky-700">{{ project.cpu_allocated }}</p>
+              <p class="m-0 text-2xl font-bold text-sky-700">
+                {{ formatUsage(project.cpu_used_current) }}
+              </p>
+              <p class="m-0 mt-1 text-xs text-sky-600">
+                of {{ formatUsage(project.cpu_allocated) }} allocated
+              </p>
             </div>
             <div class="rounded-xl bg-emerald-50 p-3 text-center">
               <p class="m-0 text-xs uppercase tracking-wide text-emerald-500">GPUs</p>
-              <p class="m-0 text-2xl font-bold text-emerald-700">{{ project.gpu_allocated }}</p>
+              <p class="m-0 text-2xl font-bold text-emerald-700">
+                {{ formatUsage(project.gpu_used_current) }}
+              </p>
+              <p class="m-0 mt-1 text-xs text-emerald-600">
+                of {{ formatUsage(project.gpu_allocated) }} allocated
+              </p>
             </div>
+          </div>
+          <div class="flex items-center justify-between gap-2 text-xs">
+            <span class="text-slate-500">Usage Source</span>
+            <Tag
+              :value="project.usage_source || 'none'"
+              :severity="project.usage_source === 'usage_snapshot' ? 'info' : 'secondary'"
+              rounded
+            />
           </div>
           <div class="flex items-center justify-between gap-2 text-xs">
             <span class="text-slate-500">Namespace</span>
@@ -57,4 +75,11 @@ defineProps({
     required: true,
   },
 })
+
+function formatUsage(value) {
+  if (value === null || value === undefined) return '0'
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) return String(value)
+  return numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
 </script>
