@@ -89,12 +89,13 @@ class AccountLifecycleService:
 
     @staticmethod
     def _fallback_login(project_user: ProjectUser) -> str | None:
+        # For notify_account_create we prefer the OAuth-resolved email identity.
+        if project_user.user.email:
+            return project_user.user.email
         if project_user.remote_site_login:
             return project_user.remote_site_login
         if project_user.user.remote_site_login:
             return project_user.user.remote_site_login
-        if project_user.user.email and "@" in project_user.user.email:
-            return project_user.user.email.split("@", 1)[0]
         return project_user.user.person_id
 
     def _send_account_confirmation_packet(

@@ -1,6 +1,9 @@
 <template>
-  <div class="min-h-screen">
-    <Toolbar class="!rounded-none border-0 border-b border-slate-200 bg-white/90 backdrop-blur">
+  <div class="min-h-screen bg-slate-100">
+    <Toolbar
+      v-if="!isPublicInviteRoute"
+      class="!rounded-none border-0 border-b border-slate-200 bg-white/90 backdrop-blur"
+    >
       <template #start>
         <router-link to="/" class="flex items-center gap-3 text-slate-800 no-underline">
           <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-600 text-white">
@@ -53,19 +56,92 @@
               outlined
             />
           </router-link>
-          <Tag severity="info" value="PrimeVue + Tailwind" rounded />
+          <Tag
+            v-if="showAuthControls"
+            severity="info"
+            :value="principalLabel"
+            rounded
+          />
+          <Button
+            v-if="showAuthControls"
+            label="Sign Out"
+            icon="pi pi-sign-out"
+            size="small"
+            severity="secondary"
+            outlined
+            @click="signOut"
+          />
         </div>
       </template>
     </Toolbar>
 
-    <main class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <main :class="mainContainerClass">
       <router-view />
     </main>
   </div>
 </template>
 
 <script setup>
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Toolbar from 'primevue/toolbar'
+
+import { fetchAuthSession, logoutPortal } from './api/auth'
+import { clearAuthSessionCache } from './router'
+
+const route = useRoute()
+const session = ref({ authenticated: false })
+
+const isPublicInviteRoute = computed(() => Boolean(route.meta.publicRoute))
+
+const mainContainerClass = computed(() => {
+  if (isPublicInviteRoute.value) {
+    return 'mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8'
+  }
+  return 'mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8'
+})
+
+const showAuthControls = computed(
+  () => !isPublicInviteRoute.value && Boolean(session.value?.authenticated),
+)
+
+const principalLabel = computed(() => {
+  if (!showAuthControls.value) return ''
+  return session.value?.name || session.value?.email || 'Authenticated'
+})
+
+async function refreshSession() {
+  if (isPublicInviteRoute.value) {
+    session.value = { authenticated: false }
+    return
+  }
+  try {
+    session.value = await fetchAuthSession()
+  } catch {
+    session.value = { authenticated: false }
+  }
+}
+
+async function signOut() {
+  try {
+    await logoutPortal()
+  } finally {
+    clearAuthSessionCache()
+    session.value = { authenticated: false }
+    window.location.assign('/')
+  }
+}
+
+watch(
+  () => route.fullPath,
+  () => {
+    void refreshSession()
+  },
+)
+
+onMounted(() => {
+  void refreshSession()
+})
 </script>

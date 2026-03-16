@@ -59,12 +59,24 @@ class Settings(BaseSettings):
     frontend_base_url: str = "http://localhost:5173"
     backend_base_url: str = "http://localhost:8000"
 
+    # Portal authentication
+    auth_dev_bypass: bool = False
+    auth_state_ttl_minutes: int = 30
+    auth_session_cookie_name: str = "nrp_portal_session"
+    auth_session_ttl_minutes: int = 12 * 60
+    auth_session_https_only: bool = False
+    auth_admin_authorize_url: str = ""
+    auth_admin_client_id: str = ""
+    auth_admin_scope: str = "openid profile email"
+    auth_admin_redirect_path: str = "/api/v1/auth/callback"
+    auth_admin_stub_login_email: str = ""
+
     # Invite / onboarding
     invite_token_ttl_hours: int = 72
     invite_state_ttl_minutes: int = 30
     invite_require_email_match: bool = True
 
-    # Auth callback / login redirect scaffold
+    # Invite login redirect scaffold
     authentik_authorize_url: str = ""
     authentik_client_id: str = ""
     authentik_scope: str = "openid profile email"

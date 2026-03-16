@@ -69,22 +69,18 @@
         </div>
 
         <div class="flex flex-wrap gap-3">
-          <router-link :to="{ name: 'projects' }" class="no-underline">
-            <Button label="Open Portal" icon="pi pi-home" class="!text-base" />
-          </router-link>
-          <router-link
-            v-if="projectId"
-            :to="{ name: 'project-detail', params: { id: projectId } }"
-            class="no-underline"
-          >
+          <a href="https://nrp.ai/" target="_blank" rel="noreferrer" class="no-underline">
+            <Button label="Go to NRP Home" icon="pi pi-home" class="!text-base" />
+          </a>
+          <a href="https://nrp.ai/documentation/" target="_blank" rel="noreferrer" class="no-underline">
             <Button
-              label="Open Project"
-              icon="pi pi-folder-open"
+              label="Open Documentation"
+              icon="pi pi-book"
               severity="secondary"
               outlined
               class="!text-base"
             />
-          </router-link>
+          </a>
         </div>
       </div>
     </section>
@@ -97,6 +93,5 @@ import { useRoute } from 'vue-router'
 import Button from 'primevue/button'
 
 const route = useRoute()
-const projectId = computed(() => String(route.query.project_id || '').trim())
 const username = computed(() => String(route.query.username || '').trim())
 </script>

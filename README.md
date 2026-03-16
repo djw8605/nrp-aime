@@ -11,6 +11,7 @@ It currently:
 - Ingests project + account lifecycle packets into normalized `projects`, `users`, and `project_users`.
 - Tracks account lifecycle state (`not_sent_email_invite` -> `sent_email` -> `account_made`).
 - Supports person-centric magic-link onboarding with Authentik login redirect/callback.
+- Supports a separate administrator portal login flow, with optional dev bypass.
 - Tracks outbound confirmation packets and retry/reprocess operations.
 - Displays project and administrative KPIs, worker status, and packet observability in the Vue UI.
 
@@ -69,6 +70,9 @@ docker compose up
 
 Migrations are run automatically by the dedicated `migrate` service before
 `backend`, `aime-worker`, and `usage-worker` start.
+
+Local `docker compose` defaults to `AUTH_DEV_BYPASS=true`, so admin pages are
+accessible without external OIDC wiring in development.
 
 Then visit:
 - **Frontend**: http://localhost:5173
@@ -133,6 +137,10 @@ npm run dev
 | GET | `/api/v1/invites/preview` | Validate invite token and return safe preview |
 | GET | `/api/v1/invites/accept` | Start Authentik login redirect for invite token |
 | GET | `/api/v1/invites/callback` | Complete invite callback and account binding |
+| GET | `/api/v1/auth/session` | Return current admin portal auth session |
+| GET | `/api/v1/auth/login` | Start administrator portal login flow |
+| GET | `/api/v1/auth/callback` | Complete administrator portal login callback |
+| POST | `/api/v1/auth/logout` | End administrator portal session |
 | GET | `/api/v1/users/` | List people/users |
 | GET | `/api/v1/users/{id}` | Get user details |
 | GET | `/api/v1/packets/logs` | Packet log table (search/sort/pagination) |
@@ -155,6 +163,16 @@ npm run dev
 | `APP_SECRET_KEY` | `dev-change-me` | Secret used for signed invite state and token hashing pepper |
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Base URL used for invite accept/success/error redirects |
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Base URL used for Authentik callback URL generation |
+| `AUTH_DEV_BYPASS` | `false` | Bypass admin portal authentication (dev-only) |
+| `AUTH_STATE_TTL_MINUTES` | `30` | Signed state TTL for admin auth callback flow |
+| `AUTH_SESSION_COOKIE_NAME` | `nrp_portal_session` | Session cookie name for admin portal login |
+| `AUTH_SESSION_TTL_MINUTES` | `720` | Admin portal session lifetime |
+| `AUTH_SESSION_HTTPS_ONLY` | `false` | Mark admin session cookie as HTTPS-only |
+| `AUTH_ADMIN_AUTHORIZE_URL` | `` | OIDC authorize URL for administrator portal flow |
+| `AUTH_ADMIN_CLIENT_ID` | `` | OIDC client ID for administrator portal flow |
+| `AUTH_ADMIN_SCOPE` | `openid profile email` | OIDC scopes for administrator portal flow |
+| `AUTH_ADMIN_REDIRECT_PATH` | `/api/v1/auth/callback` | Backend callback path for administrator portal flow |
+| `AUTH_ADMIN_STUB_LOGIN_EMAIL` | `` | Stub callback email for local admin auth testing |
 | `INVITE_TOKEN_TTL_HOURS` | `72` | Invite link expiration in hours |
 | `INVITE_STATE_TTL_MINUTES` | `30` | Auth redirect signed-state expiration |
 | `INVITE_REQUIRE_EMAIL_MATCH` | `true` | Require authenticated email to match invited email |
@@ -178,6 +196,10 @@ See the full backend configuration reference in [backend/README.md](/Users/derek
   - invite link opens portal landing page
   - user is redirected to Authentik login
   - callback finalizes account binding, group membership, and Kubernetes access (stub)
+- The **Admin auth flow** (`/api/v1/auth/*`) is separate from invite onboarding:
+  - invite pages remain public
+  - all main dashboard/admin APIs require portal authentication
+  - production authorization policy is expected to be enforced by the upstream IdP flow
 
 ## Image Build Workflow
 

@@ -12,9 +12,9 @@
         <p class="m-0 mt-2">If this issue continues, ask an administrator for a new invite link.</p>
 
         <div class="mt-6">
-          <router-link :to="{ name: 'projects' }" class="no-underline">
-            <Button label="Back to Portal" icon="pi pi-home" />
-          </router-link>
+          <a href="https://nrp.ai/" target="_blank" rel="noreferrer" class="no-underline">
+            <Button label="Go to NRP Home" icon="pi pi-home" />
+          </a>
         </div>
       </template>
     </Card>

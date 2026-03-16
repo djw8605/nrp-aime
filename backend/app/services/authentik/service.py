@@ -57,25 +57,42 @@ class AuthentikService:
             return user.email
         return None
 
-    def create_login_redirect(self, *, callback_url: str, state: str) -> str:
+    def create_login_redirect(
+        self,
+        *,
+        callback_url: str,
+        state: str,
+        flow: str = "invite",
+    ) -> str:
         """Build Authentik login redirect URL.
 
         TODO(prod): switch to OIDC session flow with nonce + PKCE and verify
         callback tokens cryptographically.
         """
-        if settings.authentik_authorize_url and settings.authentik_client_id:
+        if flow == "admin":
+            authorize_url = settings.auth_admin_authorize_url
+            client_id = settings.auth_admin_client_id
+            scope = settings.auth_admin_scope
+            stub_email = settings.auth_admin_stub_login_email
+        else:
+            authorize_url = settings.authentik_authorize_url
+            client_id = settings.authentik_client_id
+            scope = settings.authentik_scope
+            stub_email = settings.authentik_stub_login_email
+
+        if authorize_url and client_id:
             query = {
-                "client_id": settings.authentik_client_id,
+                "client_id": client_id,
                 "response_type": "code",
-                "scope": settings.authentik_scope,
+                "scope": scope,
                 "redirect_uri": callback_url,
                 "state": state,
             }
-            return f"{settings.authentik_authorize_url}?{urlencode(query)}"
+            return f"{authorize_url}?{urlencode(query)}"
 
         params = {"state": state}
-        if settings.authentik_stub_login_email:
-            params["email"] = settings.authentik_stub_login_email
+        if stub_email:
+            params["email"] = stub_email
         return f"{callback_url}?{urlencode(params)}"
 
     def validate_callback(
@@ -84,6 +101,7 @@ class AuthentikService:
         code: str | None,
         state: str,
         request_params: dict[str, Any] | None = None,
+        flow: str = "invite",
     ) -> dict[str, Any]:
         """Validate callback parameters and return authenticated identity.
 
@@ -95,13 +113,22 @@ class AuthentikService:
         if params.get("error"):
             raise ValueError(f"Authentik error: {params.get('error')}")
 
-        configured = bool(settings.authentik_authorize_url and settings.authentik_client_id)
+        if flow == "admin":
+            configured = bool(
+                settings.auth_admin_authorize_url and settings.auth_admin_client_id
+            )
+            stub_email = settings.auth_admin_stub_login_email
+        else:
+            configured = bool(
+                settings.authentik_authorize_url and settings.authentik_client_id
+            )
+            stub_email = settings.authentik_stub_login_email
         if configured and not code:
             raise ValueError("Missing authorization code")
 
         email = (
             params.get("email")
-            or settings.authentik_stub_login_email
+            or stub_email
             or params.get("upn")
             or params.get("preferred_username")
         )

@@ -29,6 +29,11 @@ uvicorn app.main:app --reload
   - Invite links are sent per person (`POST /api/v1/users/{id}/invites`), not per project row.
   - Invite flow uses `preview -> accept -> Authentik login redirect -> callback finalize`.
   - Callback marks account lifecycle as `account_made`, ensures Authentik group membership, and runs Kubernetes account-access stub.
+- Separate administrator portal authentication flow is enabled.
+  - Most API routes now require portal authentication.
+  - Invite onboarding endpoints remain public (`/api/v1/invites/*` + `/api/v1/auth/invite/callback`).
+  - Admin flow runs via `/api/v1/auth/login` and `/api/v1/auth/callback`.
+  - `AUTH_DEV_BYPASS=true` can be used for local development.
 - Invite success page now includes account username and NRP getting-started/training links.
 - Packet lifecycle and observability features were expanded:
   - packet log table with search/sort/pagination
@@ -92,6 +97,16 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `GET` | `/api/v1/invites/accept?token=...` | Validate invite and redirect to Authentik login |
 | `GET` | `/api/v1/invites/callback` | Finalize invite after Authentik callback |
 
+## Admin Auth Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/auth/session` | Resolve current portal auth principal (or unauthenticated) |
+| `GET` | `/api/v1/auth/login?next=/...` | Start administrator login flow |
+| `GET` | `/api/v1/auth/callback` | Complete administrator login callback |
+| `POST` | `/api/v1/auth/logout` | Clear administrator session |
+| `GET` | `/api/v1/auth/me` | Return authenticated administrator principal |
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -137,6 +152,16 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `APP_SECRET_KEY` | `dev-change-me` | Secret for invite token hashing + signed state |
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Frontend base URL used for invite links/redirects |
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Backend base URL used to construct callback URL |
+| `AUTH_DEV_BYPASS` | `false` | Bypass admin portal authentication (dev-only) |
+| `AUTH_STATE_TTL_MINUTES` | `30` | Signed state max age for admin callback flow |
+| `AUTH_SESSION_COOKIE_NAME` | `nrp_portal_session` | Session cookie name for portal auth |
+| `AUTH_SESSION_TTL_MINUTES` | `720` | Admin session lifetime |
+| `AUTH_SESSION_HTTPS_ONLY` | `false` | Mark session cookie HTTPS-only |
+| `AUTH_ADMIN_AUTHORIZE_URL` | `` | OIDC authorize endpoint for admin portal login |
+| `AUTH_ADMIN_CLIENT_ID` | `` | OIDC client ID for admin portal login |
+| `AUTH_ADMIN_SCOPE` | `openid profile email` | OIDC scopes requested for admin portal login |
+| `AUTH_ADMIN_REDIRECT_PATH` | `/api/v1/auth/callback` | Backend callback path for admin portal flow |
+| `AUTH_ADMIN_STUB_LOGIN_EMAIL` | `` | Stub callback identity email for local admin-flow testing |
 | `INVITE_TOKEN_TTL_HOURS` | `72` | Invite link expiration window |
 | `INVITE_STATE_TTL_MINUTES` | `30` | Signed auth-state expiration window |
 | `INVITE_REQUIRE_EMAIL_MATCH` | `true` | Require callback identity email to match invite email |

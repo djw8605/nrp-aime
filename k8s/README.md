@@ -43,9 +43,18 @@ Optional accounting stub configuration:
 Invite / onboarding configuration:
 - `APP_SECRET_KEY` (required for invite token hashing + signed auth state)
 - `FRONTEND_BASE_URL`, `BACKEND_BASE_URL`
+- `AUTH_DEV_BYPASS` (set `false` for production, optional `true` in dev)
+- `AUTH_STATE_TTL_MINUTES`, `AUTH_SESSION_COOKIE_NAME`, `AUTH_SESSION_TTL_MINUTES`, `AUTH_SESSION_HTTPS_ONLY`
+- `AUTH_ADMIN_AUTHORIZE_URL`, `AUTH_ADMIN_CLIENT_ID`, `AUTH_ADMIN_SCOPE`, `AUTH_ADMIN_REDIRECT_PATH`
+- `AUTH_ADMIN_STUB_LOGIN_EMAIL` (dev-only fallback when no real admin OIDC exchange is wired)
 - `INVITE_TOKEN_TTL_HOURS`, `INVITE_STATE_TTL_MINUTES`, `INVITE_REQUIRE_EMAIL_MATCH`
 - `AUTHENTIK_AUTHORIZE_URL`, `AUTHENTIK_CLIENT_ID`, `AUTHENTIK_SCOPE`, `AUTHENTIK_REDIRECT_PATH`
 - `AUTHENTIK_STUB_LOGIN_EMAIL` (stub/local environments)
+
+Auth flow split:
+- Invite flow (`/api/v1/invites/*`) stays public so invite recipients can onboard.
+- Administrator portal flow (`/api/v1/auth/*`) protects dashboard/admin APIs.
+- Upstream IdP flow/policy should enforce administrator access control.
 
 Lifecycle behavior:
 - Keep `AUTHENTIK_STUB_AUTO_ACCOUNT_MADE=false` for invite-driven onboarding.

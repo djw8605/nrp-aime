@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from app.auth import require_portal_auth
 from app.database import get_db
 from app.schemas.invite import (
     InviteCreateRequest,
@@ -26,6 +27,7 @@ router = APIRouter()
 def create_project_invite(
     project_id: uuid.UUID,
     payload: InviteCreateRequest,
+    _principal=Depends(require_portal_auth),
     db: Session = Depends(get_db),
 ) -> InviteCreateResponse:
     """Create a secure invite link for a project user."""

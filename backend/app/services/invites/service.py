@@ -407,6 +407,7 @@ class InviteService:
         login_redirect = self.authentik_service.create_login_redirect(
             callback_url=callback_url,
             state=state,
+            flow="invite",
         )
         self._record_event(
             db,
@@ -482,6 +483,7 @@ class InviteService:
             code=code,
             state=state,
             request_params=callback_params,
+            flow="invite",
         )
         auth_email = self._normalize_email(str(identity.get("email") or ""))
         if not auth_email:
@@ -514,6 +516,7 @@ class InviteService:
                 email=auth_email,
                 name=str(identity.get("name") or auth_email.split("@", 1)[0]),
                 person_id=str(identity.get("subject") or "") or None,
+                remote_site_login=auth_email,
                 is_active=True,
                 dn_list=[],
             )
@@ -521,6 +524,7 @@ class InviteService:
             db.flush()
         else:
             user.email = auth_email
+            user.remote_site_login = auth_email
             user.is_active = True
             if identity.get("name"):
                 user.name = str(identity.get("name"))
@@ -549,6 +553,8 @@ class InviteService:
             if membership.project is None:
                 continue
             membership.is_active = True
+            # Authentik callback identity email is the authoritative remote login.
+            membership.remote_site_login = auth_email
             AccountLifecycleService.mark_account_made(membership)
 
             group_name = self.authentik_service.map_project_to_group(
