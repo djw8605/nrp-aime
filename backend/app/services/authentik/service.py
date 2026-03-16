@@ -30,6 +30,7 @@ class AuthentikService:
     # {group_name: {"member_identifier", ...}}
     _stub_group_memberships: dict[str, set[str]] = {}
     _stub_project_groups: set[str] = set()
+    _stub_project_group_attributes: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _project_key(project: Project) -> str:
@@ -160,36 +161,49 @@ class AuthentikService:
             return f"nrp-grant-{project.grant_number}"
         return f"nrp-project-{project_id}"
 
-    def ensure_project_group(self, *, project: Project) -> dict[str, Any]:
+    def ensure_project_group(
+        self,
+        *,
+        project: Project,
+        attributes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Ensure Authentik group exists for a project (stub)."""
         group_name = self.map_project_to_group(
             project_id=str(project.id),
             project=project,
         )
+        group_attributes = dict(attributes or {})
+        if "is_k8s_namespace" not in group_attributes:
+            group_attributes["is_k8s_namespace"] = True
         if settings.authentik_base_url and settings.authentik_api_token:
             # TODO(prod): call Authentik API to create/get group.
             logger.info(
-                "STUB(authentik api): ensure project group project=%s group=%s",
+                "STUB(authentik api): ensure project group project=%s group=%s attributes=%s",
                 self._project_key(project),
                 group_name,
+                group_attributes,
             )
             return {
                 "ok": True,
                 "status": "stub_api",
                 "group_name": group_name,
+                "attributes": group_attributes,
             }
 
         self._stub_project_groups.add(group_name)
+        self._stub_project_group_attributes[group_name] = group_attributes
         self._stub_group_memberships.setdefault(group_name, set())
         logger.info(
-            "STUB(authentik): ensured project group project=%s group=%s",
+            "STUB(authentik): ensured project group project=%s group=%s attributes=%s",
             self._project_key(project),
             group_name,
+            group_attributes,
         )
         return {
             "ok": True,
             "status": "stub",
             "group_name": group_name,
+            "attributes": group_attributes,
         }
 
     def ensure_user_in_group(

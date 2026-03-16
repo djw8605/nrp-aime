@@ -21,6 +21,7 @@ from app.schemas.user import ProjectMemberRead
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.accounting.service import AccountingService
 from app.services.invites.service import InviteService
+from app.services.project_provisioning import ProjectProvisioningService
 from app.services.prometheus.service import PrometheusService
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,13 @@ def _to_project_read(
         usage_last_collected_at=usage_last_collected_at,
         is_active=project.is_active,
         kubernetes_namespace=project.kubernetes_namespace,
+        authentik_group_name=project.authentik_group_name,
+        provisioning_state=project.provisioning_state,
+        provisioning_requested_at=project.provisioning_requested_at,
+        provisioning_started_at=project.provisioning_started_at,
+        provisioning_completed_at=project.provisioning_completed_at,
+        provisioning_last_error=project.provisioning_last_error,
+        provisioning_alerted_at=project.provisioning_alerted_at,
         created_at=project.created_at,
     )
 
@@ -285,3 +293,27 @@ def send_account_email(
         "skipped": skipped,
         "failed": failed,
     }
+
+
+@router.post("/{project_id}/provision-infrastructure")
+def provision_project_infrastructure(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Create Kubernetes namespace + Authentik group for a project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    result = ProjectProvisioningService().provision_project(
+        db,
+        project=project,
+        requested_by="admin:project-page",
+    )
+    if not result.get("ok", False):
+        logger.warning(
+            "Project provisioning failed project_id=%s result=%s",
+            project_id,
+            result,
+        )
+    return result

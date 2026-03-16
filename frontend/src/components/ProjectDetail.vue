@@ -56,7 +56,28 @@
             {{ project.kubernetes_namespace || '—' }}
           </p>
         </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Provisioning State</p>
+          <Tag
+            class="mt-2"
+            :value="formatProvisioningState(project.provisioning_state)"
+            :severity="provisioningSeverity(project.provisioning_state)"
+            rounded
+          />
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Authentik Group</p>
+          <p class="m-0 mt-2 font-mono font-medium text-slate-700">
+            {{ project.authentik_group_name || '—' }}
+          </p>
+        </div>
       </div>
+      <p
+        v-if="project.provisioning_last_error"
+        class="m-0 mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800"
+      >
+        {{ project.provisioning_last_error }}
+      </p>
     </template>
   </Card>
 </template>
@@ -72,4 +93,21 @@ defineProps({
     required: true,
   },
 })
+
+function formatProvisioningState(value) {
+  const state = String(value || 'received').trim().toLowerCase()
+  if (state === 'received') return 'Received'
+  if (state === 'provisioning') return 'Provisioning'
+  if (state === 'ready') return 'Ready'
+  if (state === 'failed') return 'Failed'
+  return state || 'Unknown'
+}
+
+function provisioningSeverity(value) {
+  const state = String(value || 'received').trim().toLowerCase()
+  if (state === 'ready') return 'success'
+  if (state === 'provisioning') return 'warning'
+  if (state === 'failed') return 'danger'
+  return 'info'
+}
 </script>

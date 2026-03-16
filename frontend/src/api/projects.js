@@ -56,6 +56,17 @@ export function sendAccountEmail(id) {
 }
 
 /**
+ * Provision project namespace + authentik group.
+ * @param {string} id
+ * @returns {Promise<Object>}
+ */
+export function provisionProjectInfrastructure(id) {
+  return apiClient
+    .post(`/projects/${id}/provision-infrastructure`)
+    .then((res) => res.data)
+}
+
+/**
  * Run cross-service audit checks.
  * @returns {Promise<Object>}
  */

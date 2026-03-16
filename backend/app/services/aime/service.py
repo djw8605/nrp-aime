@@ -44,6 +44,7 @@ from app.services.aime.bindings import (
 )
 from app.services.observability import ObservabilityService
 from app.services.kubernetes.service import KubernetesProvisioningService
+from app.services.project_provisioning import ProjectProvisioningService
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +66,16 @@ class AIMEService:
         site_name: str,
         authentik_service: AuthentikService | None = None,
         kubernetes_service: KubernetesProvisioningService | None = None,
+        project_provisioning_service: ProjectProvisioningService | None = None,
     ) -> None:
         self.site_name = site_name
         self.authentik_service = authentik_service or AuthentikService()
         self.kubernetes_service = (
             kubernetes_service or KubernetesProvisioningService()
+        )
+        self.project_provisioning = project_provisioning_service or ProjectProvisioningService(
+            kubernetes_service=self.kubernetes_service,
+            authentik_service=self.authentik_service,
         )
 
     # ------------------------------------------------------------------
@@ -425,25 +431,19 @@ class AIMEService:
         project.is_active = True
         return project
 
-    def _ensure_project_infrastructure(self, project: Project) -> None:
-        """Ensure project namespace/group exist in external services (stubbed)."""
-        namespace_result = self.kubernetes_service.ensure_project_namespace(project=project)
-        if namespace_result.get("ok") and namespace_result.get("namespace"):
-            project.kubernetes_namespace = str(namespace_result["namespace"])
-        else:
-            logger.warning(
-                "Failed to ensure Kubernetes namespace for project_id=%s result=%s",
-                project.id,
-                namespace_result,
-            )
-
-        group_result = self.authentik_service.ensure_project_group(project=project)
-        if not group_result.get("ok", False):
-            logger.warning(
-                "Failed to ensure Authentik group for project_id=%s result=%s",
-                project.id,
-                group_result,
-            )
+    def _mark_project_received_for_provisioning(
+        self,
+        db: Session,
+        *,
+        project: Project,
+        packet_type: str,
+    ) -> bool:
+        """Mark project pending provisioning and alert admins."""
+        return self.project_provisioning.mark_received(
+            db,
+            project=project,
+            reason=f"packet:{packet_type}",
+        )
 
     def _assign_user_to_project(
         self,
@@ -1418,10 +1418,15 @@ class AIMEService:
         packet_record.packet_type = bound_packet.type
 
         project: Project | None = None
+        project_needs_provision_alert = False
 
         if isinstance(bound_packet, RequestProjectCreatePacketBinding):
             project = self._upsert_project_from_allocation(db, bound_packet.body)
-            self._ensure_project_infrastructure(project)
+            project_needs_provision_alert = self._mark_project_received_for_provisioning(
+                db,
+                project=project,
+                packet_type=bound_packet.type,
+            )
             project.source_packet_rec_id = packet_record.packet_rec_id
             project.source_trans_rec_id = packet_record.trans_rec_id
             project.source_transaction_id = packet_record.transaction_id
@@ -1446,7 +1451,11 @@ class AIMEService:
 
         elif isinstance(bound_packet, RequestAccountCreatePacketBinding):
             project = self._upsert_project_from_account(db, bound_packet.body)
-            self._ensure_project_infrastructure(project)
+            project_needs_provision_alert = self._mark_project_received_for_provisioning(
+                db,
+                project=project,
+                packet_type=bound_packet.type,
+            )
             project.source_packet_rec_id = packet_record.packet_rec_id
             project.source_trans_rec_id = packet_record.trans_rec_id
             project.source_transaction_id = packet_record.transaction_id
@@ -1519,6 +1528,12 @@ class AIMEService:
         packet_record.processing_error = None
         packet_record.processed_at = datetime.now(UTC)
         db.commit()
+        if project is not None and project_needs_provision_alert:
+            self.project_provisioning.emit_required_alert(
+                db,
+                project=project,
+                reason=f"packet:{bound_packet.type}",
+            )
         self._emit_project_user_packet_alert(
             db,
             packet_record=packet_record,

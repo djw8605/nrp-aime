@@ -56,6 +56,14 @@
             />
           </div>
           <div class="flex items-center justify-between gap-2 text-xs">
+            <span class="text-slate-500">Provisioning</span>
+            <Tag
+              :value="formatProvisioningState(project.provisioning_state)"
+              :severity="provisioningSeverity(project.provisioning_state)"
+              rounded
+            />
+          </div>
+          <div class="flex items-center justify-between gap-2 text-xs">
             <span class="text-slate-500">Site Project ID</span>
             <span class="font-mono text-slate-700">{{ project.site_project_id || '—' }}</span>
           </div>
@@ -81,5 +89,22 @@ function formatUsage(value) {
   const numeric = Number(value)
   if (Number.isNaN(numeric)) return String(value)
   return numeric.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
+
+function formatProvisioningState(value) {
+  const state = String(value || 'received').trim().toLowerCase()
+  if (state === 'received') return 'Received'
+  if (state === 'provisioning') return 'Provisioning'
+  if (state === 'ready') return 'Ready'
+  if (state === 'failed') return 'Failed'
+  return state || 'Unknown'
+}
+
+function provisioningSeverity(value) {
+  const state = String(value || 'received').trim().toLowerCase()
+  if (state === 'ready') return 'success'
+  if (state === 'provisioning') return 'warning'
+  if (state === 'failed') return 'danger'
+  return 'info'
 }
 </script>

@@ -12,6 +12,7 @@ It currently:
 - Tracks account lifecycle state (`not_sent_email_invite` -> `sent_email` -> `account_made`).
 - Supports person-centric magic-link onboarding with Authentik login redirect/callback.
 - Supports a separate administrator portal login flow, with optional dev bypass.
+- Uses admin-triggered project provisioning states (`received` -> `provisioning` -> `ready`/`failed`) for namespace/group creation.
 - Tracks outbound confirmation packets and retry/reprocess operations.
 - Displays project and administrative KPIs, worker status, and packet observability in the Vue UI.
 
@@ -130,6 +131,7 @@ npm run dev
 | GET | `/api/v1/projects/` | List all projects |
 | GET | `/api/v1/projects/summary` | Top-level project/user/usage KPI summary |
 | GET | `/api/v1/projects/{id}` | Get project details |
+| POST | `/api/v1/projects/{id}/provision-infrastructure` | Admin action to create Kubernetes namespace + Authentik group |
 | GET | `/api/v1/projects/{id}/users` | List users for a project |
 | GET | `/api/v1/projects/{id}/usage` | Get CPU/GPU usage from Prometheus |
 | POST | `/api/v1/projects/{id}/send-account-email` | Send person-scoped invite links for project users |

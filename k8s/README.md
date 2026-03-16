@@ -7,16 +7,25 @@ This directory contains a Kustomize-based Kubernetes deployment for the full sta
 - `aime-worker`
 - `usage-worker`
 - `ingress`
+- `nrp-aime-provisioner` service account + rolebindings for namespace/group provisioning workflows
 
 Ingress is configured for cluster ingress class `haproxy` and includes TLS host entries (`spec.tls.hosts`) matching the configured hostname in each overlay.
 
 Database migrations are run automatically in init containers (`alembic upgrade head`) before backend and workers start.
+
+RBAC notes:
+- `k8s/base/provisioner-rbac.yaml` creates service account `nrp-aime-provisioner`.
+- It binds that service account to:
+  - `nautilus-edit-rolebinding` (ClusterRole `nautilus-edit`)
+  - `nautilus-admin-rolebinding` (ClusterRole `nautilus-admin`)
+- Backend and worker deployments use this service account.
 
 ## Layout
 
 - `base/`: Common manifests and default config/secret placeholders.
 - `overlays/dev/`: Development-oriented overlay.
 - `overlays/prod/`: Production-oriented overlay (replica + host patch examples).
+- `overlays/external-db/`: Uses an existing PostgreSQL instance and removes in-cluster `postgres` resources.
 
 ## Configure
 
@@ -25,11 +34,32 @@ Edit overlay files before apply:
 - `overlays/dev/config/secret.env`
 - `overlays/prod/config/app.env`
 - `overlays/prod/config/secret.env`
+- `overlays/external-db/config/app.env`
+- `overlays/external-db/config/secret.env`
 
-At minimum, set:
+At minimum, set (for `dev` and `prod` overlays):
 - `POSTGRES_PASSWORD`
 - `DATABASE_URL`
 - `AMIE_API_KEY`
+
+For the `external-db` overlay, `DATABASE_URL` and `AMIE_API_KEY` are the required database-related values.
+
+## External Database Overlay
+
+Use `overlays/external-db` when you want this app to connect to an existing PostgreSQL database instead of deploying Kubernetes `postgres` resources.
+
+What this overlay changes:
+- Does not include the base `postgres` Deployment, Service, or PVC resources.
+- Updates backend and worker `wait-for-db` init containers to check readiness using `pg_isready -d "$DATABASE_URL"`.
+
+Configure:
+- `overlays/external-db/config/secret.env`: set `DATABASE_URL`, `AMIE_API_KEY`, and `ALERT_SMTP_PASSWORD` (if SMTP alerts are enabled).
+- `overlays/external-db/config/app.env`: set hostnames and other app-level settings.
+- `overlays/external-db/ingress-host-patch.yaml`: set your ingress host and TLS host.
+
+Example `DATABASE_URL`:
+- `postgresql://db_user:db_password@db.example.org:5432/nrp_aime`
+- If credentials contain special characters (`@`, `:`, `/`, `#`), URL-encode them.
 
 Optional alerting configuration:
 - `ALERT_WEBHOOK_URL`, `ALERT_SLACK_WEBHOOK_URL`
@@ -68,6 +98,9 @@ kubectl apply -k k8s/overlays/dev
 
 # Prod
 kubectl apply -k k8s/overlays/prod
+
+# External DB
+kubectl apply -k k8s/overlays/external-db
 ```
 
 ## Images

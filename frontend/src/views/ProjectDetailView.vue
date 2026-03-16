@@ -20,6 +20,40 @@
 
     <template v-else-if="project">
       <ProjectDetail :project="project" />
+      <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="m-0 text-lg font-semibold text-slate-800">Project Provisioning</h2>
+            <p class="m-0 mt-1 text-sm text-slate-600">
+              Provisioning state:
+              <span class="font-semibold">{{ provisioningStateLabel }}</span>
+            </p>
+          </div>
+          <Button
+            icon="pi pi-cloud-upload"
+            :label="provisionButtonLabel"
+            :disabled="!canProvision"
+            :loading="provisioningActionLoading"
+            @click="onProvisionInfrastructure"
+          />
+        </div>
+        <Message
+          v-if="provisioningSuccess"
+          severity="success"
+          :closable="false"
+          class="mt-3"
+        >
+          {{ provisioningSuccess }}
+        </Message>
+        <Message
+          v-if="provisioningError"
+          severity="error"
+          :closable="false"
+          class="mt-3"
+        >
+          {{ provisioningError }}
+        </Message>
+      </section>
 
       <div class="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-2">
         <section class="space-y-3">
@@ -45,11 +79,16 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
-import { fetchProject, fetchProjectUsage, fetchProjectUsers } from '../api/projects'
+import {
+  fetchProject,
+  fetchProjectUsage,
+  fetchProjectUsers,
+  provisionProjectInfrastructure,
+} from '../api/projects'
 import ProjectDetail from '../components/ProjectDetail.vue'
 import UsageDisplay from '../components/UsageDisplay.vue'
 import UserList from '../components/UserList.vue'
@@ -62,9 +101,39 @@ const usage = ref(null)
 const loading = ref(false)
 const usersLoading = ref(false)
 const usageLoading = ref(false)
+const provisioningActionLoading = ref(false)
+const provisioningSuccess = ref('')
+const provisioningError = ref('')
 const error = ref(null)
 
-onMounted(async () => {
+const provisioningStateLabel = computed(() => {
+  const state = String(project.value?.provisioning_state || 'received')
+    .trim()
+    .toLowerCase()
+  if (state === 'received') return 'Received (awaiting admin action)'
+  if (state === 'provisioning') return 'Provisioning in progress'
+  if (state === 'ready') return 'Ready'
+  if (state === 'failed') return 'Failed'
+  return state || 'Unknown'
+})
+
+const canProvision = computed(() => {
+  const current = project.value
+  if (!current) return false
+  const state = String(current.provisioning_state || '').trim().toLowerCase()
+  if (state === 'provisioning') return false
+  if (state === 'received' || state === 'failed') return true
+  if (!current.kubernetes_namespace || !current.authentik_group_name) return true
+  return false
+})
+
+const provisionButtonLabel = computed(() => {
+  const state = String(project.value?.provisioning_state || '').trim().toLowerCase()
+  if (state === 'failed') return 'Retry Provisioning'
+  return 'Create Namespace + Authentik Group'
+})
+
+async function loadProject() {
   loading.value = true
   try {
     project.value = await fetchProject(props.id)
@@ -73,7 +142,9 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+}
 
+async function loadUsers() {
   usersLoading.value = true
   try {
     users.value = await fetchProjectUsers(props.id)
@@ -82,7 +153,9 @@ onMounted(async () => {
   } finally {
     usersLoading.value = false
   }
+}
 
+async function loadUsage() {
   usageLoading.value = true
   try {
     usage.value = await fetchProjectUsage(props.id)
@@ -91,5 +164,33 @@ onMounted(async () => {
   } finally {
     usageLoading.value = false
   }
+}
+
+async function onProvisionInfrastructure() {
+  if (!project.value) return
+  provisioningActionLoading.value = true
+  provisioningSuccess.value = ''
+  provisioningError.value = ''
+  try {
+    const result = await provisionProjectInfrastructure(project.value.id)
+    if (result?.ok) {
+      provisioningSuccess.value = 'Project infrastructure provisioning completed successfully.'
+    } else {
+      provisioningError.value =
+        result?.provisioning_last_error || 'Provisioning failed. Check backend logs for details.'
+    }
+  } catch (err) {
+    provisioningError.value =
+      err?.response?.data?.detail || 'Failed to trigger project provisioning.'
+  } finally {
+    provisioningActionLoading.value = false
+    await loadProject()
+  }
+}
+
+onMounted(async () => {
+  await loadProject()
+  await loadUsers()
+  await loadUsage()
 })
 </script>

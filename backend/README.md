@@ -34,6 +34,10 @@ uvicorn app.main:app --reload
   - Invite onboarding endpoints remain public (`/api/v1/invites/*` + `/api/v1/auth/invite/callback`).
   - Admin flow runs via `/api/v1/auth/login` and `/api/v1/auth/callback`.
   - `AUTH_DEV_BYPASS=true` can be used for local development.
+- Project provisioning is admin-triggered from the project detail page/API.
+  - New projects enter `received` state and send an admin alert.
+  - Admin action transitions to `provisioning` then `ready`/`failed`.
+  - Authentik group creation includes attributes like `is_k8s_namespace=true`.
 - Invite success page now includes account username and NRP getting-started/training links.
 - Packet lifecycle and observability features were expanded:
   - packet log table with search/sort/pagination
@@ -96,6 +100,7 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `GET` | `/api/v1/invites/preview?token=...` | Safe invite preview payload for landing page |
 | `GET` | `/api/v1/invites/accept?token=...` | Validate invite and redirect to Authentik login |
 | `GET` | `/api/v1/invites/callback` | Finalize invite after Authentik callback |
+| `POST` | `/api/v1/projects/{project_id}/provision-infrastructure` | Trigger namespace + Authentik group provisioning for a project |
 
 ## Admin Auth Endpoints
 

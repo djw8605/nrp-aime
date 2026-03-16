@@ -1,21 +1,20 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: nrp-aime
-
 resources:
-  - namespace.yaml
-  - provisioner-rbac.yaml
-  - postgres-pvc.yaml
-  - postgres-deployment.yaml
-  - postgres-service.yaml
-  - backend-deployment.yaml
-  - backend-service.yaml
-  - aime-worker-deployment.yaml
-  - usage-worker-deployment.yaml
-  - frontend-deployment.yaml
-  - frontend-service.yaml
-  - ingress.yaml
+  - resources/namespace.yaml
+  - resources/provisioner-rbac.yaml
+  - resources/backend-deployment.yaml
+  - resources/backend-service.yaml
+  - resources/aime-worker-deployment.yaml
+  - resources/usage-worker-deployment.yaml
+  - resources/frontend-deployment.yaml
+  - resources/frontend-service.yaml
+  - resources/ingress.yaml
+
+patches:
+  - path: ingress-host-patch.yaml
+  - path: wait-for-db-database-url-patch.yaml
 
 configMapGenerator:
   - name: nrp-aime-config
