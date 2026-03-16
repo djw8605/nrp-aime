@@ -16,8 +16,8 @@ export function fetchAuthSession() {
  * @param {string} nextPath
  * @returns {string}
  */
-export function buildPortalLoginUrl(nextPath = '/') {
-  const encoded = encodeURIComponent(nextPath || '/')
+export function buildPortalLoginUrl(nextPath = '/projects') {
+  const encoded = encodeURIComponent(nextPath || '/projects')
   return `/api/v1/auth/login?next=${encoded}`
 }
 

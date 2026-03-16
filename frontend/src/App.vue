@@ -5,7 +5,7 @@
       class="!rounded-none border-0 border-b border-slate-200 bg-white/90 backdrop-blur"
     >
       <template #start>
-        <router-link to="/" class="flex items-center gap-3 text-slate-800 no-underline">
+        <router-link :to="{ name: 'projects' }" class="flex items-center gap-3 text-slate-800 no-underline">
           <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-600 text-white">
             <i class="pi pi-server text-sm"></i>
           </span>
@@ -17,7 +17,7 @@
       </template>
       <template #end>
         <div class="flex items-center gap-2">
-          <router-link to="/" class="no-underline">
+          <router-link :to="{ name: 'projects' }" class="no-underline">
             <Button label="Projects" size="small" text />
           </router-link>
           <router-link :to="{ name: 'people' }" class="no-underline">

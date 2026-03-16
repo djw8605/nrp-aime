@@ -112,7 +112,11 @@ class AuthentikService:
         _ = state
         params = request_params or {}
         if params.get("error"):
-            raise ValueError(f"Authentik error: {params.get('error')}")
+            error_value = str(params.get("error"))
+            error_description = str(params.get("error_description") or "").strip()
+            if error_description:
+                raise ValueError(f"Authentik error: {error_value} ({error_description})")
+            raise ValueError(f"Authentik error: {error_value}")
 
         if flow == "admin":
             configured = bool(

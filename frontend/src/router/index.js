@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import LoginView from '../views/LoginView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
 import PacketLogsView from '../views/PacketLogsView.vue'
@@ -10,9 +11,9 @@ import InviteSuccessView from '../views/InviteSuccessView.vue'
 import InviteErrorView from '../views/InviteErrorView.vue'
 import PeopleView from '../views/PeopleView.vue'
 import PersonDetailView from '../views/PersonDetailView.vue'
-import { buildPortalLoginUrl, fetchAuthSession } from '../api/auth'
+import { fetchAuthSession } from '../api/auth'
 
-const PUBLIC_ROUTE_NAMES = new Set(['invite-accept', 'invite-success', 'invite-error'])
+const PUBLIC_ROUTE_NAMES = new Set(['login', 'invite-accept', 'invite-success', 'invite-error'])
 let sessionCache = null
 let sessionPromise = null
 
@@ -36,9 +37,32 @@ export function clearAuthSessionCache() {
   sessionCache = null
 }
 
+function normalizeNextPath(value) {
+  const candidate = String(value || '/projects').trim()
+  if (!candidate.startsWith('/')) return '/projects'
+  if (candidate.startsWith('//')) return '/projects'
+  if (candidate.includes('://')) return '/projects'
+  const [rawPath, rawQuery] = candidate.split('?')
+  const path = rawPath === '/login' || rawPath === '/' ? '/projects' : (rawPath || '/projects')
+  if (!rawQuery) return path
+
+  const params = new URLSearchParams(rawQuery)
+  params.delete('next')
+  params.delete('auth_error')
+  params.delete('auth_error_reason')
+  const cleaned = params.toString()
+  return cleaned ? `${path}?${cleaned}` : path
+}
+
 const routes = [
   {
     path: '/',
+    name: 'login',
+    component: LoginView,
+    meta: { publicRoute: true, requiresAuth: false },
+  },
+  {
+    path: '/projects',
     name: 'projects',
     component: ProjectsView,
     meta: { requiresAuth: true },
@@ -120,7 +144,17 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const routeName = String(to.name || '')
   const isPublic = PUBLIC_ROUTE_NAMES.has(routeName) || to.meta.publicRoute
-  if (isPublic) return true
+  if (isPublic) {
+    if (routeName !== 'login') return true
+    const session = await getAuthSession()
+    if (!session?.authenticated) return true
+
+    const nextPath = normalizeNextPath(
+      typeof to.query.next === 'string' ? to.query.next : '/projects',
+    )
+    if (nextPath === to.fullPath) return true
+    return nextPath
+  }
 
   const requiresAuth = to.meta.requiresAuth !== false
   if (!requiresAuth) return true
@@ -129,8 +163,10 @@ router.beforeEach(async (to) => {
   if (session?.authenticated) return true
 
   clearAuthSessionCache()
-  window.location.assign(buildPortalLoginUrl(to.fullPath || '/'))
-  return false
+  return {
+    name: 'login',
+    query: { next: to.fullPath || '/projects' },
+  }
 })
 
 export default router

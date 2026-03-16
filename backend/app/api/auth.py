@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse
@@ -26,21 +26,55 @@ def _frontend_url(path: str, *, query: dict[str, str] | None = None) -> str:
 
 def _backend_admin_callback_url() -> str:
     base = settings.backend_base_url.rstrip("/")
-    path = settings.auth_admin_redirect_path
+    path = str(settings.auth_admin_redirect_path or "").strip()
+    if "://" in path:
+        return path
+    if not path:
+        path = "/api/v1/auth/callback"
     if not path.startswith("/"):
         path = f"/{path}"
     return f"{base}{path}"
 
 
 def _safe_next_path(next_path: str | None) -> str:
-    value = (next_path or "/").strip()
+    value = (next_path or "/projects").strip()
     if not value.startswith("/"):
-        return "/"
+        return "/projects"
     if value.startswith("//"):
-        return "/"
+        return "/projects"
     if "://" in value:
-        return "/"
-    return value or "/"
+        return "/projects"
+
+    split = urlsplit(value)
+    path = split.path or "/projects"
+    if path in {"/", "/login"}:
+        path = "/projects"
+
+    filtered = [
+        (key, val)
+        for key, val in parse_qsl(split.query, keep_blank_values=True)
+        if key not in {"next", "auth_error", "auth_error_reason"}
+    ]
+    query = urlencode(filtered, doseq=True)
+    safe = urlunsplit(("", "", path, query, ""))
+    return safe or "/projects"
+
+
+def _login_error_redirect(
+    *,
+    code: str,
+    reason: str,
+) -> RedirectResponse:
+    return RedirectResponse(
+        url=_frontend_url(
+            "/",
+            query={
+                "auth_error": code,
+                "auth_error_reason": reason,
+            },
+        ),
+        status_code=302,
+    )
 
 
 @router.get("/auth/session")
@@ -64,7 +98,7 @@ def get_auth_session(
 @router.get("/auth/login")
 def start_portal_login(
     request: Request,
-    next: str = Query(default="/"),
+    next: str = Query(default="/projects"),
 ) -> RedirectResponse:
     """Start administrator portal login flow."""
     next_path = _safe_next_path(next)
@@ -101,10 +135,15 @@ def start_portal_login(
 @router.get("/auth/callback")
 def complete_portal_login(
     request: Request,
-    state: str = Query(min_length=1),
+    state: str | None = Query(default=None),
     code: str | None = Query(default=None),
 ) -> RedirectResponse:
     """Complete administrator portal login callback."""
+    if not state:
+        return _login_error_redirect(
+            code="invalid_state",
+            reason="Missing state in authentication callback",
+        )
     try:
         payload = verify_state(
             state,
@@ -113,10 +152,10 @@ def complete_portal_login(
         if payload.get("purpose") != "portal_auth":
             raise ValueError("Invalid auth flow state")
         next_path = _safe_next_path(str(payload.get("next_path") or "/"))
-    except Exception:  # noqa: BLE001
-        return RedirectResponse(
-            url=_frontend_url("/", query={"auth_error": "invalid_state"}),
-            status_code=302,
+    except Exception as exc:  # noqa: BLE001
+        return _login_error_redirect(
+            code="invalid_state",
+            reason=str(exc) or "State token missing, expired, or invalid",
         )
 
     authentik = AuthentikService()
@@ -127,10 +166,18 @@ def complete_portal_login(
             request_params=dict(request.query_params),
             flow="admin",
         )
-    except Exception:  # noqa: BLE001
-        return RedirectResponse(
-            url=_frontend_url("/", query={"auth_error": "login_failed"}),
-            status_code=302,
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc) or "Unknown authentication callback error"
+        error_code = "login_failed"
+        if message.startswith("Authentik error:"):
+            error_code = "idp_error"
+        elif "Missing authorization code" in message:
+            error_code = "missing_code"
+        elif "Unable to resolve authenticated email" in message:
+            error_code = "missing_email_claim"
+        return _login_error_redirect(
+            code=error_code,
+            reason=message,
         )
 
     request.session["portal_auth"] = {

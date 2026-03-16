@@ -89,7 +89,11 @@ class InviteService:
 
     def _backend_callback_url(self) -> str:
         base = settings.backend_base_url.rstrip("/")
-        path = settings.authentik_redirect_path
+        path = str(settings.authentik_redirect_path or "").strip()
+        if "://" in path:
+            return path
+        if not path:
+            path = "/api/v1/invites/callback"
         if not path.startswith("/"):
             path = f"/{path}"
         return f"{base}{path}"
