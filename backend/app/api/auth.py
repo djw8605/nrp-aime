@@ -165,6 +165,7 @@ def complete_portal_login(
             state=state,
             request_params=dict(request.query_params),
             flow="admin",
+            callback_url=_backend_admin_callback_url(),
         )
     except Exception as exc:  # noqa: BLE001
         message = str(exc) or "Unknown authentication callback error"

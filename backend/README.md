@@ -33,6 +33,7 @@ uvicorn app.main:app --reload
   - Most API routes now require portal authentication.
   - Invite onboarding endpoints remain public (`/api/v1/invites/*` + `/api/v1/auth/invite/callback`).
   - Admin flow runs via `/api/v1/auth/login` and `/api/v1/auth/callback`.
+  - Callback exchanges OAuth code at token endpoint and resolves identity from userinfo/ID token claims.
   - `AUTH_DEV_BYPASS=true` can be used for local development.
 - Project provisioning is admin-triggered from the project detail page/API.
   - New projects enter `received` state and send an admin alert.
@@ -147,6 +148,10 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `AUTHENTIK_STUB_AUTO_ACCOUNT_MADE` | `false` | Dev helper to auto-transition accounts to `account_made` |
 | `AUTHENTIK_AUTHORIZE_URL` | `` | OIDC authorize endpoint for invite login redirect |
 | `AUTHENTIK_CLIENT_ID` | `` | OIDC client ID for invite login redirect |
+| `AUTHENTIK_CLIENT_SECRET` | `` | OIDC client secret for invite callback code exchange |
+| `AUTHENTIK_OIDC_CONFIGURATION_URL` | `` | Optional OIDC discovery URL used to resolve token/userinfo endpoints |
+| `AUTHENTIK_TOKEN_URL` | `` | OIDC token endpoint for invite callback code exchange |
+| `AUTHENTIK_USERINFO_URL` | `` | OIDC userinfo endpoint for invite callback claims |
 | `AUTHENTIK_SCOPE` | `openid profile email` | OIDC scopes requested during login |
 | `AUTHENTIK_REDIRECT_PATH` | `/api/v1/invites/callback` | Backend callback path for invite flow |
 | `AUTHENTIK_STUB_LOGIN_EMAIL` | `` | Stub callback identity email for local invite testing |
@@ -181,8 +186,14 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `AUTH_SESSION_HTTPS_ONLY` | `false` | Mark session cookie HTTPS-only |
 | `AUTH_ADMIN_AUTHORIZE_URL` | `` | OIDC authorize endpoint for admin portal login |
 | `AUTH_ADMIN_CLIENT_ID` | `` | OIDC client ID for admin portal login |
+| `AUTH_ADMIN_CLIENT_SECRET` | `` | OIDC client secret for admin callback code exchange |
+| `AUTH_ADMIN_OIDC_CONFIGURATION_URL` | `` | Optional OIDC discovery URL used to resolve token/userinfo endpoints |
+| `AUTH_ADMIN_TOKEN_URL` | `` | OIDC token endpoint for admin callback code exchange |
+| `AUTH_ADMIN_USERINFO_URL` | `` | OIDC userinfo endpoint for admin callback claims |
+| `AUTH_ADMIN_LOGOUT_URL` | `` | Optional IdP logout URL reference for deployments |
+| `AUTH_ADMIN_JWKS_URL` | `` | Optional IdP JWKS URL reference for deployments |
 | `AUTH_ADMIN_SCOPE` | `openid profile email` | OIDC scopes requested for admin portal login |
-| `AUTH_ADMIN_REDIRECT_PATH` | `/api/v1/auth/callback` | Backend callback path for admin portal flow |
+| `AUTH_ADMIN_REDIRECT_PATH` | `/api/v1/auth/callback` | Backend callback path (or full URL) for admin portal flow |
 | `AUTH_ADMIN_STUB_LOGIN_EMAIL` | `` | Stub callback identity email for local admin-flow testing |
 | `INVITE_TOKEN_TTL_HOURS` | `72` | Invite link expiration window |
 | `INVITE_STATE_TTL_MINUTES` | `30` | Signed auth-state expiration window |

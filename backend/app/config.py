@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     auth_session_https_only: bool = False
     auth_admin_authorize_url: str = ""
     auth_admin_client_id: str = ""
+    auth_admin_client_secret: str = ""
+    auth_admin_oidc_configuration_url: str = ""
+    auth_admin_token_url: str = ""
+    auth_admin_userinfo_url: str = ""
+    auth_admin_logout_url: str = ""
+    auth_admin_jwks_url: str = ""
     auth_admin_scope: str = "openid profile email"
     auth_admin_redirect_path: str = "/api/v1/auth/callback"
     auth_admin_stub_login_email: str = ""
@@ -85,6 +91,10 @@ class Settings(BaseSettings):
     # Invite login redirect scaffold
     authentik_authorize_url: str = ""
     authentik_client_id: str = ""
+    authentik_client_secret: str = ""
+    authentik_oidc_configuration_url: str = ""
+    authentik_token_url: str = ""
+    authentik_userinfo_url: str = ""
     authentik_scope: str = "openid profile email"
     authentik_redirect_path: str = "/api/v1/invites/callback"
     authentik_stub_login_email: str = ""

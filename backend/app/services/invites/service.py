@@ -490,6 +490,7 @@ class InviteService:
             state=state,
             request_params=callback_params,
             flow="invite",
+            callback_url=self._backend_callback_url(),
         )
         auth_email = self._normalize_email(str(identity.get("email") or ""))
         auth_username = str(identity.get("username") or "").strip()

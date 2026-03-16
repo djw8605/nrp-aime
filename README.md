@@ -177,14 +177,24 @@ npm run dev
 | `AUTH_SESSION_HTTPS_ONLY` | `false` | Mark admin session cookie as HTTPS-only |
 | `AUTH_ADMIN_AUTHORIZE_URL` | `` | OIDC authorize URL for administrator portal flow |
 | `AUTH_ADMIN_CLIENT_ID` | `` | OIDC client ID for administrator portal flow |
+| `AUTH_ADMIN_CLIENT_SECRET` | `` | OIDC client secret for administrator callback code exchange |
+| `AUTH_ADMIN_OIDC_CONFIGURATION_URL` | `` | Optional OIDC discovery URL used to resolve token/userinfo endpoints |
+| `AUTH_ADMIN_TOKEN_URL` | `` | OIDC token endpoint for administrator callback code exchange |
+| `AUTH_ADMIN_USERINFO_URL` | `` | OIDC userinfo endpoint for administrator callback claims |
+| `AUTH_ADMIN_LOGOUT_URL` | `` | Optional IdP logout URL reference for deployments |
+| `AUTH_ADMIN_JWKS_URL` | `` | Optional IdP JWKS URL reference for deployments |
 | `AUTH_ADMIN_SCOPE` | `openid profile email` | OIDC scopes for administrator portal flow |
-| `AUTH_ADMIN_REDIRECT_PATH` | `/api/v1/auth/callback` | Backend callback path for administrator portal flow |
+| `AUTH_ADMIN_REDIRECT_PATH` | `/api/v1/auth/callback` | Backend callback path (or full URL) for administrator portal flow |
 | `AUTH_ADMIN_STUB_LOGIN_EMAIL` | `` | Stub callback email for local admin auth testing |
 | `INVITE_TOKEN_TTL_HOURS` | `72` | Invite link expiration in hours |
 | `INVITE_STATE_TTL_MINUTES` | `30` | Auth redirect signed-state expiration |
 | `INVITE_REQUIRE_EMAIL_MATCH` | `true` | Require authenticated email to match invited email |
 | `AUTHENTIK_AUTHORIZE_URL` | `` | OIDC authorize endpoint (when real Authentik login redirect is enabled) |
 | `AUTHENTIK_CLIENT_ID` | `` | OIDC client ID for login redirect |
+| `AUTHENTIK_CLIENT_SECRET` | `` | OIDC client secret for invite callback code exchange |
+| `AUTHENTIK_OIDC_CONFIGURATION_URL` | `` | Optional OIDC discovery URL used to resolve token/userinfo endpoints |
+| `AUTHENTIK_TOKEN_URL` | `` | OIDC token endpoint for invite callback code exchange |
+| `AUTHENTIK_USERINFO_URL` | `` | OIDC userinfo endpoint for invite callback claims |
 | `AUTHENTIK_SCOPE` | `openid profile email` | OIDC scopes for Authentik login |
 | `AUTHENTIK_REDIRECT_PATH` | `/api/v1/invites/callback` | Backend callback path for invite flow |
 | `AUTHENTIK_STUB_LOGIN_EMAIL` | `` | Stub callback email for local testing without real OIDC |
@@ -202,7 +212,7 @@ See the full backend configuration reference in [backend/README.md](/Users/derek
   - admin sends invite from person page
   - invite link opens portal landing page
   - user is redirected to Authentik login
-  - callback finalizes account binding, stores Authentik username (`preferred_username`/`username`) as `remote_site_login`, and assigns namespace/group membership via portal RPC
+  - callback exchanges OAuth code for claims (userinfo/ID token), stores Authentik username (`preferred_username`/`username`) as `remote_site_login`, and assigns namespace/group membership via portal RPC
 - The **Audit service** can reconcile portal namespace drift:
   - read state via `admin.ListAllNamespaces` + `admin.GetNSUsers`
   - rectify via `admin.CreateNamespace`, `admin.AddNSUser`, `admin.DeleteNSUser`, `admin.SetNamespaceInfo`
