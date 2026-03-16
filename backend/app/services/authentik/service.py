@@ -127,19 +127,32 @@ class AuthentikService:
         if configured and not code:
             raise ValueError("Missing authorization code")
 
+        username = (
+            params.get("preferred_username")
+            or params.get("username")
+            or params.get("user")
+            or params.get("login")
+            or params.get("remote_site_login")
+        )
         email = (
             params.get("email")
-            or stub_email
             or params.get("upn")
-            or params.get("preferred_username")
+            or stub_email
         )
         if not email:
             raise ValueError("Unable to resolve authenticated email from callback payload")
+        if not username:
+            # Compatibility fallback for environments that only expose email.
+            username = str(email).strip().lower()
+            logger.warning(
+                "Authentik callback missing username claim; falling back to email value"
+            )
 
         identity = {
             "email": str(email).strip().lower(),
             "subject": params.get("sub") or f"stub:{str(email).strip().lower()}",
             "name": params.get("name"),
+            "username": str(username).strip(),
         }
         logger.debug("Resolved Authentik callback identity=%s", identity)
         return identity

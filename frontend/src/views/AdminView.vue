@@ -254,7 +254,7 @@ import {
   refreshAccountingStubs,
   runAudit,
   sendDemoPacket,
-  syncAuthentikMemberships,
+  syncPortalNamespaceMemberships,
 } from '../api/projects'
 import {
   evaluateAlerts,
@@ -430,16 +430,16 @@ async function handleRefreshAccountingStubs() {
   }
 }
 
-async function handleAuthentikSync(applyChanges = false) {
+async function handlePortalSync(applyChanges = false) {
   demoLoading.value = true
   demoError.value = null
   demoMessage.value = null
   try {
-    const result = await syncAuthentikMemberships(applyChanges)
-    demoMessage.value = result.summary || 'Authentik membership sync audit completed.'
+    const result = await syncPortalNamespaceMemberships(applyChanges)
+    demoMessage.value = result.summary || 'Portal namespace sync audit completed.'
     await loadAdminData()
   } catch {
-    demoError.value = 'Failed to run Authentik membership sync audit.'
+    demoError.value = 'Failed to run portal namespace sync audit.'
   } finally {
     demoLoading.value = false
   }
@@ -485,14 +485,14 @@ const debugMenuItems = computed(() => [
     command: () => handleRefreshAccountingStubs(),
   },
   {
-    label: 'Audit Authentik Sync (Dry Run)',
+    label: 'Audit Portal Sync (Dry Run)',
     icon: 'pi pi-search',
-    command: () => handleAuthentikSync(false),
+    command: () => handlePortalSync(false),
   },
   {
-    label: 'Apply Authentik Sync',
+    label: 'Apply Portal Sync',
     icon: 'pi pi-wrench',
-    command: () => handleAuthentikSync(true),
+    command: () => handlePortalSync(true),
   },
 ])
 

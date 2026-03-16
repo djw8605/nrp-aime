@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     frontend_base_url: str = "http://localhost:5173"
     backend_base_url: str = "http://localhost:8000"
 
+    # NRP portal RPC integration (namespace + membership provisioning)
+    portal_rpc_url: str = "https://portal.nrp.ai/rpc"
+    portal_rpc_token: str = ""
+    portal_rpc_namespace: str = "nrp"
+    portal_rpc_timeout_seconds: float = 15.0
+
     # Portal authentication
     auth_dev_bypass: bool = False
     auth_state_ttl_minutes: int = 30

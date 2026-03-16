@@ -300,7 +300,7 @@ def provision_project_infrastructure(
     project_id: uuid.UUID,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Create Kubernetes namespace + Authentik group for a project."""
+    """Create project namespace/group infrastructure via portal RPC."""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")

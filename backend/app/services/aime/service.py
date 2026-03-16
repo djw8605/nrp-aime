@@ -75,7 +75,6 @@ class AIMEService:
         )
         self.project_provisioning = project_provisioning_service or ProjectProvisioningService(
             kubernetes_service=self.kubernetes_service,
-            authentik_service=self.authentik_service,
         )
 
     # ------------------------------------------------------------------
@@ -753,6 +752,20 @@ class AIMEService:
                         user.person_id or user.email or user.id,
                         result.get("reason") or result.get("status") or "unknown",
                     )
+                namespace_result = self.kubernetes_service.ensure_user_project_access(
+                    project=project,
+                    user=user,
+                    project_user=pu,
+                )
+                if not namespace_result.get("ok", False):
+                    logger.warning(
+                        "Failed to ensure portal namespace membership project=%s user=%s reason=%s",
+                        project.site_project_id or project.id,
+                        user.person_id or user.email or user.id,
+                        namespace_result.get("reason")
+                        or namespace_result.get("status")
+                        or "unknown",
+                    )
 
         self._record_lifecycle_packet(
             db,
@@ -809,6 +822,20 @@ class AIMEService:
                             user.person_id or user.email or user.id,
                             result.get("reason") or result.get("status") or "unknown",
                         )
+                    namespace_result = self.kubernetes_service.ensure_user_project_access(
+                        project=project,
+                        user=user,
+                        project_user=pu,
+                    )
+                    if not namespace_result.get("ok", False):
+                        logger.warning(
+                            "Failed to ensure portal namespace membership project=%s user=%s reason=%s",
+                            project.site_project_id or project.id,
+                            user.person_id or user.email or user.id,
+                            namespace_result.get("reason")
+                            or namespace_result.get("status")
+                            or "unknown",
+                        )
             else:
                 self._assign_user_to_project(
                     db,
@@ -837,6 +864,20 @@ class AIMEService:
                             project.site_project_id or project.id,
                             user.person_id or user.email or user.id,
                             result.get("reason") or result.get("status") or "unknown",
+                        )
+                    namespace_result = self.kubernetes_service.ensure_user_project_access(
+                        project=project,
+                        user=user,
+                        project_user=pu,
+                    )
+                    if not namespace_result.get("ok", False):
+                        logger.warning(
+                            "Failed to ensure portal namespace membership project=%s user=%s reason=%s",
+                            project.site_project_id or project.id,
+                            user.person_id or user.email or user.id,
+                            namespace_result.get("reason")
+                            or namespace_result.get("status")
+                            or "unknown",
                         )
 
         self._record_lifecycle_packet(
@@ -1125,6 +1166,20 @@ class AIMEService:
                         user.person_id or user.email or user.id,
                         result.get("reason") or result.get("status") or "unknown",
                     )
+                namespace_result = self.kubernetes_service.remove_user_project_access(
+                    project=project,
+                    user=user,
+                    project_user=pu,
+                )
+                if not namespace_result.get("ok", False):
+                    logger.warning(
+                        "Failed to remove portal namespace membership project=%s user=%s reason=%s",
+                        project.site_project_id or project.id,
+                        user.person_id or user.email or user.id,
+                        namespace_result.get("reason")
+                        or namespace_result.get("status")
+                        or "unknown",
+                    )
             self._refresh_user_active_from_accounts(db, user)
 
         self._record_lifecycle_packet(
@@ -1189,6 +1244,20 @@ class AIMEService:
                         project.site_project_id or project.id,
                         user.person_id or user.email or user.id,
                         result.get("reason") or result.get("status") or "unknown",
+                    )
+                namespace_result = self.kubernetes_service.ensure_user_project_access(
+                    project=project,
+                    user=user,
+                    project_user=pu,
+                )
+                if not namespace_result.get("ok", False):
+                    logger.warning(
+                        "Failed to ensure portal namespace membership project=%s user=%s reason=%s",
+                        project.site_project_id or project.id,
+                        user.person_id or user.email or user.id,
+                        namespace_result.get("reason")
+                        or namespace_result.get("status")
+                        or "unknown",
                     )
         user.is_active = True
 

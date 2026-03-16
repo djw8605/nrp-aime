@@ -14,7 +14,6 @@ spec:
       labels:
         app.kubernetes.io/name: aime-worker
     spec:
-      serviceAccountName: nrp-aime-provisioner
       initContainers:
         - name: wait-for-db
           image: postgres:16

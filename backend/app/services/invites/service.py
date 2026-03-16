@@ -272,10 +272,12 @@ class InviteService:
         expires_at = self._now() + timedelta(hours=max(1, int(ttl_hours)))
         group_name = authentik_group_name
         if group_name is None and project is not None:
-            group_name = self.authentik_service.map_project_to_group(
-                project_id=str(project.id),
-                project=project,
-            )
+            group_name = project.authentik_group_name or project.kubernetes_namespace
+            if group_name is None:
+                group_name = self.authentik_service.map_project_to_group(
+                    project_id=str(project.id),
+                    project=project,
+                )
 
         user_project_names: list[str] = []
         if user is not None:
@@ -486,8 +488,14 @@ class InviteService:
             flow="invite",
         )
         auth_email = self._normalize_email(str(identity.get("email") or ""))
+        auth_username = str(identity.get("username") or "").strip()
         if not auth_email:
             raise InviteFlowError(code="auth_missing_email", message="Authenticated email missing")
+        if not auth_username:
+            raise InviteFlowError(
+                code="auth_missing_username",
+                message="Authenticated Authentik username missing",
+            )
 
         invited_email = self._normalize_email(invite.email)
         if settings.invite_require_email_match and auth_email != invited_email:
@@ -516,7 +524,7 @@ class InviteService:
                 email=auth_email,
                 name=str(identity.get("name") or auth_email.split("@", 1)[0]),
                 person_id=str(identity.get("subject") or "") or None,
-                remote_site_login=auth_email,
+                remote_site_login=auth_username,
                 is_active=True,
                 dn_list=[],
             )
@@ -524,7 +532,7 @@ class InviteService:
             db.flush()
         else:
             user.email = auth_email
-            user.remote_site_login = auth_email
+            user.remote_site_login = auth_username
             user.is_active = True
             if identity.get("name"):
                 user.name = str(identity.get("name"))
@@ -553,47 +561,31 @@ class InviteService:
             if membership.project is None:
                 continue
             membership.is_active = True
-            # Authentik callback identity email is the authoritative remote login.
-            membership.remote_site_login = auth_email
+            # Authentik callback username is the authoritative namespace identity.
+            membership.remote_site_login = auth_username
             AccountLifecycleService.mark_account_made(membership)
 
-            group_name = self.authentik_service.map_project_to_group(
-                project_id=str(membership.project.id),
+            access_result = self.kubernetes_service.ensure_user_project_access(
                 project=membership.project,
+                user=user,
+                project_user=membership,
             )
-            group_result = self.authentik_service.ensure_user_in_group(
-                user_identity=identity,
-                group_name=group_name,
-            )
-            if not group_result.get("ok", False):
+            if not access_result.get("ok", False):
                 raise InviteFlowError(
-                    code="authentik_group_failed",
-                    message="Failed to assign Authentik group membership",
+                    code="namespace_access_failed",
+                    message="Failed to assign namespace/group membership",
                 )
 
-            self.authentik_service.ensure_user_in_project(
-                user=user,
-                project=membership.project,
-                project_user=membership,
+            group_name = (
+                membership.project.authentik_group_name
+                or access_result.get("authentik_group_name")
+                or access_result.get("namespace")
             )
-            self.kubernetes_service.ensure_user_project_access(
-                project=membership.project,
-                user=user,
-                project_user=membership,
-            )
-            applied_group_names.add(group_name)
+            if group_name:
+                applied_group_names.add(str(group_name))
             finalized_memberships.append(membership)
 
         if not finalized_memberships and invite.authentik_group_name:
-            group_result = self.authentik_service.ensure_user_in_group(
-                user_identity=identity,
-                group_name=invite.authentik_group_name,
-            )
-            if not group_result.get("ok", False):
-                raise InviteFlowError(
-                    code="authentik_group_failed",
-                    message="Failed to assign Authentik group membership",
-                )
             applied_group_names.add(invite.authentik_group_name)
 
         invite.status = ProjectInvite.STATUS_USED

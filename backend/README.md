@@ -28,7 +28,7 @@ uvicorn app.main:app --reload
 - Person-centric magic-link invite onboarding is enabled.
   - Invite links are sent per person (`POST /api/v1/users/{id}/invites`), not per project row.
   - Invite flow uses `preview -> accept -> Authentik login redirect -> callback finalize`.
-  - Callback marks account lifecycle as `account_made`, ensures Authentik group membership, and runs Kubernetes account-access stub.
+  - Callback marks account lifecycle as `account_made` and assigns namespace/group access via portal RPC.
 - Separate administrator portal authentication flow is enabled.
   - Most API routes now require portal authentication.
   - Invite onboarding endpoints remain public (`/api/v1/invites/*` + `/api/v1/auth/invite/callback`).
@@ -37,7 +37,12 @@ uvicorn app.main:app --reload
 - Project provisioning is admin-triggered from the project detail page/API.
   - New projects enter `received` state and send an admin alert.
   - Admin action transitions to `provisioning` then `ready`/`failed`.
-  - Authentik group creation includes attributes like `is_k8s_namespace=true`.
+  - Provisioning calls portal JSON-RPC (`admin.CreateNamespace`) with `GroupFeatures=["is_k8s_namespace"]`.
+  - Namespace metadata updates use flattened portal RPC params (`admin.SetNamespaceInfo`) and populate NSInfo fields from project registration data (PI, grant/allocation, description, institution, resource details, timestamps).
+- Portal reconciliation endpoints support drift detection and repair:
+  - `admin.ListAllNamespaces`, `admin.GetNSUsers`
+  - `admin.AddNSUser`, `admin.DeleteNSUser`
+- Invite callback stores Authentik username (`preferred_username`/`username`) into `remote_site_login`; portal membership RPCs use that username for `UserID`.
 - Invite success page now includes account username and NRP getting-started/training links.
 - Packet lifecycle and observability features were expanded:
   - packet log table with search/sort/pagination
@@ -100,7 +105,7 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `GET` | `/api/v1/invites/preview?token=...` | Safe invite preview payload for landing page |
 | `GET` | `/api/v1/invites/accept?token=...` | Validate invite and redirect to Authentik login |
 | `GET` | `/api/v1/invites/callback` | Finalize invite after Authentik callback |
-| `POST` | `/api/v1/projects/{project_id}/provision-infrastructure` | Trigger namespace + Authentik group provisioning for a project |
+| `POST` | `/api/v1/projects/{project_id}/provision-infrastructure` | Trigger portal-backed namespace/group provisioning for a project |
 
 ## Admin Auth Endpoints
 
@@ -111,6 +116,14 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `GET` | `/api/v1/auth/callback` | Complete administrator login callback |
 | `POST` | `/api/v1/auth/logout` | Clear administrator session |
 | `GET` | `/api/v1/auth/me` | Return authenticated administrator principal |
+
+## Audit / Reconciliation Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/audit/run` | Run all cross-service audit checks |
+| `POST` | `/api/v1/audit/authentik-sync` | Audit/reconcile Authentik memberships against DB |
+| `POST` | `/api/v1/audit/portal-sync` | Audit/reconcile portal namespace memberships against DB |
 
 ## Environment Variables
 
@@ -157,6 +170,10 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `APP_SECRET_KEY` | `dev-change-me` | Secret for invite token hashing + signed state |
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Frontend base URL used for invite links/redirects |
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Backend base URL used to construct callback URL |
+| `PORTAL_RPC_URL` | `https://portal.nrp.ai/rpc` | Portal JSON-RPC endpoint |
+| `PORTAL_RPC_NAMESPACE` | `nrp` | Parent namespace argument for `admin.CreateNamespace` |
+| `PORTAL_RPC_TIMEOUT_SECONDS` | `15` | Timeout for portal RPC HTTP calls |
+| `PORTAL_RPC_TOKEN` | `` | Shared token for `X-Portal-RPC-Token` header |
 | `AUTH_DEV_BYPASS` | `false` | Bypass admin portal authentication (dev-only) |
 | `AUTH_STATE_TTL_MINUTES` | `30` | Signed state max age for admin callback flow |
 | `AUTH_SESSION_COOKIE_NAME` | `nrp_portal_session` | Session cookie name for portal auth |

@@ -86,6 +86,17 @@ export function syncAuthentikMemberships(applyChanges = false) {
 }
 
 /**
+ * Compare (and optionally reconcile) portal namespace memberships vs database.
+ * @param {boolean} applyChanges
+ * @returns {Promise<Object>}
+ */
+export function syncPortalNamespaceMemberships(applyChanges = false) {
+  return apiClient
+    .post('/audit/portal-sync', { apply_changes: Boolean(applyChanges) })
+    .then((res) => res.data)
+}
+
+/**
  * Inject demo packet(s) for interface testing.
  * @param {string} scenario
  * @returns {Promise<Object>}

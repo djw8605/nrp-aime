@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from app.models.project import Project
 from app.services.alerts import AlertService
-from app.services.authentik.service import AuthentikService
 from app.services.kubernetes.service import KubernetesProvisioningService
 
 logger = logging.getLogger(__name__)
@@ -23,10 +22,8 @@ class ProjectProvisioningService:
         self,
         *,
         kubernetes_service: KubernetesProvisioningService | None = None,
-        authentik_service: AuthentikService | None = None,
     ) -> None:
         self.kubernetes_service = kubernetes_service or KubernetesProvisioningService()
-        self.authentik_service = authentik_service or AuthentikService()
 
     @staticmethod
     def _required_alert_key(project: Project) -> str:
@@ -96,7 +93,7 @@ class ProjectProvisioningService:
         project: Project,
         requested_by: str = "admin",
     ) -> dict[str, Any]:
-        """Provision namespace + Authentik group for a project."""
+        """Provision namespace + group infrastructure for a project."""
         now = datetime.now(UTC)
         project.provisioning_state = Project.PROVISIONING_STATE_PROVISIONING
         project.provisioning_started_at = now
@@ -106,27 +103,31 @@ class ProjectProvisioningService:
         db.flush()
 
         namespace_result: dict[str, Any] = {}
-        group_result: dict[str, Any] = {}
+        namespace_info_result: dict[str, Any] = {}
         errors: list[str] = []
 
         try:
             namespace_result = self.kubernetes_service.ensure_project_namespace(project=project)
             if namespace_result.get("ok") and namespace_result.get("namespace"):
                 project.kubernetes_namespace = str(namespace_result["namespace"])
-            else:
-                errors.append(
-                    "kubernetes namespace provisioning failed "
-                    f"(result={namespace_result})"
+                project.authentik_group_name = str(
+                    namespace_result.get("authentik_group_name")
+                    or namespace_result["namespace"]
                 )
 
-            group_result = self.authentik_service.ensure_project_group(
-                project=project,
-                attributes={"is_k8s_namespace": True},
-            )
-            if group_result.get("ok") and group_result.get("group_name"):
-                project.authentik_group_name = str(group_result["group_name"])
+                namespace_info_result = self.kubernetes_service.set_project_namespace_info(
+                    project=project
+                )
+                if not namespace_info_result.get("ok", False):
+                    errors.append(
+                        "portal namespace metadata update failed "
+                        f"(result={namespace_info_result})"
+                    )
             else:
-                errors.append(f"authentik group provisioning failed (result={group_result})")
+                errors.append(
+                    "portal namespace provisioning failed "
+                    f"(result={namespace_result})"
+                )
 
             if errors:
                 project.provisioning_state = Project.PROVISIONING_STATE_FAILED
@@ -147,7 +148,7 @@ class ProjectProvisioningService:
                         "requested_by": requested_by,
                         "errors": errors,
                         "namespace_result": namespace_result,
-                        "group_result": group_result,
+                        "namespace_info_result": namespace_info_result,
                     },
                 )
             else:
@@ -194,6 +195,6 @@ class ProjectProvisioningService:
             "kubernetes_namespace": project.kubernetes_namespace,
             "authentik_group_name": project.authentik_group_name,
             "namespace_result": namespace_result,
-            "group_result": group_result,
+            "namespace_info_result": namespace_info_result,
             "requested_by": requested_by,
         }

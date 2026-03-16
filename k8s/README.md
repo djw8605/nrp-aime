@@ -7,18 +7,10 @@ This directory contains a Kustomize-based Kubernetes deployment for the full sta
 - `aime-worker`
 - `usage-worker`
 - `ingress`
-- `nrp-aime-provisioner` service account + rolebindings for namespace/group provisioning workflows
 
 Ingress is configured for cluster ingress class `haproxy` and includes TLS host entries (`spec.tls.hosts`) matching the configured hostname in each overlay.
 
 Database migrations are run automatically in init containers (`alembic upgrade head`) before backend and workers start.
-
-RBAC notes:
-- `k8s/base/provisioner-rbac.yaml` creates service account `nrp-aime-provisioner`.
-- It binds that service account to:
-  - `nautilus-edit-rolebinding` (ClusterRole `nautilus-edit`)
-  - `nautilus-admin-rolebinding` (ClusterRole `nautilus-admin`)
-- Backend and worker deployments use this service account.
 
 ## Layout
 
@@ -41,8 +33,14 @@ At minimum, set (for `dev` and `prod` overlays):
 - `POSTGRES_PASSWORD`
 - `DATABASE_URL`
 - `AMIE_API_KEY`
+- `PORTAL_RPC_TOKEN`
 
-For the `external-db` overlay, `DATABASE_URL` and `AMIE_API_KEY` are the required database-related values.
+Portal RPC configuration:
+- `PORTAL_RPC_URL` (default `https://portal.nrp.ai/rpc`)
+- `PORTAL_RPC_NAMESPACE` (default `nrp`)
+- `PORTAL_RPC_TIMEOUT_SECONDS` (default `15`)
+
+For the `external-db` overlay, `DATABASE_URL`, `AMIE_API_KEY`, and `PORTAL_RPC_TOKEN` are required.
 
 ## External Database Overlay
 
@@ -51,9 +49,10 @@ Use `overlays/external-db` when you want this app to connect to an existing Post
 What this overlay changes:
 - Does not include the base `postgres` Deployment, Service, or PVC resources.
 - Updates backend and worker `wait-for-db` init containers to check readiness using `pg_isready -d "$DATABASE_URL"`.
+- Uses portal JSON-RPC (`X-Portal-RPC-Token`) for namespace/group provisioning instead of Kubernetes service-account RBAC.
 
 Configure:
-- `overlays/external-db/config/secret.env`: set `DATABASE_URL`, `AMIE_API_KEY`, and `ALERT_SMTP_PASSWORD` (if SMTP alerts are enabled).
+- `overlays/external-db/config/secret.env`: set `DATABASE_URL`, `AMIE_API_KEY`, `PORTAL_RPC_TOKEN`, and `ALERT_SMTP_PASSWORD` (if SMTP alerts are enabled).
 - `overlays/external-db/config/app.env`: set hostnames and other app-level settings.
 - `overlays/external-db/ingress-host-patch.yaml`: set your ingress host and TLS host.
 

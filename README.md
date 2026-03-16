@@ -12,7 +12,7 @@ It currently:
 - Tracks account lifecycle state (`not_sent_email_invite` -> `sent_email` -> `account_made`).
 - Supports person-centric magic-link onboarding with Authentik login redirect/callback.
 - Supports a separate administrator portal login flow, with optional dev bypass.
-- Uses admin-triggered project provisioning states (`received` -> `provisioning` -> `ready`/`failed`) for namespace/group creation.
+- Uses admin-triggered project provisioning states (`received` -> `provisioning` -> `ready`/`failed`) for portal-backed namespace/group creation.
 - Tracks outbound confirmation packets and retry/reprocess operations.
 - Displays project and administrative KPIs, worker status, and packet observability in the Vue UI.
 
@@ -45,7 +45,7 @@ nrp-aime/
 │   │       ├── email/        # Invite email template + sending stub
 │   │       ├── prometheus/   # NRP metrics queries
 │   │       ├── authentik/    # Authentik group/login integration (stubbed API calls)
-│   │       └── kubernetes/   # Namespace/account provisioning stubs
+│   │       └── kubernetes/   # Portal JSON-RPC namespace/user provisioning
 │   ├── migrations/           # Alembic migrations
 │   ├── workers/              # Background task workers
 │   ├── requirements.txt
@@ -131,7 +131,7 @@ npm run dev
 | GET | `/api/v1/projects/` | List all projects |
 | GET | `/api/v1/projects/summary` | Top-level project/user/usage KPI summary |
 | GET | `/api/v1/projects/{id}` | Get project details |
-| POST | `/api/v1/projects/{id}/provision-infrastructure` | Admin action to create Kubernetes namespace + Authentik group |
+| POST | `/api/v1/projects/{id}/provision-infrastructure` | Admin action to create namespace/group via portal RPC |
 | GET | `/api/v1/projects/{id}/users` | List users for a project |
 | GET | `/api/v1/projects/{id}/usage` | Get CPU/GPU usage from Prometheus |
 | POST | `/api/v1/projects/{id}/send-account-email` | Send person-scoped invite links for project users |
@@ -146,6 +146,7 @@ npm run dev
 | GET | `/api/v1/users/` | List people/users |
 | GET | `/api/v1/users/{id}` | Get user details |
 | GET | `/api/v1/packets/logs` | Packet log table (search/sort/pagination) |
+| POST | `/api/v1/audit/portal-sync` | Audit/reconcile portal namespace membership drift |
 | GET | `/healthz` | Health check |
 
 ## Environment Variables
@@ -165,6 +166,10 @@ npm run dev
 | `APP_SECRET_KEY` | `dev-change-me` | Secret used for signed invite state and token hashing pepper |
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Base URL used for invite accept/success/error redirects |
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Base URL used for Authentik callback URL generation |
+| `PORTAL_RPC_URL` | `https://portal.nrp.ai/rpc` | Portal JSON-RPC endpoint |
+| `PORTAL_RPC_NAMESPACE` | `nrp` | Parent namespace used when calling `admin.CreateNamespace` |
+| `PORTAL_RPC_TIMEOUT_SECONDS` | `15` | HTTP timeout for portal RPC calls |
+| `PORTAL_RPC_TOKEN` | `` | Shared token sent as `X-Portal-RPC-Token` for portal RPC auth |
 | `AUTH_DEV_BYPASS` | `false` | Bypass admin portal authentication (dev-only) |
 | `AUTH_STATE_TTL_MINUTES` | `30` | Signed state TTL for admin auth callback flow |
 | `AUTH_SESSION_COOKIE_NAME` | `nrp_portal_session` | Session cookie name for admin portal login |
@@ -197,7 +202,11 @@ See the full backend configuration reference in [backend/README.md](/Users/derek
   - admin sends invite from person page
   - invite link opens portal landing page
   - user is redirected to Authentik login
-  - callback finalizes account binding, group membership, and Kubernetes access (stub)
+  - callback finalizes account binding, stores Authentik username (`preferred_username`/`username`) as `remote_site_login`, and assigns namespace/group membership via portal RPC
+- The **Audit service** can reconcile portal namespace drift:
+  - read state via `admin.ListAllNamespaces` + `admin.GetNSUsers`
+  - rectify via `admin.CreateNamespace`, `admin.AddNSUser`, `admin.DeleteNSUser`, `admin.SetNamespaceInfo`
+  - `admin.SetNamespaceInfo` is sent with flattened NSInfo fields populated from project registration data
 - The **Admin auth flow** (`/api/v1/auth/*`) is separate from invite onboarding:
   - invite pages remain public
   - all main dashboard/admin APIs require portal authentication
