@@ -1,0 +1,28 @@
+{
+  "name": "nrp-aime-frontend",
+  "version": "0.1.0",
+  "description": "NRP AIME Allocation Management Dashboard",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@primeuix/themes": "^2.0.3",
+    "axios": "^1.13.6",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.5.4",
+    "tailwindcss-primeui": "^0.6.1",
+    "vue": "^3.5.30",
+    "vue-router": "^5.0.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.1",
+    "@vitejs/plugin-vue": "^6.0.5",
+    "autoprefixer": "^10.4.27",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^4.2.1",
+    "vite": "^8.0.0"
+  }
+}

@@ -1,0 +1,163 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: nrp
+      POSTGRES_PASSWORD: nrp
+      POSTGRES_DB: nrp_aime
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nrp -d nrp_aime"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
+      PROMETHEUS_URL: https://prometheus.nrp-nautilus.io
+      AMIE_SITE_NAME: NRP
+      AUTHENTIK_STUB_AUTO_ACCOUNT_MADE: ${AUTHENTIK_STUB_AUTO_ACCOUNT_MADE:-false}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-dev-change-me}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:5173}
+      BACKEND_BASE_URL: ${BACKEND_BASE_URL:-http://localhost:8000}
+      INVITE_TOKEN_TTL_HOURS: ${INVITE_TOKEN_TTL_HOURS:-72}
+      INVITE_STATE_TTL_MINUTES: ${INVITE_STATE_TTL_MINUTES:-30}
+      INVITE_REQUIRE_EMAIL_MATCH: ${INVITE_REQUIRE_EMAIL_MATCH:-true}
+      AUTHENTIK_AUTHORIZE_URL: ${AUTHENTIK_AUTHORIZE_URL:-}
+      AUTHENTIK_CLIENT_ID: ${AUTHENTIK_CLIENT_ID:-}
+      AUTHENTIK_SCOPE: ${AUTHENTIK_SCOPE:-openid profile email}
+      AUTHENTIK_REDIRECT_PATH: ${AUTHENTIK_REDIRECT_PATH:-/api/v1/invites/callback}
+      AUTHENTIK_STUB_LOGIN_EMAIL: ${AUTHENTIK_STUB_LOGIN_EMAIL:-}
+      ACCOUNTING_STUB_ENABLED: ${ACCOUNTING_STUB_ENABLED:-true}
+      ACCOUNTING_STUB_CPU_RATIO: ${ACCOUNTING_STUB_CPU_RATIO:-0.35}
+      ACCOUNTING_STUB_GPU_RATIO: ${ACCOUNTING_STUB_GPU_RATIO:-0.20}
+      AMIE_PACKET_REPROCESS_MAX_RETRIES: ${AMIE_PACKET_REPROCESS_MAX_RETRIES:-5}
+      AMIE_PACKET_REPROCESS_LOCKOUT_MINUTES: ${AMIE_PACKET_REPROCESS_LOCKOUT_MINUTES:-30}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_SLACK_WEBHOOK_URL: ${ALERT_SLACK_WEBHOOK_URL:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
+      ALERT_SMTP_HOST: ${ALERT_SMTP_HOST:-}
+      ALERT_SMTP_PORT: ${ALERT_SMTP_PORT:-587}
+      ALERT_SMTP_USERNAME: ${ALERT_SMTP_USERNAME:-}
+      ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-}
+      ALERT_SMTP_USE_TLS: ${ALERT_SMTP_USE_TLS:-true}
+      ALERT_MIN_INTERVAL_MINUTES: ${ALERT_MIN_INTERVAL_MINUTES:-30}
+      ALERT_WORKER_STALE_SECONDS: ${ALERT_WORKER_STALE_SECONDS:-300}
+      ALERT_PARSE_FAILURES_THRESHOLD: ${ALERT_PARSE_FAILURES_THRESHOLD:-10}
+      ALERT_RECONCILE_STALE_MINUTES: ${ALERT_RECONCILE_STALE_MINUTES:-120}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
+    depends_on:
+      db:
+        condition: service_healthy
+
+  aime-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m workers.aime_worker
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
+      AMIE_SITE_NAME: NRP
+      AUTHENTIK_STUB_AUTO_ACCOUNT_MADE: ${AUTHENTIK_STUB_AUTO_ACCOUNT_MADE:-false}
+      ACCOUNTING_STUB_ENABLED: ${ACCOUNTING_STUB_ENABLED:-true}
+      ACCOUNTING_STUB_CPU_RATIO: ${ACCOUNTING_STUB_CPU_RATIO:-0.35}
+      ACCOUNTING_STUB_GPU_RATIO: ${ACCOUNTING_STUB_GPU_RATIO:-0.20}
+      AMIE_PACKET_REPROCESS_MAX_RETRIES: ${AMIE_PACKET_REPROCESS_MAX_RETRIES:-5}
+      AMIE_PACKET_REPROCESS_LOCKOUT_MINUTES: ${AMIE_PACKET_REPROCESS_LOCKOUT_MINUTES:-30}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_SLACK_WEBHOOK_URL: ${ALERT_SLACK_WEBHOOK_URL:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
+      ALERT_SMTP_HOST: ${ALERT_SMTP_HOST:-}
+      ALERT_SMTP_PORT: ${ALERT_SMTP_PORT:-587}
+      ALERT_SMTP_USERNAME: ${ALERT_SMTP_USERNAME:-}
+      ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-}
+      ALERT_SMTP_USE_TLS: ${ALERT_SMTP_USE_TLS:-true}
+      ALERT_MIN_INTERVAL_MINUTES: ${ALERT_MIN_INTERVAL_MINUTES:-30}
+      ALERT_WORKER_STALE_SECONDS: ${ALERT_WORKER_STALE_SECONDS:-300}
+      ALERT_PARSE_FAILURES_THRESHOLD: ${ALERT_PARSE_FAILURES_THRESHOLD:-10}
+      ALERT_RECONCILE_STALE_MINUTES: ${ALERT_RECONCILE_STALE_MINUTES:-120}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  usage-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m workers.usage_worker
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql://nrp:nrp@db:5432/nrp_aime
+      PROMETHEUS_URL: https://prometheus.nrp-nautilus.io
+      AMIE_SITE_NAME: NRP
+      AMIE_API_KEY: ${AMIE_API_KEY:-}
+      AMIE_USAGE_URL: ${AMIE_USAGE_URL:-https://usage.xsede.org/api/v1}
+      AMIE_USAGE_INTERVAL_MINUTES: 1440
+      ACCOUNTING_STUB_ENABLED: ${ACCOUNTING_STUB_ENABLED:-true}
+      ACCOUNTING_STUB_CPU_RATIO: ${ACCOUNTING_STUB_CPU_RATIO:-0.35}
+      ACCOUNTING_STUB_GPU_RATIO: ${ACCOUNTING_STUB_GPU_RATIO:-0.20}
+      AMIE_PACKET_REPROCESS_MAX_RETRIES: ${AMIE_PACKET_REPROCESS_MAX_RETRIES:-5}
+      AMIE_PACKET_REPROCESS_LOCKOUT_MINUTES: ${AMIE_PACKET_REPROCESS_LOCKOUT_MINUTES:-30}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_SLACK_WEBHOOK_URL: ${ALERT_SLACK_WEBHOOK_URL:-}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-}
+      ALERT_SMTP_HOST: ${ALERT_SMTP_HOST:-}
+      ALERT_SMTP_PORT: ${ALERT_SMTP_PORT:-587}
+      ALERT_SMTP_USERNAME: ${ALERT_SMTP_USERNAME:-}
+      ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-}
+      ALERT_SMTP_USE_TLS: ${ALERT_SMTP_USE_TLS:-true}
+      ALERT_MIN_INTERVAL_MINUTES: ${ALERT_MIN_INTERVAL_MINUTES:-30}
+      ALERT_WORKER_STALE_SECONDS: ${ALERT_WORKER_STALE_SECONDS:-300}
+      ALERT_PARSE_FAILURES_THRESHOLD: ${ALERT_PARSE_FAILURES_THRESHOLD:-10}
+      ALERT_RECONCILE_STALE_MINUTES: ${ALERT_RECONCILE_STALE_MINUTES:-120}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    command: sh -c "npm install && npm run dev -- --host"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      VITE_DEV_PROXY_TARGET: http://backend:8000
+
+volumes:
+  postgres_data:
