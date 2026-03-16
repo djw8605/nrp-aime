@@ -37,7 +37,7 @@ At minimum, set (for `dev` and `prod` overlays):
 
 Portal RPC configuration:
 - `PORTAL_RPC_URL` (default `https://portal.nrp.ai/rpc`)
-- `PORTAL_RPC_NAMESPACE` (default `nrp`)
+- `PORTAL_RPC_NAMESPACE` (default `access`)
 - `PORTAL_RPC_TIMEOUT_SECONDS` (default `15`)
 
 For the `external-db` overlay, `DATABASE_URL`, `AMIE_API_KEY`, and `PORTAL_RPC_TOKEN` are required.

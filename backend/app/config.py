@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # NRP portal RPC integration (namespace + membership provisioning)
     portal_rpc_url: str = "https://portal.nrp.ai/rpc"
     portal_rpc_token: str = ""
-    portal_rpc_namespace: str = "nrp"
+    portal_rpc_namespace: str = "access"
     portal_rpc_timeout_seconds: float = 15.0
 
     # Portal authentication

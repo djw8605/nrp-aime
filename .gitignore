@@ -216,3 +216,6 @@ backend/venv/
 
 # Docker volumes / local data
 postgres_data/
+
+# k8s deployment data
+deployment/

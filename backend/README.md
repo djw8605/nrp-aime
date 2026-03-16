@@ -171,7 +171,7 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Frontend base URL used for invite links/redirects |
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Backend base URL used to construct callback URL |
 | `PORTAL_RPC_URL` | `https://portal.nrp.ai/rpc` | Portal JSON-RPC endpoint |
-| `PORTAL_RPC_NAMESPACE` | `nrp` | Parent namespace argument for `admin.CreateNamespace` |
+| `PORTAL_RPC_NAMESPACE` | `access` | Parent namespace argument for `admin.CreateNamespace` (configurable) |
 | `PORTAL_RPC_TIMEOUT_SECONDS` | `15` | Timeout for portal RPC HTTP calls |
 | `PORTAL_RPC_TOKEN` | `` | Shared token for `X-Portal-RPC-Token` header |
 | `AUTH_DEV_BYPASS` | `false` | Bypass admin portal authentication (dev-only) |

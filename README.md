@@ -167,7 +167,7 @@ npm run dev
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Base URL used for invite accept/success/error redirects |
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Base URL used for Authentik callback URL generation |
 | `PORTAL_RPC_URL` | `https://portal.nrp.ai/rpc` | Portal JSON-RPC endpoint |
-| `PORTAL_RPC_NAMESPACE` | `nrp` | Parent namespace used when calling `admin.CreateNamespace` |
+| `PORTAL_RPC_NAMESPACE` | `access` | Parent namespace used when calling `admin.CreateNamespace` (configurable) |
 | `PORTAL_RPC_TIMEOUT_SECONDS` | `15` | HTTP timeout for portal RPC calls |
 | `PORTAL_RPC_TOKEN` | `` | Shared token sent as `X-Portal-RPC-Token` for portal RPC auth |
 | `AUTH_DEV_BYPASS` | `false` | Bypass admin portal authentication (dev-only) |
