@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 WORKER_NAME = "aime-worker"
 
 
+def _log_amie_interaction(action: str, **context: Any) -> None:
+    """Emit a consistent INFO log line for AMIE API interactions."""
+    details = ", ".join(f"{key}={value!r}" for key, value in sorted(context.items()))
+    if details:
+        logger.info("AMIE interaction action=%s %s", action, details)
+    else:
+        logger.info("AMIE interaction action=%s", action)
+
+
 def _packet_to_dict(packet: Any) -> dict[str, Any]:
     """Convert AMIE packet object or dict payload into dict form."""
     if isinstance(packet, dict):
@@ -38,7 +47,7 @@ def _packet_to_dict(packet: Any) -> dict[str, Any]:
 
 
 def process_packets(
-    aime_svc: AIMEService, amie_client: AMIEClient, packets: list[Any]
+    aime_svc: AIMEService, amie_client: AMIEClient, packets: list[Any], *, site_name: str
 ) -> None:
     """Persist incoming packets to the database."""
     with SessionLocal() as db:
@@ -50,6 +59,14 @@ def process_packets(
             )
             outgoing_flag = header.get("outgoing_flag")
             is_outgoing = str(outgoing_flag).strip().lower() in {"1", "true", "yes"}
+            _log_amie_interaction(
+                "ingest_packet.start",
+                site_name=site_name,
+                packet_type=packet_payload.get("type"),
+                packet_rec_id=packet_rec_id,
+                trans_rec_id=header.get("trans_rec_id"),
+                is_outgoing=is_outgoing,
+            )
             logger.debug(
                 "Received AMIE packet type=%s packet_rec_id=%s trans_rec_id=%s payload=%s",
                 packet_payload.get("type"),
@@ -59,20 +76,53 @@ def process_packets(
             )
             try:
                 result = aime_svc.ingest_packet(db, packet)
+                _log_amie_interaction(
+                    "ingest_packet.finish",
+                    site_name=site_name,
+                    packet_type=result.packet_type,
+                    packet_rec_id=packet_rec_id,
+                    handled=result.handled,
+                    accepted=getattr(result, "accepted", None),
+                    skipped=getattr(result, "skipped", None),
+                )
                 if result.project is not None:
                     logger.info("Ingested packet for project: %s", result.project.name)
 
                 if result.handled and packet_rec_id is not None and not is_outgoing:
+                    _log_amie_interaction(
+                        "set_packet_client_state.start",
+                        site_name=site_name,
+                        packet_rec_id=packet_rec_id,
+                        client_state=settings.amie_processed_client_state,
+                    )
                     amie_client.set_packet_client_state(
                         packet_rec_id, settings.amie_processed_client_state
+                    )
+                    _log_amie_interaction(
+                        "set_packet_client_state.finish",
+                        site_name=site_name,
+                        packet_rec_id=packet_rec_id,
+                        client_state=settings.amie_processed_client_state,
                     )
                 elif not result.handled:
                     logger.debug(
                         "Packet received but not processed: %s",
                         result.packet_type,
                     )
+                elif is_outgoing:
+                    _log_amie_interaction(
+                        "set_packet_client_state.skipped_outgoing",
+                        site_name=site_name,
+                        packet_rec_id=packet_rec_id,
+                    )
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
+                _log_amie_interaction(
+                    "ingest_packet.error",
+                    site_name=site_name,
+                    packet_rec_id=packet_rec_id,
+                    error=str(exc),
+                )
                 logger.exception("Failed to ingest packet %s", packet_rec_id)
                 aime_svc.mark_packet_error(
                     db,
@@ -130,6 +180,12 @@ def run_worker(poll_interval: int = 60) -> None:
     }
     lifecycle_svc = AccountLifecycleService()
     logger.info("AIME worker started (sites=%s)", ", ".join(site_names))
+    _log_amie_interaction(
+        "worker.start",
+        site_names=",".join(site_names),
+        poll_interval_seconds=poll_interval,
+        amie_url=settings.amie_url,
+    )
     amie_clients = {
         site_name: AMIEClient(
             site_name=site_name,
@@ -157,6 +213,12 @@ def run_worker(poll_interval: int = 60) -> None:
                 continue
 
             try:
+                cycle_started_at = datetime.now(UTC).isoformat()
+                _log_amie_interaction(
+                    "poll_cycle.start",
+                    started_at=cycle_started_at,
+                    site_count=len(site_names),
+                )
                 _update_worker_status(
                     is_active=True,
                     current_state="polling",
@@ -167,12 +229,34 @@ def run_worker(poll_interval: int = 60) -> None:
                 site_outgoing_counts: dict[str, int] = {}
                 packet_count = 0
                 for site_name in site_names:
+                    _log_amie_interaction(
+                        "list_packets.start",
+                        site_name=site_name,
+                        incoming=True,
+                    )
                     incoming_packets = amie_clients[site_name].list_packets(
                         incoming=True
                     ).packets
+                    _log_amie_interaction(
+                        "list_packets.finish",
+                        site_name=site_name,
+                        incoming=True,
+                        packet_count=len(incoming_packets),
+                    )
+                    _log_amie_interaction(
+                        "list_packets.start",
+                        site_name=site_name,
+                        incoming=False,
+                    )
                     outgoing_packets = amie_clients[site_name].list_packets(
                         incoming=False
                     ).packets
+                    _log_amie_interaction(
+                        "list_packets.finish",
+                        site_name=site_name,
+                        incoming=False,
+                        packet_count=len(outgoing_packets),
+                    )
                     by_packet_rec_id: dict[Any, Any] = {}
                     passthrough_packets: list[Any] = []
                     for pkt in [*incoming_packets, *outgoing_packets]:
@@ -209,11 +293,23 @@ def run_worker(poll_interval: int = 60) -> None:
                             aime_services[site_name],
                             amie_clients[site_name],
                             packets,
+                            site_name=site_name,
                         )
 
                 now_iso = datetime.now(UTC).isoformat()
-
+                _log_amie_interaction(
+                    "reconcile_pending_confirmations.start",
+                    at=now_iso,
+                )
                 sync_result = sync_account_confirmations(lifecycle_svc)
+                _log_amie_interaction(
+                    "reconcile_pending_confirmations.finish",
+                    at=now_iso,
+                    checked=sync_result.get("checked"),
+                    transitioned=sync_result.get("transitioned"),
+                    confirmations_sent=sync_result.get("confirmations_sent"),
+                    failures=sync_result.get("failures"),
+                )
 
                 _update_worker_status(
                     is_active=True,
@@ -231,9 +327,17 @@ def run_worker(poll_interval: int = 60) -> None:
                     },
                     mark_success=True,
                 )
+                _log_amie_interaction(
+                    "poll_cycle.finish",
+                    started_at=cycle_started_at,
+                    completed_at=now_iso,
+                    total_packets=packet_count,
+                    site_packet_counts=site_packet_counts,
+                )
                 with SessionLocal() as alert_db:
                     ObservabilityService.evaluate_alerts(alert_db)
             except Exception as exc:  # noqa: BLE001
+                _log_amie_interaction("poll_cycle.error", error=str(exc))
                 _update_worker_status(
                     is_active=True,
                     current_state="error",

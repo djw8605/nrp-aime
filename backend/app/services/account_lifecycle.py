@@ -19,6 +19,15 @@ from app.services.outbound_packets import OutboundPacketService
 logger = logging.getLogger(__name__)
 
 
+def _log_amie_interaction(action: str, **context: object) -> None:
+    """Emit a consistent INFO log line for AMIE API interactions."""
+    details = ", ".join(f"{key}={value!r}" for key, value in sorted(context.items()))
+    if details:
+        logger.info("AMIE interaction action=%s %s", action, details)
+    else:
+        logger.info("AMIE interaction action=%s", action)
+
+
 class AccountLifecycleService:
     """Handle account state transitions and AIME confirmation packets."""
 
@@ -151,7 +160,19 @@ class AccountLifecycleService:
 
         outbound = None
         try:
+            _log_amie_interaction(
+                "get_packet.start",
+                site_name=self._project_user_site_name(project_user),
+                project_user_id=project_user.id,
+                source_packet_rec_id=source_packet_rec_id,
+            )
             source_packet = amie_client.get_packet(source_packet_rec_id)
+            _log_amie_interaction(
+                "get_packet.finish",
+                site_name=self._project_user_site_name(project_user),
+                project_user_id=project_user.id,
+                source_packet_rec_id=source_packet_rec_id,
+            )
             nac = source_packet.reply_packet(packet_type="notify_account_create")
             nac.AccountActivityTime = datetime.now(UTC)
             nac.ProjectID = project_id
@@ -193,11 +214,39 @@ class AccountLifecycleService:
             if project_user.user.org_code:
                 nac.UserOrgCode = project_user.user.org_code
 
+            _log_amie_interaction(
+                "send_packet.start",
+                site_name=self._project_user_site_name(project_user),
+                project_user_id=project_user.id,
+                packet_type="notify_account_create",
+                source_packet_rec_id=source_packet_rec_id,
+            )
             send_result = amie_client.send_packet(nac)
+            outbound_packet_rec_id = getattr(send_result, "packet_rec_id", None)
+            _log_amie_interaction(
+                "send_packet.finish",
+                site_name=self._project_user_site_name(project_user),
+                project_user_id=project_user.id,
+                packet_type="notify_account_create",
+                source_packet_rec_id=source_packet_rec_id,
+                outbound_packet_rec_id=outbound_packet_rec_id,
+            )
             OutboundPacketService.mark_sent(db, outbound, send_result=send_result)
             if outbound.outbound_packet_rec_id is not None:
                 try:
+                    _log_amie_interaction(
+                        "get_packet.start",
+                        site_name=self._project_user_site_name(project_user),
+                        project_user_id=project_user.id,
+                        outbound_packet_rec_id=outbound.outbound_packet_rec_id,
+                    )
                     outbound_packet = amie_client.get_packet(outbound.outbound_packet_rec_id)
+                    _log_amie_interaction(
+                        "get_packet.finish",
+                        site_name=self._project_user_site_name(project_user),
+                        project_user_id=project_user.id,
+                        outbound_packet_rec_id=outbound.outbound_packet_rec_id,
+                    )
                     header = (
                         outbound_packet.get("header")
                         if isinstance(outbound_packet, dict)
@@ -218,6 +267,15 @@ class AccountLifecycleService:
                         "completed",
                         "done",
                     } or str(packet_state or "").lower() in {"processed", "complete"}
+                    _log_amie_interaction(
+                        "mark_outbound_ack",
+                        site_name=self._project_user_site_name(project_user),
+                        project_user_id=project_user.id,
+                        outbound_packet_rec_id=outbound.outbound_packet_rec_id,
+                        acked=acked,
+                        transaction_state=transaction_state,
+                        packet_state=packet_state,
+                    )
                     OutboundPacketService.mark_acked(db, outbound, acked=acked)
                 except Exception:  # noqa: BLE001
                     logger.exception(
@@ -299,6 +357,11 @@ class AccountLifecycleService:
                                     api_key=settings.amie_api_key,
                                     amie_url=settings.amie_url,
                                 )
+                            )
+                            _log_amie_interaction(
+                                "client.opened",
+                                site_name=source_site_name,
+                                project_user_id=project_user.id,
                             )
                         if self._send_account_confirmation_packet(
                             db,
