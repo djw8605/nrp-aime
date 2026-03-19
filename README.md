@@ -82,21 +82,22 @@ Then visit:
 
 ## Kubernetes (Kustomize)
 
-Kubernetes manifests are in [`k8s/`](/Users/derekweitzel/git/nrp-aime/k8s/README.md), with `base` plus `dev` and `prod` overlays.
+The current working deployment path is [`deployment/`](/Users/derekweitzel/git/nrp-aime/deployment/README.md), which is the single Kubernetes source for the external-database deployment and Argo CD.
 
 ```bash
-# Development overlay
-kubectl apply -k k8s/overlays/dev
-
-# Production overlay
-kubectl apply -k k8s/overlays/prod
+# Current deployment
+kubectl apply -k deployment
 ```
 
-Before applying, set values in:
-- `k8s/overlays/dev/config/secret.env`
-- `k8s/overlays/prod/config/secret.env`
+Before applying or syncing with Argo CD:
+- create the destination namespace separately
+- generate and commit a sealed secret for the deployment
+- update the deployment to a pinned image tag
 
-At minimum configure `POSTGRES_PASSWORD`, `DATABASE_URL`, and `AMIE_API_KEY`.
+Secret templates live at:
+- `deployment/config/secret.env.example`
+
+See [`deployment/README.md`](/Users/derekweitzel/git/nrp-aime/deployment/README.md) for the `kubeseal` workflow and Argo CD example.
 
 ## Manual Setup
 

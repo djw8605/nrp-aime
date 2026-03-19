@@ -1,6 +1,8 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+namespace: access-accounting
+
 resources:
   - resources/backend-deployment.yaml
   - resources/backend-service.yaml
@@ -9,20 +11,12 @@ resources:
   - resources/frontend-deployment.yaml
   - resources/frontend-service.yaml
   - resources/ingress.yaml
-
-patches:
-  - path: ingress-host-patch.yaml
-  - path: wait-for-db-database-url-patch.yaml
+  - secrets
 
 configMapGenerator:
   - name: nrp-aime-config
     envs:
       - config/app.env
-
-secretGenerator:
-  - name: nrp-aime-secrets
-    envs:
-      - config/secret.env
 
 generatorOptions:
   disableNameSuffixHash: true

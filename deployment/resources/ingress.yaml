@@ -7,7 +7,7 @@ metadata:
 spec:
   ingressClassName: haproxy
   rules:
-    - host: nrp-aime.local
+    - host: access-nrp.nrp-nautilus.io
       http:
         paths:
           - path: /api
@@ -33,4 +33,4 @@ spec:
                   number: 80
   tls:
     - hosts:
-        - nrp-aime.local
+        - access-nrp.nrp-nautilus.io

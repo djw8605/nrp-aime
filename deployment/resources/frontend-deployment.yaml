@@ -17,7 +17,7 @@ spec:
       containers:
         - name: frontend
           image: ghcr.io/your-org/nrp-aime-frontend:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 80

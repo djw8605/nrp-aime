@@ -17,25 +17,20 @@ spec:
       initContainers:
         - name: wait-for-db
           image: postgres:16
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           env:
-            - name: POSTGRES_USER
+            - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: nrp-aime-secrets
-                  key: POSTGRES_USER
-            - name: POSTGRES_DB
-              valueFrom:
-                secretKeyRef:
-                  name: nrp-aime-secrets
-                  key: POSTGRES_DB
+                  key: DATABASE_URL
           command:
             - sh
             - -c
-            - until pg_isready -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do sleep 2; done
+            - until pg_isready -d "$DATABASE_URL"; do sleep 2; done
         - name: migrate
           image: ghcr.io/your-org/nrp-aime-backend:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           envFrom:
             - configMapRef:
                 name: nrp-aime-config
@@ -48,7 +43,7 @@ spec:
       containers:
         - name: backend
           image: ghcr.io/your-org/nrp-aime-backend:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command:
             - uvicorn
             - app.main:app
