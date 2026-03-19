@@ -4,27 +4,27 @@ kind: Kustomization
 namespace: access-accounting
 
 resources:
-  - resources/backend-deployment.yaml
-  - resources/backend-service.yaml
-  - resources/aime-worker-deployment.yaml
-  - resources/usage-worker-deployment.yaml
-  - resources/frontend-deployment.yaml
-  - resources/frontend-service.yaml
-  - resources/ingress.yaml
-  - secrets
+- resources/backend-deployment.yaml
+- resources/backend-service.yaml
+- resources/aime-worker-deployment.yaml
+- resources/usage-worker-deployment.yaml
+- resources/frontend-deployment.yaml
+- resources/frontend-service.yaml
+- resources/ingress.yaml
+- secrets
 
 configMapGenerator:
-  - name: nrp-aime-config
-    envs:
-      - config/app.env
+- envs:
+  - config/app.env
+  name: nrp-aime-config
 
 generatorOptions:
   disableNameSuffixHash: true
 
 images:
-  - name: ghcr.io/your-org/nrp-aime-backend
-    newName: ghcr.io/djw8605/nrp-aime-backend
-    newTag: latest
-  - name: ghcr.io/your-org/nrp-aime-frontend
-    newName: ghcr.io/djw8605/nrp-aime-frontend
-    newTag: latest
+- name: ghcr.io/your-org/nrp-aime-backend
+  newName: ghcr.io/djw8605/nrp-aime-backend
+  newTag: 4db42afa0f4d38c6b4732b19d1b251fe05c70cad
+- name: ghcr.io/your-org/nrp-aime-frontend
+  newName: ghcr.io/djw8605/nrp-aime-frontend
+  newTag: 4db42afa0f4d38c6b4732b19d1b251fe05c70cad
