@@ -178,8 +178,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Column from 'primevue/column'
@@ -191,6 +191,7 @@ import Tag from 'primevue/tag'
 import { fetchPacketLogs, reingestPacket } from '../api/packets'
 
 const router = useRouter()
+const route = useRoute()
 
 const packets = ref([])
 const totalRecords = ref(0)
@@ -306,6 +307,16 @@ async function loadPackets() {
   }
 }
 
+function syncFiltersFromRoute() {
+  const routeQuery = typeof route.query.q === 'string' ? route.query.q : ''
+  const routeStatus = typeof route.query.status === 'string' ? route.query.status : ''
+  searchInput.value = routeQuery
+  searchValue.value = routeQuery
+  statusFilter.value = routeStatus
+  statusValue.value = routeStatus
+  page.value = 1
+}
+
 function onPage(event) {
   page.value = event.page + 1
   pageSize.value = event.rows
@@ -336,6 +347,15 @@ function clearFilters() {
 }
 
 onMounted(async () => {
+  syncFiltersFromRoute()
   await loadPackets()
 })
+
+watch(
+  () => [route.query.q, route.query.status],
+  async () => {
+    syncFiltersFromRoute()
+    await loadPackets()
+  },
+)
 </script>

@@ -7,14 +7,23 @@
           Focused view of projects with resource allocations.
         </p>
       </div>
-      <router-link :to="{ name: 'admin' }" class="no-underline">
+      <div class="flex items-center gap-2">
         <Button
-          icon="pi pi-cog"
-          label="Admin Dashboard"
+          :icon="showDebug ? 'pi pi-eye-slash' : 'pi pi-eye'"
+          :label="showDebug ? 'Hide Debug' : 'Show Debug'"
           severity="secondary"
           outlined
+          @click="toggleDebugVisibility"
         />
-      </router-link>
+        <router-link :to="{ name: 'admin' }" class="no-underline">
+          <Button
+            icon="pi pi-cog"
+            label="Admin Dashboard"
+            severity="secondary"
+            outlined
+          />
+        </router-link>
+      </div>
     </div>
 
     <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -40,6 +49,14 @@
     </div>
 
     <Message
+      v-if="showDebug"
+      severity="info"
+      :closable="false"
+    >
+      Debug projects are visible below, but dashboard totals continue to exclude debug-tagged projects and users.
+    </Message>
+
+    <Message
       v-if="projects.length > 0 && projectsWithAllocations.length === 0"
       severity="info"
       :closable="false"
@@ -53,7 +70,7 @@
         <div class="flex items-center gap-2">
           <InputText
             v-model="allocationSearch"
-            placeholder="Search project name"
+            placeholder="Search project name or tag"
             class="w-64"
           />
           <Tag
@@ -100,6 +117,7 @@ const summary = ref({
 const loading = ref(false)
 const error = ref(null)
 const allocationSearch = ref('')
+const showDebug = ref(false)
 
 function formatUsage(value) {
   return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -128,11 +146,19 @@ const displayProjects = computed(() => {
 const filteredProjects = computed(() => {
   const query = allocationSearch.value.trim().toLowerCase()
   if (!query) return displayProjects.value
-  return displayProjects.value.filter((project) =>
-    String(project.name || '')
+  return displayProjects.value.filter((project) => {
+    const haystack = [
+      project.name,
+      project.aime_allocation_id,
+      project.site_project_id,
+      project.source_site_name,
+      Array.isArray(project.tags) ? project.tags.join(' ') : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
       .toLowerCase()
-      .includes(query),
-  )
+    return haystack.includes(query)
+  })
 })
 
 const kpis = computed(() => [
@@ -161,7 +187,7 @@ async function loadProjects() {
   error.value = null
   try {
     const [projectsResponse, summaryResponse] = await Promise.allSettled([
-      fetchProjects(),
+      fetchProjects(showDebug.value),
       fetchProjectsSummary(),
     ])
 
@@ -179,6 +205,11 @@ async function loadProjects() {
   } finally {
     loading.value = false
   }
+}
+
+async function toggleDebugVisibility() {
+  showDebug.value = !showDebug.value
+  await loadProjects()
 }
 
 onMounted(async () => {

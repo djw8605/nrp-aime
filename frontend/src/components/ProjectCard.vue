@@ -19,6 +19,15 @@
       </template>
       <template #content>
         <div class="space-y-3">
+          <div v-if="(project.tags || []).length" class="flex flex-wrap gap-2">
+            <Tag
+              v-for="tag in project.tags"
+              :key="tag"
+              :value="tag"
+              severity="contrast"
+              rounded
+            />
+          </div>
           <div class="grid grid-cols-2 gap-3">
             <div class="rounded-xl bg-sky-50 p-3 text-center">
               <p class="m-0 text-xs uppercase tracking-wide text-sky-500">Service Units</p>

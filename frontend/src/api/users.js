@@ -13,11 +13,33 @@ export function fetchUser(id) {
 }
 
 /**
- * Fetch all users.
+ * Fetch packets related to a user's creation or updates.
+ * @param {string} id
  * @returns {Promise<Array>}
  */
-export function fetchUsers() {
-  return apiClient.get('/users/').then((res) => res.data)
+export function fetchUserPackets(id) {
+  return apiClient.get(`/users/${id}/packets`).then((res) => res.data)
+}
+
+/**
+ * Fetch all users.
+ * @param {boolean} includeDebug
+ * @returns {Promise<Array>}
+ */
+export function fetchUsers(includeDebug = false) {
+  return apiClient
+    .get('/users/', { params: { include_debug: includeDebug } })
+    .then((res) => res.data)
+}
+
+/**
+ * Update a user.
+ * @param {string} id
+ * @param {Object} payload
+ * @returns {Promise<Object>}
+ */
+export function updateUser(id, payload) {
+  return apiClient.patch(`/users/${id}`, payload).then((res) => res.data)
 }
 
 /**

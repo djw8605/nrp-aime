@@ -8,6 +8,7 @@ from app.schemas.invite import (
     InvitePreviewResponse,
 )
 from app.schemas.packets import (
+    EntityPacketRead,
     ManualPacketCreate,
     PacketLogPage,
     PacketLogRead,
@@ -21,15 +22,18 @@ from app.schemas.project import (
     ProjectRead,
     ProjectReadWithUsers,
     ProjectSummary,
+    ProjectUpdate,
     ProjectUsage,
 )
 from app.schemas.user import (
+    ProjectMemberCreate,
     ProjectMemberRead,
     UserCreate,
     UserInviteCreate,
     UserPacketDetailRead,
     UserProjectMembershipRead,
     UserRead,
+    UserUpdate,
 )
 
 __all__ = [
@@ -42,18 +46,22 @@ __all__ = [
     "ProjectRead",
     "ProjectReadWithUsers",
     "ProjectSummary",
+    "ProjectUpdate",
     "ProjectUsage",
     "ManualPacketCreate",
+    "EntityPacketRead",
     "PacketLogPage",
     "PacketLogRead",
     "PacketReprocessResult",
     "PacketValidationRequest",
     "PacketValidationResult",
     "TransactionSummaryRead",
+    "ProjectMemberCreate",
     "ProjectMemberRead",
     "UserProjectMembershipRead",
     "UserPacketDetailRead",
     "UserInviteCreate",
     "UserCreate",
     "UserRead",
+    "UserUpdate",
 ]

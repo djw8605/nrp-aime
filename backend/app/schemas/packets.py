@@ -23,6 +23,22 @@ class PacketLogRead(BaseModel):
     processed_at: datetime | None
 
 
+class EntityPacketRead(BaseModel):
+    """Compact packet reference for entity detail pages."""
+
+    id: uuid.UUID
+    packet_rec_id: int | None
+    trans_rec_id: int | None
+    transaction_id: int | None
+    packet_type: str
+    processing_status: str
+    processing_error: str | None = None
+    ingest_source: str
+    received_at: datetime
+    processed_at: datetime | None = None
+    matched_on: list[str] = Field(default_factory=list)
+
+
 class PacketLogPage(BaseModel):
     """Paged packet log response."""
 

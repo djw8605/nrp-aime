@@ -10,9 +10,9 @@ from sqlalchemy import (
     Date,
     DateTime,
     Integer,
+    JSON,
     Numeric,
     String,
-    event,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -51,6 +51,7 @@ class Project(Base):
         BigInteger, nullable=True, index=True
     )
     source_site_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     allocated_resource: Mapped[str | None] = mapped_column(String, nullable=True)
     service_units_allocated: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4), nullable=True
@@ -114,17 +115,16 @@ class Project(Base):
         cascade="all, delete-orphan",
     )
     usage_snapshot: Mapped["ProjectUsageSnapshot | None"] = relationship(
-        "ProjectUsageSnapshot", back_populates="project", uselist=False
+        "ProjectUsageSnapshot",
+        back_populates="project",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    usage_exports: Mapped[list["AMIEUsageExport"]] = relationship(
+        "AMIEUsageExport",
+        back_populates="project",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:
         return f"<Project id={self.id} name={self.name!r}>"
-
-
-@event.listens_for(Project, "before_delete")
-def _prevent_project_delete(_mapper, _connection, target: Project) -> None:
-    """Disallow hard deletion; projects are inactivated instead."""
-    raise ValueError(
-        f"Project deletion is not allowed (project_id={target.id}). "
-        "Set is_active=False instead."
-    )

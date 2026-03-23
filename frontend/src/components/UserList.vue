@@ -10,7 +10,7 @@
       <DataTable
         v-else
         :value="users"
-        dataKey="id"
+        dataKey="project_user_id"
         stripedRows
         size="small"
         tableStyle="min-width: 20rem"
@@ -18,12 +18,21 @@
       >
         <Column header="Name">
           <template #body="{ data }">
-            <router-link
-              :to="{ name: 'person-detail', params: { id: data.id } }"
-              class="text-sky-700 no-underline hover:underline"
-            >
-              {{ data.name }}
-            </router-link>
+            <div class="flex flex-wrap items-center gap-2">
+              <router-link
+                :to="{ name: 'person-detail', params: { id: data.id } }"
+                class="text-sky-700 no-underline hover:underline"
+              >
+                {{ data.name }}
+              </router-link>
+              <Tag
+                v-for="tag in data.tags || []"
+                :key="tag"
+                :value="tag"
+                severity="contrast"
+                rounded
+              />
+            </div>
           </template>
         </Column>
         <Column header="Person ID">

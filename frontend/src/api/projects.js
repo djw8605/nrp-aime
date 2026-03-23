@@ -5,10 +5,13 @@ import apiClient from './client'
 
 /**
  * Fetch all projects.
+ * @param {boolean} includeDebug
  * @returns {Promise<Array>}
  */
-export function fetchProjects() {
-  return apiClient.get('/projects/').then((res) => res.data)
+export function fetchProjects(includeDebug = false) {
+  return apiClient
+    .get('/projects/', { params: { include_debug: includeDebug } })
+    .then((res) => res.data)
 }
 
 /**
@@ -29,12 +32,41 @@ export function fetchProject(id) {
 }
 
 /**
+ * Update a project.
+ * @param {string} id
+ * @param {Object} payload
+ * @returns {Promise<Object>}
+ */
+export function updateProject(id, payload) {
+  return apiClient.patch(`/projects/${id}`, payload).then((res) => res.data)
+}
+
+/**
  * Fetch users assigned to a project.
  * @param {string} id
  * @returns {Promise<Array>}
  */
 export function fetchProjectUsers(id) {
   return apiClient.get(`/projects/${id}/users`).then((res) => res.data)
+}
+
+/**
+ * Fetch packets related to a project's creation or updates.
+ * @param {string} id
+ * @returns {Promise<Array>}
+ */
+export function fetchProjectPackets(id) {
+  return apiClient.get(`/projects/${id}/packets`).then((res) => res.data)
+}
+
+/**
+ * Add a person to a project.
+ * @param {string} id
+ * @param {Object} payload
+ * @returns {Promise<Object>}
+ */
+export function addProjectMember(id, payload) {
+  return apiClient.post(`/projects/${id}/members`, payload).then((res) => res.data)
 }
 
 /**

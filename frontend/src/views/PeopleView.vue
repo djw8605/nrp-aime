@@ -8,6 +8,13 @@
         </p>
       </div>
       <div class="flex items-center gap-2">
+        <Button
+          :icon="showDebug ? 'pi pi-eye-slash' : 'pi pi-eye'"
+          :label="showDebug ? 'Hide Debug' : 'Show Debug'"
+          severity="secondary"
+          outlined
+          @click="toggleDebugVisibility"
+        />
         <InputText
           v-model="searchText"
           placeholder="Search people"
@@ -19,6 +26,9 @@
 
     <Card class="border border-slate-200 shadow-sm">
       <template #content>
+        <Message v-if="showDebug" severity="info" :closable="false" class="mb-4">
+          Debug-tagged people are visible in this list, but they are still excluded from dashboard summary counts.
+        </Message>
         <div v-if="loading" class="flex items-center justify-center py-16">
           <ProgressSpinner style="width: 2.8rem; height: 2.8rem" strokeWidth="5" />
         </div>
@@ -44,12 +54,21 @@
         >
           <Column field="name" header="Name" sortable>
             <template #body="{ data }">
-              <router-link
-                :to="{ name: 'person-detail', params: { id: data.id } }"
-                class="text-sky-700 no-underline hover:underline"
-              >
-                {{ data.name }}
-              </router-link>
+              <div class="flex flex-wrap items-center gap-2">
+                <router-link
+                  :to="{ name: 'person-detail', params: { id: data.id } }"
+                  class="text-sky-700 no-underline hover:underline"
+                >
+                  {{ data.name }}
+                </router-link>
+                <Tag
+                  v-for="tag in data.tags || []"
+                  :key="tag"
+                  :value="tag"
+                  severity="contrast"
+                  rounded
+                />
+              </div>
             </template>
           </Column>
           <Column header="Email" sortable>
@@ -118,6 +137,7 @@ const people = ref([])
 const loading = ref(false)
 const error = ref(null)
 const searchText = ref('')
+const showDebug = ref(false)
 
 const filteredPeople = computed(() => {
   const query = searchText.value.trim().toLowerCase()
@@ -130,6 +150,7 @@ const filteredPeople = computed(() => {
     return [
       person.name,
       person.email,
+      Array.isArray(person.tags) ? person.tags.join(' ') : '',
       person.person_id,
       person.global_id,
       projectNames,
@@ -152,12 +173,17 @@ async function loadPeople() {
   loading.value = true
   error.value = null
   try {
-    people.value = await fetchUsers()
+    people.value = await fetchUsers(showDebug.value)
   } catch {
     error.value = 'Failed to load people. Please try again later.'
   } finally {
     loading.value = false
   }
+}
+
+async function toggleDebugVisibility() {
+  showDebug.value = !showDebug.value
+  await loadPeople()
 }
 
 onMounted(async () => {

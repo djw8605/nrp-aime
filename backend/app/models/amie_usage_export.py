@@ -37,4 +37,4 @@ class AMIEUsageExport(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    project: Mapped["Project"] = relationship("Project")
+    project: Mapped["Project"] = relationship("Project", back_populates="usage_exports")
