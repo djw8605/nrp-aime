@@ -198,28 +198,40 @@ def get_user_packets(
         for row in rows:
             add_packet(row, reason)
 
+    # Collect membership source IDs to avoid per-membership queries (N+1 pattern).
+    source_packet_rec_ids: set[int] = set()
+    source_trans_rec_ids: set[int] = set()
+    source_transaction_ids: set[int] = set()
+
     for membership in user.project_users:
         if membership.source_packet_rec_id is not None:
-            add_packet(
-                db.query(AMIEPacket)
-                .filter(AMIEPacket.packet_rec_id == membership.source_packet_rec_id)
-                .first(),
-                "membership.source_packet_rec_id",
-            )
+            source_packet_rec_ids.add(membership.source_packet_rec_id)
         if membership.source_trans_rec_id is not None:
-            add_packets(
-                db.query(AMIEPacket)
-                .filter(AMIEPacket.trans_rec_id == membership.source_trans_rec_id)
-                .all(),
-                "membership.source_trans_rec_id",
-            )
+            source_trans_rec_ids.add(membership.source_trans_rec_id)
         if membership.source_transaction_id is not None:
-            add_packets(
-                db.query(AMIEPacket)
-                .filter(AMIEPacket.transaction_id == membership.source_transaction_id)
-                .all(),
-                "membership.source_transaction_id",
-            )
+            source_transaction_ids.add(membership.source_transaction_id)
+
+    if source_packet_rec_ids:
+        add_packets(
+            db.query(AMIEPacket)
+            .filter(AMIEPacket.packet_rec_id.in_(source_packet_rec_ids))
+            .all(),
+            "membership.source_packet_rec_id",
+        )
+    if source_trans_rec_ids:
+        add_packets(
+            db.query(AMIEPacket)
+            .filter(AMIEPacket.trans_rec_id.in_(source_trans_rec_ids))
+            .all(),
+            "membership.source_trans_rec_id",
+        )
+    if source_transaction_ids:
+        add_packets(
+            db.query(AMIEPacket)
+            .filter(AMIEPacket.transaction_id.in_(source_transaction_ids))
+            .all(),
+            "membership.source_transaction_id",
+        )
 
     if user.person_id:
         add_packets(

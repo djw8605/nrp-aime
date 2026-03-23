@@ -334,6 +334,7 @@ function applyFilters() {
   searchValue.value = searchInput.value.trim()
   statusValue.value = statusFilter.value
   page.value = 1
+  router.replace({ query: { q: searchValue.value || undefined, status: statusValue.value || undefined } })
   loadPackets()
 }
 
@@ -343,6 +344,7 @@ function clearFilters() {
   searchValue.value = ''
   statusValue.value = ''
   page.value = 1
+  router.replace({ query: {} })
   loadPackets()
 }
 

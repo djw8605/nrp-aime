@@ -543,6 +543,15 @@ import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
 import PacketReferenceTable from '../components/PacketReferenceTable.vue'
 import {
+  applyDebugTag,
+  hasDebugTag,
+  normalizeTextValue,
+  parseDnList,
+  parseTagList,
+  toErrorMessage,
+  toNullableNumber,
+} from '../utils/formUtils'
+import {
   fetchUser,
   fetchUserPackets,
   fetchUserMemberships,
@@ -592,59 +601,12 @@ function createPersonForm(personData = null) {
   }
 }
 
-function normalizeTextValue(value) {
-  const cleaned = String(value ?? '').trim()
-  return cleaned || null
-}
-
-function toNullableNumber(value) {
-  if (value === null || value === undefined || value === '') return null
-  const numeric = Number(value)
-  return Number.isFinite(numeric) ? numeric : null
-}
-
-function parseDnList(text) {
-  return String(text || '')
-    .split(/\r?\n|,/)
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-}
-
-function parseTagList(text) {
-  return String(text || '')
-    .split(/\r?\n|,/)
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-}
-
-function hasDebugTag(tags) {
-  return parseTagList(Array.isArray(tags) ? tags.join(',') : '')
-    .some((tag) => tag.toLowerCase() === 'debug')
-}
-
-function applyDebugTag(tags, isDebug) {
-  const unique = []
-  for (const tag of tags) {
-    const normalized = String(tag || '').trim()
-    if (!normalized) continue
-    if (!unique.some((existing) => existing.toLowerCase() === normalized.toLowerCase())) {
-      unique.push(normalized)
-    }
-  }
-  const withoutDebug = unique.filter((tag) => tag.toLowerCase() !== 'debug')
-  return isDebug ? ['debug', ...withoutDebug] : withoutDebug
-}
-
 function accountStateSeverity(state) {
   if (state === 'account_made') return 'success'
   if (state === 'sent_email') return 'info'
   if (state === 'not_sent_email_invite') return 'warning'
   if (state === 'just_received_packet') return 'warning'
   return 'secondary'
-}
-
-function toErrorMessage(err, fallback) {
-  return err?.response?.data?.detail || fallback
 }
 
 function formatDate(value) {
