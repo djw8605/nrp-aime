@@ -13,6 +13,7 @@ from sqlalchemy import (
     JSON,
     Numeric,
     String,
+    event,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -128,3 +129,19 @@ class Project(Base):
 
     def __repr__(self) -> str:
         return f"<Project id={self.id} name={self.name!r}>"
+
+
+@event.listens_for(Project, "before_delete")
+def _prevent_project_hard_delete(mapper, connection, target):  # noqa: ARG001
+    """Guard against accidental hard deletion of Project rows.
+
+    Hard deletion is intentionally disallowed; use ``is_active = False`` for
+    soft-deactivation instead.  This listener raises an error if any code path
+    attempts to issue a ``DELETE`` on a Project row so that the cascade
+    relationships (project_users, invites, usage_snapshot, usage_exports) are
+    never silently wiped.
+    """
+    raise ValueError(
+        f"Hard deletion of Project {target.id!r} ({target.name!r}) is not allowed. "
+        "Set is_active=False to deactivate a project instead."
+    )

@@ -4,7 +4,8 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from sqlalchemy import cast, case, func, or_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
@@ -228,48 +229,50 @@ def list_projects(
 @router.get("/summary", response_model=ProjectSummary)
 def get_projects_summary(db: Session = Depends(get_db)) -> ProjectSummary:
     """Return aggregate KPIs across all projects from persisted usage snapshots."""
-    projects = db.query(Project).options(joinedload(Project.usage_snapshot)).all()
-    visible_projects = [project for project in projects if not _has_debug_tag(project.tags)]
-    users = db.query(User).all()
-    visible_users = [user for user in users if not _has_debug_tag(user.tags)]
+    # Filter out debug-tagged projects/users at the SQL level using a JSONB
+    # containment check. The 'debug' tag is always stored lowercase by
+    # _normalize_tags, so a case-sensitive check is sufficient.
+    non_debug_project = ~cast(Project.tags, JSONB).contains(["debug"])
+    non_debug_user = ~cast(User.tags, JSONB).contains(["debug"])
 
-    total_projects = len(visible_projects)
-    active_projects = sum(1 for project in visible_projects if project.is_active)
-    total_users = len(visible_users)
-    active_users = sum(1 for user in visible_users if user.is_active)
-    total_cpu_allocated = sum(project.cpu_allocated or 0 for project in visible_projects)
-    total_gpu_allocated = sum(project.gpu_allocated or 0 for project in visible_projects)
-    total_cpu_used = sum(
-        float(project.usage_snapshot.cpu_used_current)
-        for project in visible_projects
-        if project.usage_snapshot is not None
+    proj_stats = (
+        db.query(
+            func.count(Project.id).label("total"),
+            func.sum(case((Project.is_active, 1), else_=0)).label("active"),
+            func.coalesce(func.sum(Project.cpu_allocated), 0).label("cpu_allocated"),
+            func.coalesce(func.sum(Project.gpu_allocated), 0).label("gpu_allocated"),
+            func.sum(
+                case((Project.service_units_allocated.isnot(None), 1), else_=0)
+            ).label("with_su"),
+            func.coalesce(func.sum(Project.service_units_allocated), 0).label("total_su"),
+            func.coalesce(func.sum(ProjectUsageSnapshot.cpu_used_current), 0).label("cpu_used"),
+            func.coalesce(func.sum(ProjectUsageSnapshot.gpu_used_current), 0).label("gpu_used"),
+        )
+        .outerjoin(ProjectUsageSnapshot, ProjectUsageSnapshot.project_id == Project.id)
+        .filter(non_debug_project)
+        .one()
     )
-    total_gpu_used = sum(
-        float(project.usage_snapshot.gpu_used_current)
-        for project in visible_projects
-        if project.usage_snapshot is not None
-    )
-    projects_with_service_units = sum(
-        1
-        for project in visible_projects
-        if project.service_units_allocated is not None
-    )
-    total_service_units_allocated = sum(
-        float(project.service_units_allocated or 0)
-        for project in visible_projects
+
+    user_stats = (
+        db.query(
+            func.count(User.id).label("total"),
+            func.sum(case((User.is_active, 1), else_=0)).label("active"),
+        )
+        .filter(non_debug_user)
+        .one()
     )
 
     return ProjectSummary(
-        total_projects=total_projects,
-        active_projects=active_projects,
-        total_users=total_users,
-        active_users=active_users,
-        total_cpu_allocated=int(total_cpu_allocated),
-        total_gpu_allocated=int(total_gpu_allocated),
-        total_cpu_used=float(total_cpu_used),
-        total_gpu_used=float(total_gpu_used),
-        projects_with_service_units=projects_with_service_units,
-        total_service_units_allocated=float(total_service_units_allocated or 0),
+        total_projects=proj_stats.total or 0,
+        active_projects=proj_stats.active or 0,
+        total_users=user_stats.total or 0,
+        active_users=user_stats.active or 0,
+        total_cpu_allocated=int(proj_stats.cpu_allocated or 0),
+        total_gpu_allocated=int(proj_stats.gpu_allocated or 0),
+        total_cpu_used=float(proj_stats.cpu_used or 0),
+        total_gpu_used=float(proj_stats.gpu_used or 0),
+        projects_with_service_units=int(proj_stats.with_su or 0),
+        total_service_units_allocated=float(proj_stats.total_su or 0),
     )
 
 
