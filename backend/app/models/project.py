@@ -10,6 +10,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Integer,
+    JSON,
     Numeric,
     String,
     event,
@@ -51,6 +52,7 @@ class Project(Base):
         BigInteger, nullable=True, index=True
     )
     source_site_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     allocated_resource: Mapped[str | None] = mapped_column(String, nullable=True)
     service_units_allocated: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 4), nullable=True
@@ -114,7 +116,15 @@ class Project(Base):
         cascade="all, delete-orphan",
     )
     usage_snapshot: Mapped["ProjectUsageSnapshot | None"] = relationship(
-        "ProjectUsageSnapshot", back_populates="project", uselist=False
+        "ProjectUsageSnapshot",
+        back_populates="project",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    usage_exports: Mapped[list["AMIEUsageExport"]] = relationship(
+        "AMIEUsageExport",
+        back_populates="project",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:
@@ -122,9 +132,16 @@ class Project(Base):
 
 
 @event.listens_for(Project, "before_delete")
-def _prevent_project_delete(_mapper, _connection, target: Project) -> None:
-    """Disallow hard deletion; projects are inactivated instead."""
+def _prevent_project_hard_delete(mapper, connection, target):  # noqa: ARG001
+    """Guard against accidental hard deletion of Project rows.
+
+    Hard deletion is intentionally disallowed; use ``is_active = False`` for
+    soft-deactivation instead.  This listener raises an error if any code path
+    attempts to issue a ``DELETE`` on a Project row so that the cascade
+    relationships (project_users, invites, usage_snapshot, usage_exports) are
+    never silently wiped.
+    """
     raise ValueError(
-        f"Project deletion is not allowed (project_id={target.id}). "
-        "Set is_active=False instead."
+        f"Hard deletion of Project {target.id!r} ({target.name!r}) is not allowed. "
+        "Set is_active=False to deactivate a project instead."
     )

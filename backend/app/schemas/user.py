@@ -12,6 +12,29 @@ class UserCreate(BaseModel):
 
     email: EmailStr
     name: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class UserUpdate(BaseModel):
+    """Schema for updating a user."""
+
+    email: EmailStr | None = None
+    name: str | None = None
+    tags: list[str] | None = None
+    first_name: str | None = None
+    middle_name: str | None = None
+    last_name: str | None = None
+    person_id: str | None = None
+    global_id: str | None = None
+    organization: str | None = None
+    org_code: str | None = None
+    department: str | None = None
+    nsf_status_code: str | None = None
+    dn_list: list[str] | None = None
+    remote_site_login: str | None = None
+    source_site_name: str | None = None
+    service_units_allocated: float | None = None
+    is_active: bool | None = None
 
 
 class UserRead(BaseModel):
@@ -20,6 +43,7 @@ class UserRead(BaseModel):
     id: uuid.UUID
     email: str | None
     name: str
+    tags: list[str] = Field(default_factory=list)
     first_name: str | None = None
     middle_name: str | None = None
     last_name: str | None = None
@@ -44,14 +68,18 @@ class UserRead(BaseModel):
 class ProjectMemberRead(BaseModel):
     """Schema for reading project membership plus user status."""
 
+    project_user_id: uuid.UUID
     id: uuid.UUID
     email: str | None
     name: str
+    tags: list[str] = Field(default_factory=list)
     first_name: str | None = None
     middle_name: str | None = None
     last_name: str | None = None
     person_id: str | None = None
+    global_id: str | None = None
     organization: str | None = None
+    org_code: str | None = None
     department: str | None = None
     nsf_status_code: str | None = None
     dn_list: list[str] = Field(default_factory=list)
@@ -74,6 +102,46 @@ class ProjectMemberRead(BaseModel):
     source_site_name: str | None = None
     service_units_allocated: float | None = None
     created_at: datetime
+
+
+class ProjectMemberNewUserCreate(BaseModel):
+    """Payload for manually entering a new person while adding a project member."""
+
+    email: EmailStr | None = None
+    name: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    first_name: str | None = None
+    middle_name: str | None = None
+    last_name: str | None = None
+    person_id: str | None = None
+    global_id: str | None = None
+    organization: str | None = None
+    org_code: str | None = None
+    department: str | None = None
+    nsf_status_code: str | None = None
+    dn_list: list[str] = Field(default_factory=list)
+    remote_site_login: str | None = None
+    source_site_name: str | None = None
+    service_units_allocated: float | None = None
+    is_active: bool = True
+
+
+class ProjectMemberCreate(BaseModel):
+    """Payload for adding a person to a project."""
+
+    existing_user_id: uuid.UUID | None = None
+    new_user: ProjectMemberNewUserCreate | None = None
+    role: str | None = None
+    resource: str | None = None
+    allocated_resource: str | None = None
+    membership_service_units_allocated: float | None = None
+    membership_service_units_remaining: float | None = None
+    account_remote_site_login: str | None = None
+    account_is_active: bool = True
+    account_state: str | None = None
+    source_packet_rec_id: int | None = None
+    source_trans_rec_id: int | None = None
+    source_transaction_id: int | None = None
 
 
 class UserProjectMembershipRead(BaseModel):

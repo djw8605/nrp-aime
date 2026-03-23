@@ -23,6 +23,7 @@ class User(Base):
         String, unique=True, index=True, nullable=True
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     first_name: Mapped[str | None] = mapped_column(String, nullable=True)
     middle_name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_name: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -14,6 +14,15 @@
           <p class="m-0 mt-1 text-sm text-slate-500">
             Allocation ID: {{ project.aime_allocation_id }}
           </p>
+          <div v-if="(project.tags || []).length" class="mt-2 flex flex-wrap gap-2">
+            <Tag
+              v-for="tag in project.tags"
+              :key="tag"
+              :value="tag"
+              severity="contrast"
+              rounded
+            />
+          </div>
         </div>
       </div>
     </template>
@@ -86,6 +95,21 @@
           <p class="m-0 mt-2 font-mono font-medium text-slate-700">
             {{ project.source_site_name || '—' }}
           </p>
+        </div>
+        <div class="rounded-lg bg-slate-50 p-3 sm:col-span-2 lg:col-span-4">
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Custom Tags</p>
+          <div v-if="!(project.tags || []).length" class="mt-2 text-sm font-medium text-slate-700">
+            No custom tags set.
+          </div>
+          <div v-else class="mt-2 flex flex-wrap gap-2">
+            <Tag
+              v-for="tag in project.tags"
+              :key="tag"
+              :value="tag"
+              severity="contrast"
+              rounded
+            />
+          </div>
         </div>
       </div>
       <p

@@ -1,7 +1,7 @@
 """Pydantic schemas for Project."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,7 @@ class ProjectCreate(BaseModel):
 
     aime_allocation_id: str
     name: str
+    tags: list[str] = Field(default_factory=list)
     resource_type: str | None = None
     cpu_allocated: int = 0
     gpu_allocated: int = 0
@@ -26,6 +27,7 @@ class ProjectRead(BaseModel):
     aime_allocation_id: str
     name: str
     grant_number: str | None = None
+    allocation_record_id: str | None = None
     site_project_id: str | None = None
     allocation_type: str | None = None
     request_type: str | None = None
@@ -33,9 +35,24 @@ class ProjectRead(BaseModel):
     source_trans_rec_id: int | None = None
     source_transaction_id: int | None = None
     source_site_name: str | None = None
+    tags: list[str] = Field(default_factory=list)
     allocated_resource: str | None = None
     service_units_allocated: float | None = None
     service_units_remaining: float | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    project_title: str | None = None
+    pfos_number: str | None = None
+    board_type: str | None = None
+    pi_person_id: str | None = None
+    pi_first_name: str | None = None
+    pi_middle_name: str | None = None
+    pi_last_name: str | None = None
+    pi_email: str | None = None
+    pi_organization: str | None = None
+    pi_org_code: str | None = None
+    pi_department: str | None = None
+    pi_business_phone_number: str | None = None
     resource_type: str | None
     cpu_allocated: int
     gpu_allocated: int
@@ -55,6 +72,52 @@ class ProjectRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ProjectUpdate(BaseModel):
+    """Schema for updating a project."""
+
+    aime_allocation_id: str | None = None
+    name: str | None = None
+    grant_number: str | None = None
+    allocation_record_id: str | None = None
+    site_project_id: str | None = None
+    allocation_type: str | None = None
+    request_type: str | None = None
+    source_packet_rec_id: int | None = None
+    source_trans_rec_id: int | None = None
+    source_transaction_id: int | None = None
+    source_site_name: str | None = None
+    tags: list[str] | None = None
+    allocated_resource: str | None = None
+    service_units_allocated: float | None = None
+    service_units_remaining: float | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    project_title: str | None = None
+    pfos_number: str | None = None
+    board_type: str | None = None
+    pi_person_id: str | None = None
+    pi_first_name: str | None = None
+    pi_middle_name: str | None = None
+    pi_last_name: str | None = None
+    pi_email: str | None = None
+    pi_organization: str | None = None
+    pi_org_code: str | None = None
+    pi_department: str | None = None
+    pi_business_phone_number: str | None = None
+    resource_type: str | None = None
+    cpu_allocated: int | None = None
+    gpu_allocated: int | None = None
+    kubernetes_namespace: str | None = None
+    authentik_group_name: str | None = None
+    provisioning_state: str | None = None
+    provisioning_requested_at: datetime | None = None
+    provisioning_started_at: datetime | None = None
+    provisioning_completed_at: datetime | None = None
+    provisioning_last_error: str | None = None
+    provisioning_alerted_at: datetime | None = None
+    is_active: bool | None = None
 
 
 class ProjectReadWithUsers(ProjectRead):

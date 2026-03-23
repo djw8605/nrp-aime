@@ -3,21 +3,27 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import cast, case, func, or_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
+from app.models.amie_allocation_packet import AMIEAllocationPacket
+from app.models.amie_lifecycle_packet import AMIELifecyclePacket
+from app.models.amie_packet import AMIEPacket
 from app.models.project import Project
 from app.models.project_usage_snapshot import ProjectUsageSnapshot
 from app.models.user import User
 from app.models.project_user import ProjectUser
+from app.schemas.packets import EntityPacketRead
 from app.schemas.project import (
     ProjectRead,
     ProjectSummary,
+    ProjectUpdate,
     ProjectUsage,
 )
-from app.schemas.user import ProjectMemberRead
+from app.schemas.user import ProjectMemberCreate, ProjectMemberRead
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.accounting.service import AccountingService
 from app.services.invites.service import InviteService
@@ -26,6 +32,113 @@ from app.services.prometheus.service import PrometheusService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _clean_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _normalize_tags(tags: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in tags or []:
+        if not isinstance(item, str):
+            continue
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(cleaned)
+    return normalized
+
+
+def _has_debug_tag(tags: list[str] | None) -> bool:
+    return "debug" in {item.lower() for item in _normalize_tags(tags)}
+
+
+def _full_name(
+    first_name: str | None,
+    middle_name: str | None,
+    last_name: str | None,
+) -> str:
+    return " ".join(
+        part.strip()
+        for part in [first_name, middle_name, last_name]
+        if part and part.strip()
+    ).strip()
+
+
+def _to_project_member_read(membership: ProjectUser) -> ProjectMemberRead:
+    return ProjectMemberRead(
+        project_user_id=membership.id,
+        id=membership.user.id,
+        email=membership.user.email,
+        name=membership.user.name,
+        tags=membership.user.tags or [],
+        first_name=membership.user.first_name,
+        middle_name=membership.user.middle_name,
+        last_name=membership.user.last_name,
+        person_id=membership.user.person_id,
+        global_id=membership.user.global_id,
+        organization=membership.user.organization,
+        org_code=membership.user.org_code,
+        department=membership.user.department,
+        nsf_status_code=membership.user.nsf_status_code,
+        dn_list=membership.user.dn_list or [],
+        user_is_active=membership.user.is_active,
+        account_is_active=membership.is_active,
+        account_state=membership.account_state,
+        account_state_updated_at=membership.account_state_updated_at,
+        email_sent_at=membership.email_sent_at,
+        account_made_at=membership.account_made_at,
+        aime_confirmation_sent_at=membership.aime_confirmation_sent_at,
+        source_packet_rec_id=membership.source_packet_rec_id,
+        source_trans_rec_id=membership.source_trans_rec_id,
+        source_transaction_id=membership.source_transaction_id,
+        role=membership.role,
+        resource=membership.resource,
+        allocated_resource=membership.allocated_resource,
+        membership_service_units_allocated=(
+            float(membership.service_units_allocated)
+            if membership.service_units_allocated is not None
+            else None
+        ),
+        membership_service_units_remaining=(
+            float(membership.service_units_remaining)
+            if membership.service_units_remaining is not None
+            else None
+        ),
+        account_remote_site_login=membership.remote_site_login,
+        source_site_name=membership.user.source_site_name,
+        service_units_allocated=(
+            float(membership.user.service_units_allocated)
+            if membership.user.service_units_allocated is not None
+            else None
+        ),
+        created_at=membership.user.created_at,
+    )
+
+
+def _to_entity_packet_read(packet: AMIEPacket, *, matched_on: list[str]) -> EntityPacketRead:
+    return EntityPacketRead(
+        id=packet.id,
+        packet_rec_id=packet.packet_rec_id,
+        trans_rec_id=packet.trans_rec_id,
+        transaction_id=packet.transaction_id,
+        packet_type=packet.packet_type,
+        processing_status=packet.processing_status,
+        processing_error=packet.processing_error,
+        ingest_source=packet.ingest_source,
+        received_at=packet.created_at,
+        processed_at=packet.processed_at,
+        matched_on=matched_on,
+    )
 
 
 def _to_project_read(
@@ -42,6 +155,7 @@ def _to_project_read(
         aime_allocation_id=project.aime_allocation_id,
         name=project.name,
         grant_number=project.grant_number,
+        allocation_record_id=project.allocation_record_id,
         site_project_id=project.site_project_id,
         allocation_type=project.allocation_type,
         request_type=project.request_type,
@@ -49,6 +163,7 @@ def _to_project_read(
         source_trans_rec_id=project.source_trans_rec_id,
         source_transaction_id=project.source_transaction_id,
         source_site_name=project.source_site_name,
+        tags=project.tags or [],
         allocated_resource=project.allocated_resource,
         service_units_allocated=(
             float(project.service_units_allocated)
@@ -60,6 +175,20 @@ def _to_project_read(
             if project.service_units_remaining is not None
             else None
         ),
+        start_date=project.start_date,
+        end_date=project.end_date,
+        project_title=project.project_title,
+        pfos_number=project.pfos_number,
+        board_type=project.board_type,
+        pi_person_id=project.pi_person_id,
+        pi_first_name=project.pi_first_name,
+        pi_middle_name=project.pi_middle_name,
+        pi_last_name=project.pi_last_name,
+        pi_email=project.pi_email,
+        pi_organization=project.pi_organization,
+        pi_org_code=project.pi_org_code,
+        pi_department=project.pi_department,
+        pi_business_phone_number=project.pi_business_phone_number,
         resource_type=project.resource_type,
         cpu_allocated=project.cpu_allocated,
         gpu_allocated=project.gpu_allocated,
@@ -81,49 +210,69 @@ def _to_project_read(
 
 
 @router.get("/", response_model=list[ProjectRead])
-def list_projects(db: Session = Depends(get_db)) -> list[ProjectRead]:
+def list_projects(
+    include_debug: bool = Query(default=False),
+    db: Session = Depends(get_db),
+) -> list[ProjectRead]:
     """Return all projects with allocated and current usage values."""
     accounting = AccountingService()
     projects = db.query(Project).options(joinedload(Project.usage_snapshot)).all()
-    return [_to_project_read(db, project=project, accounting=accounting) for project in projects]
+    visible_projects = projects if include_debug else [
+        project for project in projects if not _has_debug_tag(project.tags)
+    ]
+    return [
+        _to_project_read(db, project=project, accounting=accounting)
+        for project in visible_projects
+    ]
 
 
 @router.get("/summary", response_model=ProjectSummary)
 def get_projects_summary(db: Session = Depends(get_db)) -> ProjectSummary:
     """Return aggregate KPIs across all projects from persisted usage snapshots."""
-    total_projects = db.query(Project).count()
-    active_projects = db.query(Project).filter(Project.is_active.is_(True)).count()
-    total_users = db.query(User).count()
-    active_users = db.query(User).filter(User.is_active.is_(True)).count()
-    total_cpu_allocated, total_gpu_allocated = db.query(
-        func.coalesce(func.sum(Project.cpu_allocated), 0),
-        func.coalesce(func.sum(Project.gpu_allocated), 0),
-    ).one()
-    total_cpu_used, total_gpu_used = db.query(
-        func.coalesce(func.sum(ProjectUsageSnapshot.cpu_used_current), 0),
-        func.coalesce(func.sum(ProjectUsageSnapshot.gpu_used_current), 0),
-    ).one()
-    projects_with_service_units = (
-        db.query(Project)
-        .filter(Project.service_units_allocated.is_not(None))
-        .count()
+    # Filter out debug-tagged projects/users at the SQL level using a JSONB
+    # containment check. The 'debug' tag is always stored lowercase by
+    # _normalize_tags, so a case-sensitive check is sufficient.
+    non_debug_project = ~cast(Project.tags, JSONB).contains(["debug"])
+    non_debug_user = ~cast(User.tags, JSONB).contains(["debug"])
+
+    proj_stats = (
+        db.query(
+            func.count(Project.id).label("total"),
+            func.sum(case((Project.is_active, 1), else_=0)).label("active"),
+            func.coalesce(func.sum(Project.cpu_allocated), 0).label("cpu_allocated"),
+            func.coalesce(func.sum(Project.gpu_allocated), 0).label("gpu_allocated"),
+            func.sum(
+                case((Project.service_units_allocated.isnot(None), 1), else_=0)
+            ).label("with_su"),
+            func.coalesce(func.sum(Project.service_units_allocated), 0).label("total_su"),
+            func.coalesce(func.sum(ProjectUsageSnapshot.cpu_used_current), 0).label("cpu_used"),
+            func.coalesce(func.sum(ProjectUsageSnapshot.gpu_used_current), 0).label("gpu_used"),
+        )
+        .outerjoin(ProjectUsageSnapshot, ProjectUsageSnapshot.project_id == Project.id)
+        .filter(non_debug_project)
+        .one()
     )
-    total_service_units_allocated = (
-        db.query(func.coalesce(func.sum(Project.service_units_allocated), 0))
-        .scalar()
+
+    user_stats = (
+        db.query(
+            func.count(User.id).label("total"),
+            func.sum(case((User.is_active, 1), else_=0)).label("active"),
+        )
+        .filter(non_debug_user)
+        .one()
     )
 
     return ProjectSummary(
-        total_projects=total_projects,
-        active_projects=active_projects,
-        total_users=total_users,
-        active_users=active_users,
-        total_cpu_allocated=int(total_cpu_allocated),
-        total_gpu_allocated=int(total_gpu_allocated),
-        total_cpu_used=float(total_cpu_used),
-        total_gpu_used=float(total_gpu_used),
-        projects_with_service_units=projects_with_service_units,
-        total_service_units_allocated=float(total_service_units_allocated or 0),
+        total_projects=proj_stats.total or 0,
+        active_projects=proj_stats.active or 0,
+        total_users=user_stats.total or 0,
+        active_users=user_stats.active or 0,
+        total_cpu_allocated=int(proj_stats.cpu_allocated or 0),
+        total_gpu_allocated=int(proj_stats.gpu_allocated or 0),
+        total_cpu_used=float(proj_stats.cpu_used or 0),
+        total_gpu_used=float(proj_stats.gpu_used or 0),
+        projects_with_service_units=int(proj_stats.with_su or 0),
+        total_service_units_allocated=float(proj_stats.total_su or 0),
     )
 
 
@@ -154,59 +303,346 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db)) -> Project
     return _to_project_read(db, project=project, accounting=accounting)
 
 
-@router.get("/{project_id}/users", response_model=list[ProjectMemberRead])
-def get_project_users(project_id: uuid.UUID, db: Session = Depends(get_db)):
-    """Return users assigned to a project."""
+@router.get("/{project_id}/packets", response_model=list[EntityPacketRead])
+def get_project_packets(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> list[EntityPacketRead]:
+    """Return packets that created or modified a project's values."""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return [
-        ProjectMemberRead(
-            id=pu.user.id,
-            email=pu.user.email,
-            name=pu.user.name,
-            first_name=pu.user.first_name,
-            middle_name=pu.user.middle_name,
-            last_name=pu.user.last_name,
-            person_id=pu.user.person_id,
-            organization=pu.user.organization,
-            department=pu.user.department,
-            nsf_status_code=pu.user.nsf_status_code,
-            dn_list=pu.user.dn_list or [],
-            user_is_active=pu.user.is_active,
-            account_is_active=pu.is_active,
-            account_state=pu.account_state,
-            account_state_updated_at=pu.account_state_updated_at,
-            email_sent_at=pu.email_sent_at,
-            account_made_at=pu.account_made_at,
-            aime_confirmation_sent_at=pu.aime_confirmation_sent_at,
-            source_packet_rec_id=pu.source_packet_rec_id,
-            source_trans_rec_id=pu.source_trans_rec_id,
-            source_transaction_id=pu.source_transaction_id,
-            role=pu.role,
-            resource=pu.resource,
-            allocated_resource=pu.allocated_resource,
-            membership_service_units_allocated=(
-                float(pu.service_units_allocated)
-                if pu.service_units_allocated is not None
-                else None
-            ),
-            membership_service_units_remaining=(
-                float(pu.service_units_remaining)
-                if pu.service_units_remaining is not None
-                else None
-            ),
-            account_remote_site_login=pu.remote_site_login,
-            source_site_name=pu.user.source_site_name,
-            service_units_allocated=(
-                float(pu.user.service_units_allocated)
-                if pu.user.service_units_allocated is not None
-                else None
-            ),
-            created_at=pu.user.created_at,
+
+    packet_matches: dict[uuid.UUID, dict[str, object]] = {}
+
+    def add_packet(packet: AMIEPacket | None, reason: str) -> None:
+        if packet is None:
+            return
+        existing = packet_matches.get(packet.id)
+        if existing is None:
+            packet_matches[packet.id] = {"packet": packet, "matched_on": [reason]}
+            return
+        matched_on = existing["matched_on"]
+        if isinstance(matched_on, list) and reason not in matched_on:
+            matched_on.append(reason)
+
+    def add_packets(rows: list[AMIEPacket], reason: str) -> None:
+        for row in rows:
+            add_packet(row, reason)
+
+    if project.source_packet_rec_id is not None:
+        add_packet(
+            db.query(AMIEPacket)
+            .filter(AMIEPacket.packet_rec_id == project.source_packet_rec_id)
+            .first(),
+            "project.source_packet_rec_id",
         )
-        for pu in project.project_users
+    if project.source_trans_rec_id is not None:
+        add_packets(
+            db.query(AMIEPacket)
+            .filter(AMIEPacket.trans_rec_id == project.source_trans_rec_id)
+            .all(),
+            "project.source_trans_rec_id",
+        )
+    if project.source_transaction_id is not None:
+        add_packets(
+            db.query(AMIEPacket)
+            .filter(AMIEPacket.transaction_id == project.source_transaction_id)
+            .all(),
+            "project.source_transaction_id",
+        )
+    if project.grant_number:
+        add_packets(
+            db.query(AMIEPacket)
+            .join(AMIEAllocationPacket, AMIEAllocationPacket.packet_id == AMIEPacket.id)
+            .filter(AMIEAllocationPacket.grant_number == project.grant_number)
+            .all(),
+            "allocation.grant_number",
+        )
+        add_packets(
+            db.query(AMIEPacket)
+            .join(AMIELifecyclePacket, AMIELifecyclePacket.packet_id == AMIEPacket.id)
+            .filter(AMIELifecyclePacket.grant_number == project.grant_number)
+            .all(),
+            "lifecycle.grant_number",
+        )
+    if project.allocation_record_id:
+        add_packets(
+            db.query(AMIEPacket)
+            .join(AMIEAllocationPacket, AMIEAllocationPacket.packet_id == AMIEPacket.id)
+            .filter(AMIEAllocationPacket.record_id == project.allocation_record_id)
+            .all(),
+            "allocation.record_id",
+        )
+    if project.site_project_id:
+        add_packets(
+            db.query(AMIEPacket)
+            .join(AMIEAllocationPacket, AMIEAllocationPacket.packet_id == AMIEPacket.id)
+            .filter(AMIEAllocationPacket.project_id == project.site_project_id)
+            .all(),
+            "allocation.project_id",
+        )
+        add_packets(
+            db.query(AMIEPacket)
+            .join(AMIELifecyclePacket, AMIELifecyclePacket.packet_id == AMIEPacket.id)
+            .filter(AMIELifecyclePacket.project_id == project.site_project_id)
+            .all(),
+            "lifecycle.project_id",
+        )
+
+    ordered = sorted(
+        packet_matches.values(),
+        key=lambda item: (
+            getattr(item["packet"], "created_at", None) is not None,
+            getattr(item["packet"], "created_at", None),
+            getattr(item["packet"], "packet_rec_id", 0) or 0,
+        ),
+        reverse=True,
+    )
+    return [
+        _to_entity_packet_read(
+            item["packet"],
+            matched_on=list(item["matched_on"]),
+        )
+        for item in ordered
+        if isinstance(item.get("packet"), AMIEPacket)
     ]
+
+
+@router.patch("/{project_id}", response_model=ProjectRead)
+def update_project(
+    project_id: uuid.UUID,
+    payload: ProjectUpdate,
+    db: Session = Depends(get_db),
+) -> ProjectRead:
+    """Update a project's stored details."""
+    project = (
+        db.query(Project)
+        .options(joinedload(Project.usage_snapshot))
+        .filter(Project.id == project_id)
+        .first()
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        accounting = AccountingService()
+        return _to_project_read(db, project=project, accounting=accounting)
+
+    string_fields = (
+        "grant_number",
+        "allocation_record_id",
+        "site_project_id",
+        "allocation_type",
+        "request_type",
+        "source_site_name",
+        "allocated_resource",
+        "project_title",
+        "pfos_number",
+        "board_type",
+        "pi_person_id",
+        "pi_first_name",
+        "pi_middle_name",
+        "pi_last_name",
+        "pi_email",
+        "pi_organization",
+        "pi_org_code",
+        "pi_department",
+        "pi_business_phone_number",
+        "resource_type",
+        "kubernetes_namespace",
+        "authentik_group_name",
+        "provisioning_last_error",
+    )
+    for field in string_fields:
+        if field in updates:
+            setattr(project, field, _clean_string(updates[field]))
+
+    if "tags" in updates:
+        project.tags = _normalize_tags(updates["tags"])
+
+    required_string_fields = ("aime_allocation_id", "name", "provisioning_state")
+    for field in required_string_fields:
+        if field in updates:
+            cleaned = _clean_string(updates[field])
+            if not cleaned:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field} cannot be empty",
+                )
+            setattr(project, field, cleaned)
+
+    passthrough_fields = (
+        "source_packet_rec_id",
+        "source_trans_rec_id",
+        "source_transaction_id",
+        "service_units_allocated",
+        "service_units_remaining",
+        "start_date",
+        "end_date",
+        "cpu_allocated",
+        "gpu_allocated",
+        "provisioning_requested_at",
+        "provisioning_started_at",
+        "provisioning_completed_at",
+        "provisioning_alerted_at",
+    )
+    for field in passthrough_fields:
+        if field in updates:
+            setattr(project, field, updates[field])
+
+    if "is_active" in updates:
+        project.is_active = bool(updates["is_active"])
+
+    db.commit()
+    db.refresh(project)
+
+    accounting = AccountingService()
+    return _to_project_read(db, project=project, accounting=accounting)
+
+
+@router.get("/{project_id}/users", response_model=list[ProjectMemberRead])
+def get_project_users(project_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Return users assigned to a project."""
+    project = (
+        db.query(Project)
+        .options(joinedload(Project.project_users).joinedload(ProjectUser.user))
+        .filter(Project.id == project_id)
+        .first()
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return [_to_project_member_read(pu) for pu in project.project_users]
+
+
+@router.post("/{project_id}/members", response_model=ProjectMemberRead, status_code=201)
+def add_project_member(
+    project_id: uuid.UUID,
+    payload: ProjectMemberCreate,
+    db: Session = Depends(get_db),
+) -> ProjectMemberRead:
+    """Add an existing or brand-new person to a project."""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    has_existing_user = payload.existing_user_id is not None
+    has_new_user = payload.new_user is not None
+    if has_existing_user == has_new_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either existing_user_id or new_user",
+        )
+
+    if payload.existing_user_id is not None:
+        user = db.query(User).filter(User.id == payload.existing_user_id).first()
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+    else:
+        new_user = payload.new_user
+        if new_user is None:
+            raise HTTPException(status_code=400, detail="new_user payload is required")
+
+        email = _clean_string(str(new_user.email) if new_user.email else None)
+        if email:
+            existing = db.query(User).filter(User.email == email).first()
+            if existing is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A user with this email already exists. Choose the existing person instead.",
+                )
+
+        user_name = _clean_string(new_user.name) or _full_name(
+            new_user.first_name,
+            new_user.middle_name,
+            new_user.last_name,
+        )
+        if not user_name:
+            raise HTTPException(
+                status_code=400,
+                detail="New people require a name or first/last name",
+            )
+
+        user = User(
+            email=email,
+            name=user_name,
+            tags=_normalize_tags(new_user.tags),
+            first_name=_clean_string(new_user.first_name),
+            middle_name=_clean_string(new_user.middle_name),
+            last_name=_clean_string(new_user.last_name),
+            person_id=_clean_string(new_user.person_id),
+            global_id=_clean_string(new_user.global_id),
+            organization=_clean_string(new_user.organization),
+            org_code=_clean_string(new_user.org_code),
+            department=_clean_string(new_user.department),
+            nsf_status_code=_clean_string(new_user.nsf_status_code),
+            dn_list=[
+                item.strip()
+                for item in (new_user.dn_list or [])
+                if isinstance(item, str) and item.strip()
+            ],
+            remote_site_login=_clean_string(new_user.remote_site_login),
+            source_site_name=_clean_string(new_user.source_site_name),
+            service_units_allocated=new_user.service_units_allocated,
+            is_active=bool(new_user.is_active),
+        )
+        db.add(user)
+        db.flush()
+
+    membership_resource = _clean_string(payload.resource)
+    duplicate_membership = (
+        db.query(ProjectUser)
+        .filter(
+            ProjectUser.project_id == project.id,
+            ProjectUser.user_id == user.id,
+        )
+        .filter(
+            ProjectUser.resource == membership_resource
+            if membership_resource
+            else or_(ProjectUser.resource.is_(None), ProjectUser.resource == "")
+        )
+        .first()
+    )
+    if duplicate_membership is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This person is already attached to the project for that resource",
+        )
+
+    membership = ProjectUser(
+        project_id=project.id,
+        user_id=user.id,
+        role=_clean_string(payload.role),
+        resource=membership_resource,
+        allocated_resource=_clean_string(payload.allocated_resource),
+        service_units_allocated=payload.membership_service_units_allocated,
+        service_units_remaining=payload.membership_service_units_remaining,
+        remote_site_login=_clean_string(payload.account_remote_site_login),
+        is_active=bool(payload.account_is_active),
+        source_packet_rec_id=payload.source_packet_rec_id,
+        source_trans_rec_id=payload.source_trans_rec_id,
+        source_transaction_id=payload.source_transaction_id,
+    )
+    requested_account_state = _clean_string(payload.account_state)
+    if requested_account_state:
+        try:
+            membership.set_account_state(requested_account_state)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    db.add(membership)
+    db.commit()
+
+    membership = (
+        db.query(ProjectUser)
+        .options(joinedload(ProjectUser.user))
+        .filter(ProjectUser.id == membership.id)
+        .first()
+    )
+    if membership is None:
+        raise HTTPException(status_code=500, detail="Failed to create project membership")
+    return _to_project_member_read(membership)
 
 
 @router.get("/{project_id}/usage", response_model=ProjectUsage)
