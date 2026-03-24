@@ -239,7 +239,6 @@ class AccountLifecycleService:
             project_id = (
                 project_user.project.site_project_id
                 or self._source_packet_project_id(source_packet)
-                or project_user.project.aime_allocation_id
             )
             resource = (
                 project_user.resource
@@ -510,6 +509,17 @@ class AccountLifecycleService:
                                 site_name=self._project_user_site_name(project_user),
                                 email_sent_at=project_user.email_sent_at,
                                 account_made_at=project_user.account_made_at,
+                            )
+                            db.commit()
+                            continue
+
+                        if not project_user.project.site_project_id:
+                            deferred += 1
+                            _log_amie_interaction(
+                                "account_confirmation.deferred_project_not_provisioned",
+                                project_user_id=project_user.id,
+                                site_name=self._project_user_site_name(project_user),
+                                project_id=str(project_user.project.id),
                             )
                             db.commit()
                             continue
