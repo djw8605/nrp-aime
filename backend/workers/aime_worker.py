@@ -330,6 +330,7 @@ def run_worker(poll_interval: int = 60) -> None:
                     notifications_sent=proj_result.get("notifications_sent"),
                     already_sent=proj_result.get("already_sent"),
                     failures=proj_result.get("failures"),
+                    deferred=proj_result.get("deferred"),
                 )
 
                 _update_worker_status(

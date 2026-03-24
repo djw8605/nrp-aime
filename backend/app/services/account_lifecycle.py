@@ -513,6 +513,17 @@ class AccountLifecycleService:
                             db.commit()
                             continue
 
+                        if not project_user.project.site_project_id:
+                            deferred += 1
+                            _log_amie_interaction(
+                                "account_confirmation.deferred_project_not_provisioned",
+                                project_user_id=project_user.id,
+                                site_name=self._project_user_site_name(project_user),
+                                project_id=str(project_user.project.id),
+                            )
+                            db.commit()
+                            continue
+
                         source_site_name = self._project_user_site_name(project_user)
                         if source_site_name not in amie_clients_by_site:
                             if source_site_name not in configured_sites:
@@ -582,6 +593,7 @@ class AccountLifecycleService:
         notifications_sent = 0
         already_sent = 0
         failures = 0
+        deferred = 0
 
         can_send = bool(settings.amie_account_confirmation_enabled and settings.amie_api_key)
 
@@ -644,11 +656,31 @@ class AccountLifecycleService:
                         source_packet_rec_id=project.source_packet_rec_id,
                     )
 
+                    pi_user = next(
+                        (pu for pu in project.project_users if pu.role == "pi"), None
+                    )
+                    pi_remote_login = (
+                        (pi_user.remote_site_login or pi_user.user.email)
+                        if pi_user
+                        else None
+                    )
+                    if not pi_remote_login:
+                        deferred += 1
+                        _log_amie_interaction(
+                            "project_notification.deferred_pi_login_missing",
+                            project_id=project.id,
+                            site_name=site_name,
+                            source_packet_rec_id=project.source_packet_rec_id,
+                        )
+                        db.commit()
+                        continue
+
                     npc = source_packet.reply_packet(packet_type="notify_project_create")
                     npc.ProjectID = project.site_project_id or project.aime_allocation_id
                     npc.ResourceList = (
                         [project.allocated_resource] if project.allocated_resource else []
                     )
+                    npc.PiRemoteSiteLogin = pi_remote_login
 
                     outbound = OutboundPacketService.start_or_resume(
                         db,
@@ -709,4 +741,5 @@ class AccountLifecycleService:
             "notifications_sent": notifications_sent,
             "already_sent": already_sent,
             "failures": failures,
+            "deferred": deferred,
         }
