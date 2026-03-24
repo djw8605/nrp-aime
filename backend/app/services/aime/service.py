@@ -140,8 +140,8 @@ class AIMEService:
         incoming: list[str] | None,
     ) -> list[str]:
         merged: list[str] = []
-        for source in (existing or [], incoming or []):
-            dn = (source or "").strip()
+        for dn_raw in [*(existing or []), *(incoming or [])]:
+            dn = (dn_raw or "").strip()
             if dn and dn not in merged:
                 merged.append(dn)
         return merged
@@ -2290,6 +2290,9 @@ class AIMEService:
                 ),
                 is_active=True,
                 account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                source_packet_rec_id=packet_record.packet_rec_id,
+                source_trans_rec_id=packet_record.trans_rec_id,
+                source_transaction_id=packet_record.transaction_id,
             )
 
         elif isinstance(bound_packet, RequestAccountCreatePacketBinding):

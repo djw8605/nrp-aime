@@ -9,7 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# amieclient pins python-dateutil<2.7 which is incompatible with Python 3.11
+# (collections.Callable was removed). Install it without its deps so pip does
+# not enforce that stale constraint; requirements.txt supplies a compatible dateutil.
+RUN pip install --no-cache-dir "amieclient>=0.4.0" --no-deps && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
