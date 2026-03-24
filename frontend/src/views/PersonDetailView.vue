@@ -637,19 +637,21 @@ const userLifecycleStepsByMembership = computed(() =>
     }
 
     // Step 2: Send account invite to user
-    const step2 = m.email_sent_at
-      ? { label: 'Send account invite to user', status: 'completed', timestamp: m.email_sent_at }
-      : {
-          label: 'Send account invite to user',
-          status: 'waiting',
-          actionRequired: 'Admin must click "Send User Invite" to dispatch the invite email.',
-        }
+    // If the account was already made, treat the invite as sent even if email_sent_at is missing
+    const step2 =
+      m.email_sent_at || m.account_made_at
+        ? { label: 'Send account invite to user', status: 'completed', timestamp: m.email_sent_at }
+        : {
+            label: 'Send account invite to user',
+            status: 'waiting',
+            actionRequired: 'Admin must click "Send User Invite" to dispatch the invite email.',
+          }
 
     // Step 3: User creates account
     let step3
     if (m.account_made_at) {
       step3 = { label: 'User creates account', status: 'completed', timestamp: m.account_made_at }
-    } else if (m.email_sent_at) {
+    } else if (m.email_sent_at || m.account_made_at) {
       step3 = {
         label: 'User creates account',
         status: 'active',
