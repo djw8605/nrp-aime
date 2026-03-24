@@ -239,6 +239,7 @@ class AccountLifecycleService:
             project_id = (
                 project_user.project.site_project_id
                 or self._source_packet_project_id(source_packet)
+                or project_user.project.aime_allocation_id
             )
             resource = (
                 project_user.resource
@@ -649,6 +650,14 @@ class AccountLifecycleService:
                     npc.ResourceList = (
                         [project.allocated_resource] if project.allocated_resource else []
                     )
+                    pi_user = next(
+                        (pu for pu in project.project_users if pu.role == "pi"), None
+                    )
+                    if pi_user:
+                        npc.PiRemoteSiteLogin = (
+                            pi_user.remote_site_login
+                            or pi_user.user.email
+                        )
 
                     outbound = OutboundPacketService.start_or_resume(
                         db,
