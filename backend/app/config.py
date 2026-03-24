@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     invite_token_ttl_hours: int = 72
     invite_state_ttl_minutes: int = 30
     invite_require_email_match: bool = True
+    invite_email_from: str = ""
 
     # Invite login redirect scaffold
     authentik_authorize_url: str = ""
