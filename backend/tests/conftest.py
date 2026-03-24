@@ -17,7 +17,7 @@ os.environ.setdefault("AMIE_API_KEY", "test-api-key")
 import pytest
 from unittest.mock import patch
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session as SASession
 
 from app.database import Base
 
@@ -54,20 +54,28 @@ def engine():
 @pytest.fixture
 def db(engine):
     """
-    Transactional DB session.
+    Transactional DB session using SAVEPOINTs (SQLAlchemy 2.0+).
 
-    Each test gets its own connection with an open transaction that is rolled
-    back after the test completes, leaving the database clean for the next test.
+    Opens a connection and issues an explicit ``BEGIN`` to SQLite so that the
+    full transaction is visible at the DBAPI level.  The session is created with
+    ``join_transaction_mode="create_savepoint"`` so every ``session.commit()``
+    call inside the code under test only releases a SAVEPOINT – it does NOT
+    touch the outer transaction.  At teardown the outer transaction is rolled
+    back via ``ROLLBACK``, leaving the database clean for the next test.
+
+    Note: ``conn.exec_driver_sql("BEGIN")`` is required because SQLAlchemy's
+    lazy ``conn.begin()`` does not actually issue ``BEGIN`` to SQLite;
+    the SAVEPOINT would otherwise be issued outside any wrapping transaction
+    and the subsequent ``ROLLBACK`` would be a no-op.
     """
     connection = engine.connect()
-    transaction = connection.begin()
-    Session = sessionmaker(bind=connection, autocommit=False, autoflush=False)
-    session = Session()
+    connection.exec_driver_sql("BEGIN")
+    session = SASession(bind=connection, join_transaction_mode="create_savepoint")
 
     yield session
 
     session.close()
-    transaction.rollback()
+    connection.exec_driver_sql("ROLLBACK")
     connection.close()
 
 

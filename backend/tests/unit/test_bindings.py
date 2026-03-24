@@ -353,7 +353,7 @@ class TestBindPacketDispatcher:
     def test_validation_error_on_bad_body(self):
         """bind_packet raises ValidationError for type-matched but invalid body."""
         packet = make_packet("request_project_create", {"GrantNumber": "X"})
-        with pytest.raises(Exception):  # ValidationError or UnsupportedPacketType
+        with pytest.raises(ValidationError):
             bind_packet(packet)
 
 
