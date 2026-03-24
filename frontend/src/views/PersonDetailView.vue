@@ -445,6 +445,50 @@
         </template>
       </Card>
 
+      <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div class="mb-4">
+          <h2 class="m-0 flex items-center gap-2 text-lg font-semibold text-slate-800">
+            <i class="pi pi-sitemap text-base text-violet-600"></i>
+            Account Creation Lifecycle
+          </h2>
+          <p class="m-0 mt-1 text-sm text-slate-500">
+            Per-project lifecycle showing where each membership is in the account creation process.
+          </p>
+        </div>
+
+        <Message v-if="memberships.length === 0" severity="info" :closable="false">
+          No project memberships — no lifecycle to display.
+        </Message>
+
+        <Accordion v-else multiple :value="userLifecycleStepsByMembership.map((_, i) => String(i))">
+          <AccordionPanel
+            v-for="(item, idx) in userLifecycleStepsByMembership"
+            :key="item.membership.project_user_id"
+            :value="String(idx)"
+          >
+            <AccordionHeader>
+              <div class="flex flex-wrap items-center gap-3">
+                <span class="font-semibold text-slate-800">{{ item.membership.project_name }}</span>
+                <Tag
+                  :value="item.membership.account_state"
+                  :severity="accountStateSeverity(item.membership.account_state)"
+                  rounded
+                />
+                <span
+                  v-if="item.membership.project_site_project_id"
+                  class="font-mono text-xs text-slate-500"
+                >
+                  {{ item.membership.project_site_project_id }}
+                </span>
+              </div>
+            </AccordionHeader>
+            <AccordionContent>
+              <LifecycleFlow :steps="item.steps" />
+            </AccordionContent>
+          </AccordionPanel>
+        </Accordion>
+      </section>
+
       <Card class="border border-slate-200 shadow-sm">
         <template #title>
           <span class="text-lg font-semibold text-slate-800">Incoming Packet Details</span>
@@ -529,7 +573,11 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import Accordion from 'primevue/accordion'
+import AccordionContent from 'primevue/accordioncontent'
+import AccordionHeader from 'primevue/accordionheader'
+import AccordionPanel from 'primevue/accordionpanel'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Checkbox from 'primevue/checkbox'
@@ -541,6 +589,7 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Tag from 'primevue/tag'
 import Textarea from 'primevue/textarea'
+import LifecycleFlow from '../components/LifecycleFlow.vue'
 import PacketReferenceTable from '../components/PacketReferenceTable.vue'
 import {
   applyDebugTag,
@@ -576,6 +625,73 @@ const editingPerson = ref(false)
 const userPacketsLoading = ref(false)
 const loading = ref(false)
 const error = ref(null)
+
+const userLifecycleStepsByMembership = computed(() =>
+  memberships.value.map((m) => {
+    // Step 1: Received request account create — always complete
+    const step1 = {
+      label: 'Received request account create',
+      status: 'completed',
+      timestamp: m.account_state_updated_at,
+      description: 'Account creation request received from AIME packet.',
+    }
+
+    // Step 2: Send account invite to user
+    const step2 = m.email_sent_at
+      ? { label: 'Send account invite to user', status: 'completed', timestamp: m.email_sent_at }
+      : {
+          label: 'Send account invite to user',
+          status: 'waiting',
+          actionRequired: 'Admin must click "Send User Invite" to dispatch the invite email.',
+        }
+
+    // Step 3: User creates account
+    let step3
+    if (m.account_made_at) {
+      step3 = { label: 'User creates account', status: 'completed', timestamp: m.account_made_at }
+    } else if (m.email_sent_at) {
+      step3 = {
+        label: 'User creates account',
+        status: 'active',
+        description: 'Waiting for the user to accept the invite and register.',
+      }
+    } else {
+      step3 = { label: 'User creates account', status: 'pending' }
+    }
+
+    // Step 4: Notify account create to AIME
+    let step4
+    if (m.aime_confirmation_sent_at) {
+      step4 = {
+        label: 'Notify account create to AIME',
+        status: 'completed',
+        timestamp: m.aime_confirmation_sent_at,
+      }
+    } else if (m.account_made_at) {
+      step4 = {
+        label: 'Notify account create to AIME',
+        status: 'active',
+        description: 'Sending account creation confirmation to AIME server.',
+      }
+    } else {
+      step4 = { label: 'Notify account create to AIME', status: 'pending' }
+    }
+
+    // Step 5: Received data account create (AIME acks)
+    const step5 = {
+      label: 'Received data account create',
+      status: m.aime_confirmation_sent_at ? 'active' : 'pending',
+      description: m.aime_confirmation_sent_at
+        ? 'Waiting for AIME to acknowledge account creation.'
+        : null,
+    }
+
+    // Step 6: Inform transaction complete
+    const step6 = { label: 'Inform transaction complete', status: 'pending' }
+
+    return { membership: m, steps: [step1, step2, step3, step4, step5, step6] }
+  }),
+)
 
 function createPersonForm(personData = null) {
   const tags = Array.isArray(personData?.tags) ? personData.tags : []
