@@ -65,21 +65,25 @@ class ProjectProvisioningService:
         now = datetime.now(UTC)
         if project.provisioning_alerted_at is not None:
             return
+        pi_name = " ".join(
+            filter(None, [project.pi_first_name, project.pi_last_name])
+        ) or None
         AlertService.send(
             db,
             alert_key=self._required_alert_key(project),
             category="project_provisioning",
             severity="warn",
-            title="Project provisioning required",
+            title="New project request received",
             message=(
                 f"Project {project.name} ({project.aime_allocation_id}) was received "
                 "and awaits admin provisioning."
             ),
             payload={
-                "project_id": str(project.id),
+                "allocation_id": project.aime_allocation_id,
                 "project_name": project.name,
-                "aime_allocation_id": project.aime_allocation_id,
-                "reason": reason,
+                "pi_name": pi_name,
+                "pi_email": project.pi_email,
+                "institution": project.pi_organization,
                 "provisioning_state": project.provisioning_state,
             },
         )

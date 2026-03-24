@@ -410,15 +410,8 @@ class ObservabilityService:
 
     @staticmethod
     def project_user_packet_alert_fields(packet: AMIEPacket) -> tuple[str, str] | None:
-        """Return alert classification for project/user creation/modification packets."""
+        """Return alert classification for new user account request packets."""
         packet_type = (packet.packet_type or "").strip().lower()
-        if not packet_type:
-            return None
-        is_create_or_modify = "create" in packet_type or "modify" in packet_type
-        if not is_create_or_modify:
-            return None
-        if "project" in packet_type:
-            return ("project_packet", f"Project packet received: {packet_type}")
-        if "user" in packet_type or "account" in packet_type:
-            return ("user_packet", f"User/account packet received: {packet_type}")
+        if packet_type == "request_account_create":
+            return ("user_packet", "New user account request received")
         return None
