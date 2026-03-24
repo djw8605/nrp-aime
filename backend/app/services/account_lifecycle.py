@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import configured_amie_site_names, settings
 from app.models.amie_new_user_packet import AMIENewUserPacket
 from app.models.amie_packet import AMIEPacket
+from app.models.outbound_packet_log import OutboundPacketLog
+from app.models.project import Project
 from app.models.project_invite import ProjectInvite
 from app.models.project_invite_event import ProjectInviteEvent
 from app.models.project_user import ProjectUser
@@ -421,8 +423,22 @@ class AccountLifecycleService:
         db: Session,
         project_user: ProjectUser,
     ) -> bool:
-        """Return whether invite email dispatch and acceptance are complete."""
-        if project_user.email_sent_at is None or project_user.account_made_at is None:
+        """Return whether invite email dispatch and acceptance are complete.
+
+        Accounts sourced directly from an AMIE packet (source_packet_rec_id is
+        set) never go through the email-invite flow, so we skip the invite
+        check for them and allow confirmation immediately once account_made_at
+        is set.
+        """
+        # AMIE-direct accounts (PI from request_project_create, users from
+        # request_account_create) — no email invite was ever sent; allow as
+        # long as the account has been marked made.
+        if project_user.email_sent_at is None:
+            if project_user.source_packet_rec_id is not None:
+                return project_user.account_made_at is not None
+            return False
+
+        if project_user.account_made_at is None:
             return False
         if project_user.account_made_at < project_user.email_sent_at:
             return False
@@ -541,4 +557,156 @@ class AccountLifecycleService:
             "confirmations_sent": confirmations_sent,
             "failures": failures,
             "deferred": deferred,
+        }
+
+    def reconcile_pending_project_notifications(
+        self, db: Session
+    ) -> dict[str, int]:
+        """Send notify_project_create packets for provisioned projects.
+
+        Finds every project in the ``ready`` state that has a source packet
+        but has not yet had a ``notify_project_create`` outbound record
+        successfully sent, then sends the reply packet.
+        """
+        ready_projects = (
+            db.query(Project)
+            .filter(
+                Project.is_active.is_(True),
+                Project.provisioning_state == Project.PROVISIONING_STATE_READY,
+                Project.source_packet_rec_id.isnot(None),
+            )
+            .all()
+        )
+
+        checked = 0
+        notifications_sent = 0
+        already_sent = 0
+        failures = 0
+
+        can_send = bool(settings.amie_account_confirmation_enabled and settings.amie_api_key)
+
+        for project in ready_projects:
+            checked += 1
+            site_name = str(project.source_site_name or settings.amie_site_name or "NRP")
+
+            # Check whether we already have a successful outbound record for
+            # this source packet to avoid double-sending across worker cycles.
+            existing = (
+                db.query(OutboundPacketLog)
+                .filter(
+                    OutboundPacketLog.event_type == "notify_project_create",
+                    OutboundPacketLog.source_packet_rec_id == project.source_packet_rec_id,
+                    OutboundPacketLog.status.in_(
+                        [OutboundPacketLog.STATUS_SENT, OutboundPacketLog.STATUS_PENDING]
+                    ),
+                )
+                .first()
+            )
+
+            if existing is not None:
+                already_sent += 1
+                _log_amie_interaction(
+                    "project_notification.already_sent",
+                    project_id=project.id,
+                    site_name=site_name,
+                    source_packet_rec_id=project.source_packet_rec_id,
+                    outbound_status=existing.status,
+                )
+                continue
+
+            if not can_send:
+                _log_amie_interaction(
+                    "project_notification.deferred_no_api_key",
+                    project_id=project.id,
+                    site_name=site_name,
+                    source_packet_rec_id=project.source_packet_rec_id,
+                )
+                continue
+
+            outbound = None
+            try:
+                _log_amie_interaction(
+                    "project_notification.get_packet.start",
+                    project_id=project.id,
+                    site_name=site_name,
+                    source_packet_rec_id=project.source_packet_rec_id,
+                )
+                with AMIEClient(
+                    site_name=site_name,
+                    api_key=settings.amie_api_key,
+                    amie_url=settings.amie_url,
+                ) as amie_client:
+                    source_packet = amie_client.get_packet(project.source_packet_rec_id)
+                    _log_amie_interaction(
+                        "project_notification.get_packet.finish",
+                        project_id=project.id,
+                        site_name=site_name,
+                        source_packet_rec_id=project.source_packet_rec_id,
+                    )
+
+                    npc = source_packet.reply_packet(packet_type="notify_project_create")
+                    npc.ProjectID = project.site_project_id or project.aime_allocation_id
+                    npc.ResourceList = (
+                        [project.allocated_resource] if project.allocated_resource else []
+                    )
+
+                    outbound = OutboundPacketService.start_or_resume(
+                        db,
+                        event_type="notify_project_create",
+                        source_packet_rec_id=project.source_packet_rec_id,
+                        source_trans_rec_id=project.source_trans_rec_id,
+                        source_transaction_id=project.source_transaction_id,
+                        payload={
+                            "packet_type": "notify_project_create",
+                            "project_id": str(project.id),
+                            "site_project_id": project.site_project_id,
+                            "aime_allocation_id": project.aime_allocation_id,
+                        },
+                        worker_name="aime-worker",
+                    )
+
+                    _log_amie_interaction(
+                        "project_notification.send_packet.start",
+                        project_id=project.id,
+                        site_name=site_name,
+                        source_packet_rec_id=project.source_packet_rec_id,
+                    )
+                    send_result = amie_client.send_packet(npc)
+                    outbound_packet_rec_id = getattr(send_result, "packet_rec_id", None)
+                    _log_amie_interaction(
+                        "project_notification.send_packet.finish",
+                        project_id=project.id,
+                        site_name=site_name,
+                        source_packet_rec_id=project.source_packet_rec_id,
+                        outbound_packet_rec_id=outbound_packet_rec_id,
+                    )
+                    OutboundPacketService.mark_sent(db, outbound, send_result=send_result)
+                    notifications_sent += 1
+                    db.commit()
+                    logger.info(
+                        "Sent notify_project_create for project=%s source_packet_rec_id=%s",
+                        project.id,
+                        project.source_packet_rec_id,
+                    )
+
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                failures += 1
+                logger.exception(
+                    "Failed to send notify_project_create for project=%s source_packet_rec_id=%s",
+                    project.id,
+                    project.source_packet_rec_id,
+                )
+                OutboundPacketService.safe_mark_failed(
+                    db,
+                    row=outbound,
+                    event_type="notify_project_create",
+                    error_message=str(exc),
+                )
+
+        return {
+            "checked": checked,
+            "notifications_sent": notifications_sent,
+            "already_sent": already_sent,
+            "failures": failures,
         }
