@@ -175,15 +175,19 @@ def list_packet_logs(
 
     search_term = (q or "").strip()
     if search_term:
-        pattern = f"%{search_term}%"
+        # Escape LIKE metacharacters so user input is treated as a literal
+        # substring, not a wildcard pattern.  Without this, a search for "%"
+        # would match every row and "_" would act as a single-character wildcard.
+        escaped = search_term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
         query = query.filter(
             or_(
-                AMIEPacket.packet_type.ilike(pattern),
-                AMIEPacket.processing_status.ilike(pattern),
-                cast(AMIEPacket.packet_rec_id, Text).ilike(pattern),
-                cast(AMIEPacket.trans_rec_id, Text).ilike(pattern),
-                cast(AMIEPacket.transaction_id, Text).ilike(pattern),
-                cast(AMIEPacket.raw_packet, Text).ilike(pattern),
+                AMIEPacket.packet_type.ilike(pattern, escape="\\"),
+                AMIEPacket.processing_status.ilike(pattern, escape="\\"),
+                cast(AMIEPacket.packet_rec_id, Text).ilike(pattern, escape="\\"),
+                cast(AMIEPacket.trans_rec_id, Text).ilike(pattern, escape="\\"),
+                cast(AMIEPacket.transaction_id, Text).ilike(pattern, escape="\\"),
+                cast(AMIEPacket.raw_packet, Text).ilike(pattern, escape="\\"),
             )
         )
 
