@@ -228,7 +228,7 @@ class AccountLifecycleService:
                 project_user_id=project_user.id,
                 source_packet_rec_id=source_packet_rec_id,
             )
-            source_packet = amie_client.get_packet(source_packet_rec_id)
+            source_packet = amie_client.get_packet(packet_rec_id=source_packet_rec_id)
             _log_amie_interaction(
                 "get_packet.finish",
                 site_name=self._project_user_site_name(project_user),
@@ -352,7 +352,7 @@ class AccountLifecycleService:
                         project_user_id=project_user.id,
                         outbound_packet_rec_id=outbound.outbound_packet_rec_id,
                     )
-                    outbound_packet = amie_client.get_packet(outbound.outbound_packet_rec_id)
+                    outbound_packet = amie_client.get_packet(packet_rec_id=outbound.outbound_packet_rec_id)
                     _log_amie_interaction(
                         "get_packet.finish",
                         site_name=self._project_user_site_name(project_user),
@@ -636,7 +636,7 @@ class AccountLifecycleService:
                     api_key=settings.amie_api_key,
                     amie_url=settings.amie_url,
                 ) as amie_client:
-                    source_packet = amie_client.get_packet(project.source_packet_rec_id)
+                    source_packet = amie_client.get_packet(packet_rec_id=project.source_packet_rec_id)
                     _log_amie_interaction(
                         "project_notification.get_packet.finish",
                         project_id=project.id,
