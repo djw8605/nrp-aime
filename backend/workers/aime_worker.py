@@ -309,6 +309,7 @@ def run_worker(poll_interval: int = 60) -> None:
                     transitioned=sync_result.get("transitioned"),
                     confirmations_sent=sync_result.get("confirmations_sent"),
                     failures=sync_result.get("failures"),
+                    deferred=sync_result.get("deferred"),
                 )
 
                 _update_worker_status(

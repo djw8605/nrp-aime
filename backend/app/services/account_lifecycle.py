@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import ExitStack
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 from amieclient import AMIEClient
 from sqlalchemy import or_
@@ -13,6 +14,8 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import configured_amie_site_names, settings
 from app.models.amie_new_user_packet import AMIENewUserPacket
 from app.models.amie_packet import AMIEPacket
+from app.models.project_invite import ProjectInvite
+from app.models.project_invite_event import ProjectInviteEvent
 from app.models.project_user import ProjectUser
 from app.services.outbound_packets import OutboundPacketService
 
@@ -87,17 +90,25 @@ class AccountLifecycleService:
             if by_trans is not None:
                 return int(by_trans[0])
 
-        if not project_user.project.site_project_id:
+        packet_filters = [
+            AMIENewUserPacket.user_person_id == project_user.user.person_id,
+            site_filter,
+        ]
+        if project_user.project.site_project_id:
+            packet_filters.append(
+                AMIENewUserPacket.project_id == project_user.project.site_project_id
+            )
+        elif project_user.project.grant_number:
+            packet_filters.append(
+                AMIENewUserPacket.grant_number == project_user.project.grant_number
+            )
+        else:
             return None
 
         row = (
             db.query(AMIEPacket.packet_rec_id)
             .join(AMIENewUserPacket, AMIENewUserPacket.packet_id == AMIEPacket.id)
-            .filter(
-                AMIENewUserPacket.project_id == project_user.project.site_project_id,
-                AMIENewUserPacket.user_person_id == project_user.user.person_id,
-                site_filter,
-            )
+            .filter(*packet_filters)
             .order_by(AMIEPacket.packet_rec_id.desc())
             .first()
         )
@@ -124,6 +135,70 @@ class AccountLifecycleService:
             or settings.amie_site_name
         )
 
+    @staticmethod
+    def _packet_to_dict(packet: Any) -> dict[str, Any]:
+        if isinstance(packet, dict):
+            return packet
+        if hasattr(packet, "as_dict"):
+            try:
+                payload = packet.as_dict()
+            except Exception:  # noqa: BLE001
+                return {}
+            if isinstance(payload, dict):
+                return payload
+        return {}
+
+    @staticmethod
+    def _clean_scalar(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @classmethod
+    def _source_packet_field(cls, packet: Any, field_name: str) -> Any:
+        payload = cls._packet_to_dict(packet)
+        body = payload.get("body", {})
+        if isinstance(body, dict) and body.get(field_name) not in (None, "", []):
+            return body.get(field_name)
+
+        body_obj = getattr(packet, "body", None)
+        body_value = getattr(body_obj, field_name, None)
+        if body_value not in (None, "", []):
+            return body_value
+
+        packet_value = getattr(packet, field_name, None)
+        if packet_value not in (None, "", []):
+            return packet_value
+
+        return None
+
+    @classmethod
+    def _source_packet_project_id(cls, packet: Any) -> str | None:
+        return cls._clean_scalar(cls._source_packet_field(packet, "ProjectID"))
+
+    @classmethod
+    def _source_packet_resource(cls, packet: Any) -> str | None:
+        allocated_resource = cls._clean_scalar(
+            cls._source_packet_field(packet, "AllocatedResource")
+        )
+        if allocated_resource:
+            return allocated_resource
+
+        resource_list = cls._source_packet_field(packet, "ResourceList")
+        if isinstance(resource_list, (list, tuple)):
+            for resource in resource_list:
+                cleaned = cls._clean_scalar(resource)
+                if cleaned:
+                    return cleaned
+        return cls._clean_scalar(resource_list)
+
+    @classmethod
+    def _source_packet_remote_login(cls, packet: Any) -> str | None:
+        return cls._clean_scalar(
+            cls._source_packet_field(packet, "UserRemoteSiteLogin")
+        )
+
     def _send_account_confirmation_packet(
         self,
         db: Session,
@@ -143,21 +218,6 @@ class AccountLifecycleService:
             )
             return False
 
-        project_id = project_user.project.site_project_id
-        resource = project_user.resource or project_user.project.resource_type
-        remote_login = self._fallback_login(project_user)
-
-        if not project_id or not resource or not remote_login:
-            logger.warning(
-                "Cannot send account confirmation: missing required fields "
-                "project_id=%s resource=%s remote_login=%s project_user=%s",
-                project_id,
-                resource,
-                remote_login,
-                project_user.id,
-            )
-            return False
-
         outbound = None
         try:
             _log_amie_interaction(
@@ -173,6 +233,56 @@ class AccountLifecycleService:
                 project_user_id=project_user.id,
                 source_packet_rec_id=source_packet_rec_id,
             )
+
+            project_id = (
+                project_user.project.site_project_id
+                or self._source_packet_project_id(source_packet)
+            )
+            resource = (
+                project_user.resource
+                or project_user.project.resource_type
+                or self._source_packet_resource(source_packet)
+            )
+            remote_login = self._fallback_login(
+                project_user
+            ) or self._source_packet_remote_login(source_packet)
+
+            recovered_fields: list[str] = []
+            if project_id and not project_user.project.site_project_id:
+                project_user.project.site_project_id = project_id
+                recovered_fields.append("project_id")
+            if resource and not project_user.project.resource_type:
+                project_user.project.resource_type = resource
+                recovered_fields.append("project_resource_type")
+            if resource and not project_user.resource:
+                project_user.resource = resource
+                recovered_fields.append("project_user_resource")
+            if remote_login and not project_user.remote_site_login:
+                project_user.remote_site_login = remote_login
+                recovered_fields.append("remote_login")
+
+            if recovered_fields:
+                _log_amie_interaction(
+                    "account_confirmation.backfilled_fields",
+                    project_user_id=project_user.id,
+                    source_packet_rec_id=source_packet_rec_id,
+                    recovered_fields=",".join(recovered_fields),
+                    project_id=project_id,
+                    resource=resource,
+                    remote_login=remote_login,
+                )
+
+            if not project_id or not resource or not remote_login:
+                logger.warning(
+                    "Cannot send account confirmation: missing required fields "
+                    "project_id=%s resource=%s remote_login=%s project_user=%s",
+                    project_id,
+                    resource,
+                    remote_login,
+                    project_user.id,
+                )
+                return False
+
             nac = source_packet.reply_packet(packet_type="notify_account_create")
             nac.AccountActivityTime = datetime.now(UTC)
             nac.ProjectID = project_id
@@ -306,6 +416,35 @@ class AccountLifecycleService:
             )
             return False
 
+    def _invite_completion_allows_confirmation(
+        self,
+        db: Session,
+        project_user: ProjectUser,
+    ) -> bool:
+        """Return whether invite email dispatch and acceptance are complete."""
+        if project_user.email_sent_at is None or project_user.account_made_at is None:
+            return False
+        if project_user.account_made_at < project_user.email_sent_at:
+            return False
+
+        invite = (
+            db.query(ProjectInvite.id)
+            .filter(
+                ProjectInvite.status == ProjectInvite.STATUS_USED,
+                ProjectInvite.user_id == project_user.user_id,
+                or_(
+                    ProjectInvite.project_id == project_user.project_id,
+                    ProjectInvite.project_id.is_(None),
+                ),
+                ProjectInvite.events.any(
+                    ProjectInviteEvent.event_type == "invite_email_dispatched"
+                ),
+            )
+            .order_by(ProjectInvite.used_at.desc())
+            .first()
+        )
+        return invite is not None
+
     def reconcile_pending_confirmations(self, db: Session) -> dict[str, int]:
         """Send AIME confirmations for account rows already marked account_made."""
         review_states = (ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,)
@@ -323,6 +462,7 @@ class AccountLifecycleService:
         transitioned = 0
         confirmations_sent = 0
         failures = 0
+        deferred = 0
 
         can_send_confirmation = bool(
             settings.amie_account_confirmation_enabled and settings.amie_api_key
@@ -343,6 +483,20 @@ class AccountLifecycleService:
                         can_send_confirmation
                         and project_user.aime_confirmation_sent_at is None
                     ):
+                        if not self._invite_completion_allows_confirmation(
+                            db, project_user
+                        ):
+                            deferred += 1
+                            _log_amie_interaction(
+                                "account_confirmation.deferred_invite_incomplete",
+                                project_user_id=project_user.id,
+                                site_name=self._project_user_site_name(project_user),
+                                email_sent_at=project_user.email_sent_at,
+                                account_made_at=project_user.account_made_at,
+                            )
+                            db.commit()
+                            continue
+
                         source_site_name = self._project_user_site_name(project_user)
                         if source_site_name not in amie_clients_by_site:
                             if source_site_name not in configured_sites:
@@ -386,4 +540,5 @@ class AccountLifecycleService:
             "transitioned": transitioned,
             "confirmations_sent": confirmations_sent,
             "failures": failures,
+            "deferred": deferred,
         }
