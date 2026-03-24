@@ -317,9 +317,9 @@
       <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 class="m-0 text-lg font-semibold text-slate-800">Project Provisioning</h2>
+            <h2 class="m-0 text-lg font-semibold text-slate-800">Project Provisioning Lifecycle</h2>
             <p class="m-0 mt-1 text-sm text-slate-600">
-              Provisioning state:
+              Current state:
               <span class="font-semibold">{{ provisioningStateLabel }}</span>
             </p>
           </div>
@@ -347,6 +347,9 @@
         >
           {{ provisioningError }}
         </Message>
+        <div class="mt-4 border-t border-slate-100 pt-4">
+          <LifecycleFlow :steps="projectLifecycleSteps" />
+        </div>
       </section>
 
       <section class="space-y-3">
@@ -663,6 +666,7 @@ import {
 } from '../api/projects'
 import PacketReferenceTable from '../components/PacketReferenceTable.vue'
 import ProjectDetail from '../components/ProjectDetail.vue'
+import LifecycleFlow from '../components/LifecycleFlow.vue'
 import UsageDisplay from '../components/UsageDisplay.vue'
 import UserList from '../components/UserList.vue'
 
@@ -722,6 +726,86 @@ const availablePeople = computed(() =>
     formatPersonOption(left).localeCompare(formatPersonOption(right)),
   ),
 )
+
+const projectLifecycleSteps = computed(() => {
+  const p = project.value
+  if (!p) return []
+  const ps = String(p.provisioning_state || 'received').trim().toLowerCase()
+
+  // Step 1: Received packet creation — always complete
+  const step1 = {
+    label: 'Received packet creation',
+    status: 'completed',
+    timestamp: p.created_at,
+    description: 'AIME packet received and project record created.',
+  }
+
+  // Step 2: Create namespace in NRP
+  let step2
+  if (ps === 'received') {
+    step2 = {
+      label: 'Create namespace in NRP',
+      status: 'waiting',
+      actionRequired: 'Admin must click the "Create Namespace + Authentik Group" button above.',
+    }
+  } else if (ps === 'provisioning') {
+    step2 = {
+      label: 'Create namespace in NRP',
+      status: 'active',
+      timestamp: p.provisioning_started_at,
+      description: 'Kubernetes namespace and Authentik group are being created.',
+    }
+  } else if (ps === 'ready') {
+    step2 = {
+      label: 'Create namespace in NRP',
+      status: 'completed',
+      timestamp: p.provisioning_completed_at || p.provisioning_started_at,
+    }
+  } else {
+    // failed
+    step2 = {
+      label: 'Create namespace in NRP',
+      status: 'error',
+      timestamp: p.provisioning_started_at,
+      description: p.provisioning_last_error || 'Provisioning failed.',
+    }
+  }
+
+  // Step 3: Notify project create back to AIME server
+  let step3
+  if (ps !== 'ready') {
+    step3 = { label: 'Notify project create to AIME server', status: 'pending' }
+  } else if (p.provisioning_alerted_at) {
+    step3 = {
+      label: 'Notify project create to AIME server',
+      status: 'completed',
+      timestamp: p.provisioning_alerted_at,
+    }
+  } else {
+    step3 = {
+      label: 'Notify project create to AIME server',
+      status: 'active',
+      description: 'Sending project provisioning confirmation to AIME.',
+    }
+  }
+
+  // Step 4: Received data project create (AIME acks back)
+  const step4 = {
+    label: 'Received data project create',
+    status: p.provisioning_alerted_at ? 'active' : 'pending',
+    description: p.provisioning_alerted_at
+      ? 'Waiting for AIME to acknowledge the project creation.'
+      : null,
+  }
+
+  // Step 5: Inform transaction complete
+  const step5 = {
+    label: 'Inform transaction complete',
+    status: 'pending',
+  }
+
+  return [step1, step2, step3, step4, step5]
+})
 
 function createProjectForm(projectData = null) {
   const tags = Array.isArray(projectData?.tags) ? projectData.tags : []
