@@ -209,6 +209,10 @@ class AuthentikService:
 
         id_token = self._clean(token_payload.get("id_token"))
         if id_token:
+            # The ID token payload is decoded WITHOUT cryptographic signature
+            # verification.  Claims are only used as a fallback; userinfo claims
+            # (fetched below with a verified access token) always take precedence.
+            # TODO(prod): replace with verified JWT decoding (auth_admin_jwks_url).
             claims.update(self._decode_unverified_jwt_payload(id_token))
 
         if userinfo_url:
