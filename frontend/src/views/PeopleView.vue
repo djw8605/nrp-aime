@@ -62,6 +62,12 @@
                   {{ data.name }}
                 </router-link>
                 <Tag
+                  v-if="data.is_pi"
+                  :value="data.pi_project_count > 1 ? `PI x${data.pi_project_count}` : 'PI'"
+                  severity="warn"
+                  rounded
+                />
+                <Tag
                   v-for="tag in data.tags || []"
                   :key="tag"
                   :value="tag"
@@ -81,6 +87,9 @@
               <Tag :value="String(data.project_count || 0)" severity="info" rounded />
               <p class="m-0 mt-1 text-xs text-slate-500">
                 {{ (data.project_names || []).slice(0, 2).join(', ') || '—' }}
+              </p>
+              <p v-if="data.is_pi" class="m-0 mt-1 text-xs font-medium text-amber-700">
+                PI on {{ data.pi_project_count }} {{ data.pi_project_count === 1 ? 'project' : 'projects' }}
               </p>
             </template>
           </Column>
@@ -156,6 +165,7 @@ const filteredPeople = computed(() => {
       projectNames,
       person.source_site_name,
       person.service_units_allocated,
+      Array.isArray(person.pi_project_names) ? person.pi_project_names.join(' ') : '',
     ]
       .filter(Boolean)
       .some((value) => String(value).toLowerCase().includes(query))

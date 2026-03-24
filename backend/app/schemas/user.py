@@ -60,6 +60,9 @@ class UserRead(BaseModel):
     is_active: bool
     project_count: int = 0
     project_names: list[str] = Field(default_factory=list)
+    is_pi: bool = False
+    pi_project_count: int = 0
+    pi_project_names: list[str] = Field(default_factory=list)
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -94,6 +97,9 @@ class ProjectMemberRead(BaseModel):
     source_trans_rec_id: int | None = None
     source_transaction_id: int | None = None
     role: str | None = None
+    is_project_pi: bool = False
+    account_confirmation_required: bool = True
+    account_confirmation_via: str = "notify_account_create"
     resource: str | None = None
     allocated_resource: str | None = None
     membership_service_units_allocated: float | None = None
@@ -153,6 +159,9 @@ class UserProjectMembershipRead(BaseModel):
     project_site_project_id: str | None = None
     project_is_active: bool
     role: str | None = None
+    is_project_pi: bool = False
+    account_confirmation_required: bool = True
+    account_confirmation_via: str = "notify_account_create"
     resource: str | None = None
     allocated_resource: str | None = None
     membership_service_units_allocated: float | None = None

@@ -60,8 +60,31 @@ def _project_names_for_user(user: User, *, include_debug_projects: bool = True) 
     )
 
 
+def _role_is_pi(role: str | None) -> bool:
+    return str(role or "").strip().lower() == "pi"
+
+
+def _pi_project_names_for_user(
+    user: User, *, include_debug_projects: bool = True
+) -> list[str]:
+    return sorted(
+        {
+            pu.project.name
+            for pu in user.project_users
+            if _role_is_pi(pu.role)
+            and pu.project is not None
+            and pu.project.name
+            and (include_debug_projects or not _has_debug_tag(pu.project.tags))
+        }
+    )
+
+
 def _to_user_read(user: User, *, include_debug_projects: bool = True) -> UserRead:
     project_names = _project_names_for_user(
+        user,
+        include_debug_projects=include_debug_projects,
+    )
+    pi_project_names = _pi_project_names_for_user(
         user,
         include_debug_projects=include_debug_projects,
     )
@@ -90,7 +113,64 @@ def _to_user_read(user: User, *, include_debug_projects: bool = True) -> UserRea
         is_active=user.is_active,
         project_count=len(project_names),
         project_names=project_names,
+        is_pi=bool(pi_project_names),
+        pi_project_count=len(pi_project_names),
+        pi_project_names=pi_project_names,
         created_at=user.created_at,
+    )
+
+
+def _membership_confirmation_context(
+    db: Session,
+    membership: ProjectUser,
+) -> tuple[bool, str]:
+    lifecycle = AccountLifecycleService()
+    required = lifecycle.account_confirmation_required(db, membership)
+    via = (
+        "notify_account_create" if required else "notify_project_create"
+    )
+    return required, via
+
+
+def _to_user_project_membership_read(
+    db: Session,
+    membership: ProjectUser,
+) -> UserProjectMembershipRead:
+    confirmation_required, confirmation_via = _membership_confirmation_context(
+        db, membership
+    )
+    return UserProjectMembershipRead(
+        project_user_id=membership.id,
+        project_id=membership.project.id,
+        project_name=membership.project.name,
+        project_site_project_id=membership.project.site_project_id,
+        project_is_active=membership.project.is_active,
+        role=membership.role,
+        is_project_pi=_role_is_pi(membership.role),
+        account_confirmation_required=confirmation_required,
+        account_confirmation_via=confirmation_via,
+        resource=membership.resource,
+        allocated_resource=membership.allocated_resource,
+        membership_service_units_allocated=(
+            float(membership.service_units_allocated)
+            if membership.service_units_allocated is not None
+            else None
+        ),
+        membership_service_units_remaining=(
+            float(membership.service_units_remaining)
+            if membership.service_units_remaining is not None
+            else None
+        ),
+        account_remote_site_login=membership.remote_site_login,
+        account_is_active=membership.is_active,
+        account_state=membership.account_state,
+        account_state_updated_at=membership.account_state_updated_at,
+        email_sent_at=membership.email_sent_at,
+        account_made_at=membership.account_made_at,
+        aime_confirmation_sent_at=membership.aime_confirmation_sent_at,
+        source_packet_rec_id=membership.source_packet_rec_id,
+        source_trans_rec_id=membership.source_trans_rec_id,
+        source_transaction_id=membership.source_transaction_id,
     )
 
 
@@ -379,39 +459,7 @@ def get_user_memberships(
         .all()
     )
 
-    return [
-        UserProjectMembershipRead(
-            project_user_id=membership.id,
-            project_id=membership.project.id,
-            project_name=membership.project.name,
-            project_site_project_id=membership.project.site_project_id,
-            project_is_active=membership.project.is_active,
-            role=membership.role,
-            resource=membership.resource,
-            allocated_resource=membership.allocated_resource,
-            membership_service_units_allocated=(
-                float(membership.service_units_allocated)
-                if membership.service_units_allocated is not None
-                else None
-            ),
-            membership_service_units_remaining=(
-                float(membership.service_units_remaining)
-                if membership.service_units_remaining is not None
-                else None
-            ),
-            account_remote_site_login=membership.remote_site_login,
-            account_is_active=membership.is_active,
-            account_state=membership.account_state,
-            account_state_updated_at=membership.account_state_updated_at,
-            email_sent_at=membership.email_sent_at,
-            account_made_at=membership.account_made_at,
-            aime_confirmation_sent_at=membership.aime_confirmation_sent_at,
-            source_packet_rec_id=membership.source_packet_rec_id,
-            source_trans_rec_id=membership.source_trans_rec_id,
-            source_transaction_id=membership.source_transaction_id,
-        )
-        for membership in memberships
-    ]
+    return [_to_user_project_membership_read(db, membership) for membership in memberships]
 
 
 @router.get("/{user_id}/packet-details", response_model=list[UserPacketDetailRead])

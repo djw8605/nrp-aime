@@ -191,6 +191,12 @@
                 :severity="person.is_active ? 'success' : 'danger'"
                 rounded
               />
+              <Tag
+                v-if="person.is_pi"
+                :value="person.pi_project_count > 1 ? `PI on ${person.pi_project_count} projects` : 'PI on 1 project'"
+                severity="warn"
+                rounded
+              />
               <Button icon="pi pi-pencil" label="Edit Person" @click="startPersonEdit" />
             </div>
           </div>
@@ -377,7 +383,13 @@
             </Column>
             <Column header="Role" sortable>
               <template #body="{ data }">
-                {{ data.role || '—' }}
+                <Tag
+                  v-if="data.is_project_pi"
+                  value="PI"
+                  severity="warn"
+                  rounded
+                />
+                <span v-else>{{ data.role || '—' }}</span>
               </template>
             </Column>
             <Column header="Resource" sortable>
@@ -627,73 +639,158 @@ const loading = ref(false)
 const error = ref(null)
 
 const userLifecycleStepsByMembership = computed(() =>
-  memberships.value.map((m) => {
-    // Step 1: Received request account create — always complete
-    const step1 = {
-      label: 'Received request account create',
-      status: 'completed',
-      timestamp: m.account_state_updated_at,
-      description: 'Account creation request received from AIME packet.',
-    }
-
-    // Step 2: Send account invite to user
-    // If the account was already made, treat the invite as sent even if email_sent_at is missing
-    const step2 =
-      m.email_sent_at || m.account_made_at
-        ? { label: 'Send account invite to user', status: 'completed', timestamp: m.email_sent_at }
-        : {
-            label: 'Send account invite to user',
-            status: 'waiting',
-            actionRequired: 'Admin must click "Send User Invite" to dispatch the invite email.',
-          }
-
-    // Step 3: User creates account
-    let step3
-    if (m.account_made_at) {
-      step3 = { label: 'User creates account', status: 'completed', timestamp: m.account_made_at }
-    } else if (m.email_sent_at || m.account_made_at) {
-      step3 = {
-        label: 'User creates account',
-        status: 'active',
-        description: 'Waiting for the user to accept the invite and register.',
-      }
-    } else {
-      step3 = { label: 'User creates account', status: 'pending' }
-    }
-
-    // Step 4: Notify account create to AIME
-    let step4
-    if (m.aime_confirmation_sent_at) {
-      step4 = {
-        label: 'Notify account create to AIME',
-        status: 'completed',
-        timestamp: m.aime_confirmation_sent_at,
-      }
-    } else if (m.account_made_at) {
-      step4 = {
-        label: 'Notify account create to AIME',
-        status: 'active',
-        description: 'Sending account creation confirmation to AIME server.',
-      }
-    } else {
-      step4 = { label: 'Notify account create to AIME', status: 'pending' }
-    }
-
-    // Step 5: Received data account create (AIME acks)
-    const step5 = {
-      label: 'Received data account create',
-      status: m.aime_confirmation_sent_at ? 'active' : 'pending',
-      description: m.aime_confirmation_sent_at
-        ? 'Waiting for AIME to acknowledge account creation.'
-        : null,
-    }
-
-    // Step 6: Inform transaction complete
-    const step6 = { label: 'Inform transaction complete', status: 'pending' }
-
-    return { membership: m, steps: [step1, step2, step3, step4, step5, step6] }
-  }),
+  memberships.value.map((membership) => ({
+    membership,
+    steps:
+      membership.account_confirmation_via === 'notify_project_create'
+        ? buildProjectCreatePiLifecycleSteps(membership)
+        : buildAccountCreateLifecycleSteps(membership),
+  })),
 )
+
+function buildAccountCreateLifecycleSteps(membership) {
+  const step1 = {
+    label: 'Received request account create',
+    status: 'completed',
+    timestamp: membership.account_state_updated_at,
+    description: 'Account creation request received from AIME packet.',
+  }
+
+  const step2 =
+    membership.email_sent_at || membership.account_made_at
+      ? {
+          label: 'Send account invite to user',
+          status: 'completed',
+          timestamp: membership.email_sent_at,
+        }
+      : {
+          label: 'Send account invite to user',
+          status: 'waiting',
+          actionRequired: 'Admin must click "Send User Invite" to dispatch the invite email.',
+        }
+
+  let step3
+  if (membership.account_made_at) {
+    step3 = {
+      label: 'User creates account',
+      status: 'completed',
+      timestamp: membership.account_made_at,
+    }
+  } else if (membership.email_sent_at || membership.account_made_at) {
+    step3 = {
+      label: 'User creates account',
+      status: 'active',
+      description: 'Waiting for the user to accept the invite and register.',
+    }
+  } else {
+    step3 = { label: 'User creates account', status: 'pending' }
+  }
+
+  let step4
+  if (membership.aime_confirmation_sent_at) {
+    step4 = {
+      label: 'Notify account create to AIME',
+      status: 'completed',
+      timestamp: membership.aime_confirmation_sent_at,
+    }
+  } else if (membership.account_made_at) {
+    step4 = {
+      label: 'Notify account create to AIME',
+      status: 'active',
+      description: 'Sending account creation confirmation to AIME server.',
+    }
+  } else {
+    step4 = { label: 'Notify account create to AIME', status: 'pending' }
+  }
+
+  const step5 = {
+    label: 'Received data account create',
+    status: membership.aime_confirmation_sent_at ? 'active' : 'pending',
+    description: membership.aime_confirmation_sent_at
+      ? 'Waiting for AIME to acknowledge account creation.'
+      : null,
+  }
+
+  const step6 = { label: 'Inform transaction complete', status: 'pending' }
+
+  return [step1, step2, step3, step4, step5, step6]
+}
+
+function buildProjectCreatePiLifecycleSteps(membership) {
+  const step1 = {
+    label: 'Received request project create',
+    status: 'completed',
+    timestamp: membership.account_state_updated_at,
+    description: 'Project creation request included the PI account details.',
+  }
+
+  const step2 =
+    membership.email_sent_at
+      ? {
+          label: 'Send PI invite to user',
+          status: 'completed',
+          timestamp: membership.email_sent_at,
+        }
+      : {
+          label: 'Send PI invite to user',
+          status: membership.account_made_at ? 'completed' : 'pending',
+          description: membership.account_made_at
+            ? 'PI login was already available locally.'
+            : 'Invite is only needed if the PI does not yet have a local login.',
+        }
+
+  let step3
+  if (membership.account_made_at) {
+    step3 = {
+      label: 'PI account becomes available locally',
+      status: 'completed',
+      timestamp: membership.account_made_at,
+    }
+  } else if (membership.email_sent_at) {
+    step3 = {
+      label: 'PI account becomes available locally',
+      status: 'active',
+      description: 'Waiting for the PI to accept the invite and create a local login.',
+    }
+  } else {
+    step3 = {
+      label: 'PI account becomes available locally',
+      status: 'pending',
+    }
+  }
+
+  let step4
+  if (membership.aime_confirmation_sent_at) {
+    step4 = {
+      label: 'Notify project create to AIME (covers PI account)',
+      status: 'completed',
+      timestamp: membership.aime_confirmation_sent_at,
+    }
+  } else if (membership.account_made_at) {
+    step4 = {
+      label: 'Notify project create to AIME (covers PI account)',
+      status: 'active',
+      description: 'Project notification will carry the PI account creation information.',
+    }
+  } else {
+    step4 = {
+      label: 'Notify project create to AIME (covers PI account)',
+      status: 'pending',
+    }
+  }
+
+  const step5 = {
+    label: 'Received data project create',
+    status: membership.aime_confirmation_sent_at ? 'active' : 'pending',
+    description: membership.aime_confirmation_sent_at
+      ? 'Waiting for AIME to acknowledge project creation.'
+      : null,
+  }
+
+  const step6 = { label: 'Inform transaction complete', status: 'pending' }
+
+  return [step1, step2, step3, step4, step5, step6]
+}
 
 function createPersonForm(personData = null) {
   const tags = Array.isArray(personData?.tags) ? personData.tags : []

@@ -1,7 +1,11 @@
 #!/bin/sh
 
 # Get the sealed secret from nautilus
-kubeseal --fetch-cert --controller-name sealed-secrets --controller-namespace sealed-secrets-operator > nautilus-cert.pem
+
+if [ ! -f nautilus-cert.pem ]; then
+  echo "Fetching nautilus sealed secrets certificate..."
+  kubeseal --fetch-cert --controller-name sealed-secrets --controller-namespace sealed-secrets-operator > nautilus-cert.pem
+fi
 
 NAMESPACE=access-accounting
 PLAINTEXT_ENV=deployment/config/secret.env

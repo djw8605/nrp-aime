@@ -62,6 +62,10 @@ def _has_debug_tag(tags: list[str] | None) -> bool:
     return "debug" in {item.lower() for item in _normalize_tags(tags)}
 
 
+def _role_is_pi(role: str | None) -> bool:
+    return str(role or "").strip().lower() == "pi"
+
+
 def _full_name(
     first_name: str | None,
     middle_name: str | None,
@@ -74,7 +78,11 @@ def _full_name(
     ).strip()
 
 
-def _to_project_member_read(membership: ProjectUser) -> ProjectMemberRead:
+def _to_project_member_read(db: Session, membership: ProjectUser) -> ProjectMemberRead:
+    lifecycle = AccountLifecycleService()
+    account_confirmation_required = lifecycle.account_confirmation_required(
+        db, membership
+    )
     return ProjectMemberRead(
         project_user_id=membership.id,
         id=membership.user.id,
@@ -102,6 +110,13 @@ def _to_project_member_read(membership: ProjectUser) -> ProjectMemberRead:
         source_trans_rec_id=membership.source_trans_rec_id,
         source_transaction_id=membership.source_transaction_id,
         role=membership.role,
+        is_project_pi=_role_is_pi(membership.role),
+        account_confirmation_required=account_confirmation_required,
+        account_confirmation_via=(
+            "notify_account_create"
+            if account_confirmation_required
+            else "notify_project_create"
+        ),
         resource=membership.resource,
         allocated_resource=membership.allocated_resource,
         membership_service_units_allocated=(
@@ -513,7 +528,7 @@ def get_project_users(project_id: uuid.UUID, db: Session = Depends(get_db)):
     )
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return [_to_project_member_read(pu) for pu in project.project_users]
+    return [_to_project_member_read(db, pu) for pu in project.project_users]
 
 
 @router.post("/{project_id}/members", response_model=ProjectMemberRead, status_code=201)
@@ -642,7 +657,7 @@ def add_project_member(
     )
     if membership is None:
         raise HTTPException(status_code=500, detail="Failed to create project membership")
-    return _to_project_member_read(membership)
+    return _to_project_member_read(db, membership)
 
 
 @router.get("/{project_id}/usage", response_model=ProjectUsage)

@@ -63,6 +63,80 @@ class AccountLifecycleService:
         if project_user.account_made_at is None:
             project_user.account_made_at = datetime.now(UTC)
 
+    @staticmethod
+    def _role_is_pi(role: str | None) -> bool:
+        return str(role or "").strip().lower() == "pi"
+
+    @staticmethod
+    def _packet_type_for_rec_id(db: Session, packet_rec_id: int | None) -> str | None:
+        if packet_rec_id is None:
+            return None
+        row = (
+            db.query(AMIEPacket.packet_type)
+            .filter(AMIEPacket.packet_rec_id == packet_rec_id)
+            .first()
+        )
+        if row is None:
+            return None
+        return str(row[0]) if row[0] is not None else None
+
+    def is_project_create_pi_membership(
+        self,
+        db: Session,
+        project_user: ProjectUser,
+    ) -> bool:
+        if not self._role_is_pi(project_user.role):
+            return False
+        return (
+            self._packet_type_for_rec_id(db, project_user.source_packet_rec_id)
+            == "request_project_create"
+        )
+
+    def account_confirmation_required(
+        self,
+        db: Session,
+        project_user: ProjectUser,
+    ) -> bool:
+        return not self.is_project_create_pi_membership(db, project_user)
+
+    def _project_create_account_coverage_at(
+        self,
+        db: Session,
+        project_user: ProjectUser,
+    ) -> datetime | None:
+        if not self.is_project_create_pi_membership(db, project_user):
+            return None
+        row = (
+            db.query(OutboundPacketLog.sent_at)
+            .filter(
+                OutboundPacketLog.event_type == "notify_project_create",
+                OutboundPacketLog.source_packet_rec_id == project_user.source_packet_rec_id,
+                OutboundPacketLog.status == OutboundPacketLog.STATUS_SENT,
+            )
+            .order_by(OutboundPacketLog.sent_at.desc(), OutboundPacketLog.created_at.desc())
+            .first()
+        )
+        if row is None:
+            return None
+        return row[0]
+
+    def _mark_project_create_pi_memberships_covered(
+        self,
+        db: Session,
+        project: Project,
+        *,
+        covered_at: datetime | None = None,
+    ) -> int:
+        marked = 0
+        effective_covered_at = covered_at or datetime.now(UTC)
+        for membership in project.project_users:
+            if not self.is_project_create_pi_membership(db, membership):
+                continue
+            if membership.aime_confirmation_sent_at is None:
+                membership.aime_confirmation_sent_at = effective_covered_at
+                marked += 1
+        return marked
+
     def _find_source_packet_rec_id(
         self,
         db: Session,
@@ -200,6 +274,40 @@ class AccountLifecycleService:
         return cls._clean_scalar(
             cls._source_packet_field(packet, "UserRemoteSiteLogin")
         )
+
+    @classmethod
+    def _source_packet_string_list(cls, packet: Any, field_name: str) -> list[str]:
+        value = cls._source_packet_field(packet, field_name)
+        if isinstance(value, (list, tuple)):
+            return [
+                cleaned
+                for item in value
+                if (cleaned := cls._clean_scalar(item)) is not None
+            ]
+        cleaned = cls._clean_scalar(value)
+        return [cleaned] if cleaned is not None else []
+
+    @staticmethod
+    def _normalize_mapping_list(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+    @classmethod
+    def _source_packet_mapping_list(
+        cls,
+        packet: Any,
+        field_name: str,
+    ) -> list[dict[str, Any]]:
+        return cls._normalize_mapping_list(cls._source_packet_field(packet, field_name))
+
+    @classmethod
+    def _mapping_site_person_id(cls, value: dict[str, Any]) -> str | None:
+        for key in ("site_person_id", "SitePersonId", "SitePersonID"):
+            cleaned = cls._clean_scalar(value.get(key))
+            if cleaned:
+                return cleaned
+        return None
 
     def _send_account_confirmation_packet(
         self,
@@ -423,19 +531,8 @@ class AccountLifecycleService:
         db: Session,
         project_user: ProjectUser,
     ) -> bool:
-        """Return whether invite email dispatch and acceptance are complete.
-
-        Accounts sourced directly from an AMIE packet (source_packet_rec_id is
-        set) never go through the email-invite flow, so we skip the invite
-        check for them and allow confirmation immediately once account_made_at
-        is set.
-        """
-        # AMIE-direct accounts (PI from request_project_create, users from
-        # request_account_create) — no email invite was ever sent; allow as
-        # long as the account has been marked made.
+        """Return whether invite email dispatch and acceptance are complete."""
         if project_user.email_sent_at is None:
-            if project_user.source_packet_rec_id is not None:
-                return project_user.account_made_at is not None
             return False
 
         if project_user.account_made_at is None:
@@ -499,6 +596,30 @@ class AccountLifecycleService:
                         can_send_confirmation
                         and project_user.aime_confirmation_sent_at is None
                     ):
+                        if not self.account_confirmation_required(db, project_user):
+                            covered_at = self._project_create_account_coverage_at(
+                                db, project_user
+                            )
+                            if covered_at is not None:
+                                project_user.aime_confirmation_sent_at = covered_at
+                                _log_amie_interaction(
+                                    "account_confirmation.covered_by_project_create",
+                                    project_user_id=project_user.id,
+                                    site_name=self._project_user_site_name(project_user),
+                                    source_packet_rec_id=project_user.source_packet_rec_id,
+                                    covered_at=covered_at.isoformat(),
+                                )
+                            else:
+                                deferred += 1
+                                _log_amie_interaction(
+                                    "account_confirmation.deferred_project_create_cover_pending",
+                                    project_user_id=project_user.id,
+                                    site_name=self._project_user_site_name(project_user),
+                                    source_packet_rec_id=project_user.source_packet_rec_id,
+                                )
+                            db.commit()
+                            continue
+
                         if not self._invite_completion_allows_confirmation(
                             db, project_user
                         ):
@@ -600,6 +721,17 @@ class AccountLifecycleService:
         for project in ready_projects:
             checked += 1
             site_name = str(project.source_site_name or settings.amie_site_name or "NRP")
+            source_packet_record = (
+                db.query(AMIEPacket)
+                .options(joinedload(AMIEPacket.allocation_packet))
+                .filter(AMIEPacket.packet_rec_id == project.source_packet_rec_id)
+                .first()
+            )
+            allocation_packet = (
+                source_packet_record.allocation_packet
+                if source_packet_record is not None
+                else None
+            )
 
             # Check whether we already have a successful outbound record for
             # this source packet to avoid double-sending across worker cycles.
@@ -616,6 +748,21 @@ class AccountLifecycleService:
             )
 
             if existing is not None:
+                if existing.status == OutboundPacketLog.STATUS_SENT:
+                    covered_count = self._mark_project_create_pi_memberships_covered(
+                        db,
+                        project,
+                        covered_at=existing.sent_at,
+                    )
+                    if covered_count:
+                        _log_amie_interaction(
+                            "project_notification.covered_pi_accounts",
+                            project_id=project.id,
+                            site_name=site_name,
+                            source_packet_rec_id=project.source_packet_rec_id,
+                            membership_count=covered_count,
+                        )
+                        db.commit()
                 already_sent += 1
                 _log_amie_interaction(
                     "project_notification.already_sent",
@@ -656,13 +803,87 @@ class AccountLifecycleService:
                         source_packet_rec_id=project.source_packet_rec_id,
                     )
 
+                    grant_number = (
+                        project.grant_number
+                        or self._clean_scalar(
+                            self._source_packet_field(source_packet, "GrantNumber")
+                        )
+                        or self._clean_scalar(
+                            allocation_packet.grant_number if allocation_packet else None
+                        )
+                    )
+                    project_site_id = (
+                        project.site_project_id
+                        or self._source_packet_project_id(source_packet)
+                    )
+                    pfos_number = (
+                        project.pfos_number
+                        or self._clean_scalar(
+                            self._source_packet_field(source_packet, "PfosNumber")
+                        )
+                        or self._clean_scalar(
+                            allocation_packet.pfos_number if allocation_packet else None
+                        )
+                    )
+                    resource = (
+                        project.allocated_resource
+                        or project.resource_type
+                        or self._source_packet_resource(source_packet)
+                    )
                     pi_user = next(
                         (pu for pu in project.project_users if pu.role == "pi"), None
                     )
                     pi_remote_login = (
-                        (pi_user.remote_site_login or pi_user.user.email)
+                        (
+                            pi_user.remote_site_login
+                            or (pi_user.user.remote_site_login if pi_user.user else None)
+                        )
                         if pi_user
                         else None
+                    )
+                    pi_person_id = (
+                        project.pi_person_id
+                        or self._clean_scalar(
+                            self._source_packet_field(source_packet, "PiPersonID")
+                        )
+                        or self._clean_scalar(
+                            allocation_packet.pi_person_id if allocation_packet else None
+                        )
+                    )
+                    pi_global_id = self._clean_scalar(
+                        self._source_packet_field(source_packet, "PiGlobalID")
+                    ) or self._clean_scalar(
+                        allocation_packet.pi_global_id if allocation_packet else None
+                    )
+                    pi_dn_list = self._source_packet_string_list(source_packet, "PiDnList") or (
+                        [
+                            item
+                            for item in (allocation_packet.pi_dn_list or [])
+                            if isinstance(item, str) and item.strip()
+                        ]
+                        if allocation_packet is not None
+                        else []
+                    )
+                    pi_requested_login_list = self._source_packet_string_list(
+                        source_packet, "PiRequestedLoginList"
+                    ) or (
+                        [
+                            item
+                            for item in (allocation_packet.pi_requested_login_list or [])
+                            if isinstance(item, str) and item.strip()
+                        ]
+                        if allocation_packet is not None
+                        else []
+                    )
+                    site_person_ids = self._source_packet_mapping_list(
+                        source_packet, "SitePersonId"
+                    ) or (
+                        self._normalize_mapping_list(allocation_packet.site_person_ids)
+                        if allocation_packet is not None
+                        else []
+                    )
+                    has_site_person_id = any(
+                        self._mapping_site_person_id(item) for item in site_person_ids
                     )
                     if not pi_remote_login:
                         deferred += 1
@@ -675,12 +896,64 @@ class AccountLifecycleService:
                         db.commit()
                         continue
 
+                    if not pi_person_id:
+                        deferred += 1
+                        _log_amie_interaction(
+                            "project_notification.deferred_pi_person_id_missing",
+                            project_id=project.id,
+                            site_name=site_name,
+                            source_packet_rec_id=project.source_packet_rec_id,
+                        )
+                        db.commit()
+                        continue
+
+                    if not has_site_person_id:
+                        deferred += 1
+                        _log_amie_interaction(
+                            "project_notification.deferred_site_person_id_missing",
+                            project_id=project.id,
+                            site_name=site_name,
+                            source_packet_rec_id=project.source_packet_rec_id,
+                            pi_person_id=pi_person_id,
+                        )
+                        db.commit()
+                        continue
+
+                    if not grant_number or not project_site_id or not resource:
+                        deferred += 1
+                        _log_amie_interaction(
+                            "project_notification.deferred_required_fields_missing",
+                            project_id=project.id,
+                            site_name=site_name,
+                            source_packet_rec_id=project.source_packet_rec_id,
+                            grant_number=grant_number,
+                            project_site_id=project_site_id,
+                            resource=resource,
+                            pi_person_id=pi_person_id,
+                            pi_remote_login=pi_remote_login,
+                        )
+                        db.commit()
+                        continue
+
                     npc = source_packet.reply_packet(packet_type="notify_project_create")
-                    npc.ProjectID = project.site_project_id or project.aime_allocation_id
-                    npc.ResourceList = (
-                        [project.allocated_resource] if project.allocated_resource else []
-                    )
+                    npc.GrantNumber = grant_number
+                    npc.ProjectID = project_site_id
+                    npc.PfosNumber = pfos_number
+                    npc.ResourceList = [resource] if resource else []
+                    npc.PiPersonID = pi_person_id
+                    npc.PiGlobalID = pi_global_id
+                    npc.PiFirstName = project.pi_first_name
+                    npc.PiMiddleName = project.pi_middle_name
+                    npc.PiLastName = project.pi_last_name
+                    npc.PiEmail = project.pi_email
+                    npc.PiOrganization = project.pi_organization
+                    npc.PiOrgCode = project.pi_org_code
+                    npc.PiDepartment = project.pi_department
+                    npc.PiBusinessPhoneNumber = project.pi_business_phone_number
+                    npc.PiDnList = pi_dn_list
+                    npc.PiRequestedLoginList = pi_requested_login_list
                     npc.PiRemoteSiteLogin = pi_remote_login
+                    npc.SitePersonId = site_person_ids
 
                     outbound = OutboundPacketService.start_or_resume(
                         db,
@@ -691,8 +964,10 @@ class AccountLifecycleService:
                         payload={
                             "packet_type": "notify_project_create",
                             "project_id": str(project.id),
-                            "site_project_id": project.site_project_id,
+                            "site_project_id": project_site_id,
                             "aime_allocation_id": project.aime_allocation_id,
+                            "grant_number": grant_number,
+                            "pfos_number": pfos_number,
                         },
                         worker_name="aime-worker",
                     )
@@ -713,6 +988,19 @@ class AccountLifecycleService:
                         outbound_packet_rec_id=outbound_packet_rec_id,
                     )
                     OutboundPacketService.mark_sent(db, outbound, send_result=send_result)
+                    covered_count = self._mark_project_create_pi_memberships_covered(
+                        db,
+                        project,
+                        covered_at=outbound.sent_at,
+                    )
+                    if covered_count:
+                        _log_amie_interaction(
+                            "project_notification.covered_pi_accounts",
+                            project_id=project.id,
+                            site_name=site_name,
+                            source_packet_rec_id=project.source_packet_rec_id,
+                            membership_count=covered_count,
+                        )
                     notifications_sent += 1
                     db.commit()
                     logger.info(

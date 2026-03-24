@@ -26,6 +26,12 @@
                 {{ data.name }}
               </router-link>
               <Tag
+                v-if="data.is_project_pi"
+                value="PI"
+                severity="warn"
+                rounded
+              />
+              <Tag
                 v-for="tag in data.tags || []"
                 :key="tag"
                 :value="tag"
@@ -74,7 +80,13 @@
         </Column>
         <Column header="Role">
           <template #body="{ data }">
-            {{ data.role || '—' }}
+            <Tag
+              v-if="data.is_project_pi"
+              value="PI"
+              severity="warn"
+              rounded
+            />
+            <span v-else>{{ data.role || '—' }}</span>
           </template>
         </Column>
         <Column header="Resource">
@@ -120,8 +132,8 @@
         <Column header="AIME Confirmed">
           <template #body="{ data }">
             <Tag
-              :value="data.aime_confirmation_sent_at ? 'Sent' : 'Pending'"
-              :severity="data.aime_confirmation_sent_at ? 'success' : 'warning'"
+              :value="confirmationTagValue(data)"
+              :severity="confirmationTagSeverity(data)"
               rounded
             />
           </template>
@@ -152,6 +164,22 @@ function formatUnits(value) {
   const numeric = Number(value)
   if (Number.isNaN(numeric)) return String(value)
   return numeric.toLocaleString(undefined, { maximumFractionDigits: 4 })
+}
+
+function confirmationTagValue(membership) {
+  if (membership?.account_confirmation_required === false) {
+    return membership?.aime_confirmation_sent_at
+      ? 'Covered by Project Create'
+      : 'Project Notify Pending'
+  }
+  return membership?.aime_confirmation_sent_at ? 'Sent' : 'Pending'
+}
+
+function confirmationTagSeverity(membership) {
+  if (membership?.account_confirmation_required === false) {
+    return membership?.aime_confirmation_sent_at ? 'info' : 'warning'
+  }
+  return membership?.aime_confirmation_sent_at ? 'success' : 'warning'
 }
 
 defineProps({
