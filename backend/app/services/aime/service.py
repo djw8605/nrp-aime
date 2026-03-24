@@ -140,8 +140,8 @@ class AIMEService:
         incoming: list[str] | None,
     ) -> list[str]:
         merged: list[str] = []
-        for source in (existing or [], incoming or []):
-            dn = (source or "").strip()
+        for dn_raw in [*(existing or []), *(incoming or [])]:
+            dn = (dn_raw or "").strip()
             if dn and dn not in merged:
                 merged.append(dn)
         return merged
