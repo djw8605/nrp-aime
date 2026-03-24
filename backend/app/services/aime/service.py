@@ -2140,22 +2140,33 @@ class AIMEService:
         *,
         packet_record: AMIEPacket,
         processed_ok: bool,
+        extra_payload: dict[str, Any] | None = None,
     ) -> None:
-        """Send alert hook for project/user create or modify packet events."""
+        """Send alert for new user account request packets."""
         alert_info = ObservabilityService.project_user_packet_alert_fields(packet_record)
         if alert_info is None:
             return
         category, title = alert_info
         severity = "info" if processed_ok else "warn"
         message = (
-            f"Packet {packet_record.packet_type} processed "
-            f"(packet_rec_id={packet_record.packet_rec_id})"
+            "A new user account request has been received and awaits admin action."
             if processed_ok
             else (
-                f"Packet {packet_record.packet_type} received but not fully processed "
+                f"User account request packet was received but not fully processed "
                 f"(packet_rec_id={packet_record.packet_rec_id}, status={packet_record.processing_status})"
             )
         )
+        payload: dict[str, Any] = {}
+        if extra_payload:
+            payload.update(extra_payload)
+        payload.update(
+            {
+                "packet_rec_id": packet_record.packet_rec_id,
+                "processing_status": packet_record.processing_status,
+            }
+        )
+        if packet_record.processing_error:
+            payload["processing_error"] = packet_record.processing_error
         AlertService.send(
             db,
             alert_key=f"{category}:{packet_record.packet_rec_id}",
@@ -2163,14 +2174,7 @@ class AIMEService:
             severity=severity,
             title=title,
             message=message,
-            payload={
-                "packet_rec_id": packet_record.packet_rec_id,
-                "trans_rec_id": packet_record.trans_rec_id,
-                "transaction_id": packet_record.transaction_id,
-                "packet_type": packet_record.packet_type,
-                "processing_status": packet_record.processing_status,
-                "processing_error": packet_record.processing_error,
-            },
+            payload=payload,
         )
 
     def ingest_packet(
@@ -2238,6 +2242,7 @@ class AIMEService:
 
         project: Project | None = None
         project_needs_provision_alert = False
+        extra_alert_payload: dict[str, Any] | None = None
         source_site_name = self._packet_site_name(packet_record)
 
         if isinstance(bound_packet, RequestProjectCreatePacketBinding):
@@ -2350,6 +2355,15 @@ class AIMEService:
                 source_trans_rec_id=packet_record.trans_rec_id,
                 source_transaction_id=packet_record.transaction_id,
             )
+            body = bound_packet.body
+            extra_alert_payload = {
+                "name": " ".join(
+                    filter(None, [body.UserFirstName, body.UserLastName])
+                ),
+                "email": body.UserEmail,
+                "institution": body.UserOrganization,
+                "allocation_id": project.aime_allocation_id,
+            }
 
         elif isinstance(bound_packet, DataProjectCreatePacketBinding):
             project = self._handle_data_project_create(db, bound_packet, packet_record)
@@ -2425,5 +2439,6 @@ class AIMEService:
             db,
             packet_record=packet_record,
             processed_ok=True,
+            extra_payload=extra_alert_payload,
         )
         return IngestResult(handled=True, packet_type=bound_packet.type, project=project)

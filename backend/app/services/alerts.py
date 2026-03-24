@@ -28,6 +28,93 @@ class AlertService:
     def _parse_recipients(value: str) -> list[str]:
         return [entry.strip() for entry in value.split(",") if entry.strip()]
 
+    @staticmethod
+    def _build_html_email(
+        *,
+        alert_key: str,
+        category: str,
+        severity: str,
+        title: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Build a styled HTML email body for an alert."""
+        severity_colors: dict[str, tuple[str, str]] = {
+            "error": ("#dc2626", "#fef2f2"),
+            "warn": ("#d97706", "#fffbeb"),
+            "warning": ("#d97706", "#fffbeb"),
+            "info": ("#2563eb", "#eff6ff"),
+        }
+        header_color, _bg_color = severity_colors.get(
+            severity.lower(), ("#6b7280", "#f9fafb")
+        )
+
+        detail_rows = ""
+        if payload:
+            for key, value in payload.items():
+                if value is not None and value != "":
+                    label = key.replace("_", " ").title()
+                    detail_rows += (
+                        f"<tr>"
+                        f'<td style="padding:8px 12px;font-weight:600;color:#374151;'
+                        f'width:38%;border-bottom:1px solid #f3f4f6;vertical-align:top;">{label}</td>'
+                        f'<td style="padding:8px 12px;color:#111827;'
+                        f'border-bottom:1px solid #f3f4f6;word-break:break-word;">{value}</td>'
+                        f"</tr>"
+                    )
+
+        details_section = ""
+        if detail_rows:
+            details_section = (
+                '<div style="margin-top:24px;">'
+                '<p style="margin:0 0 8px;font-size:11px;font-weight:700;'
+                "text-transform:uppercase;letter-spacing:0.06em;color:#9ca3af;"
+                '">Details</p>'
+                '<table style="width:100%;border-collapse:collapse;'
+                'background:#f9fafb;border-radius:6px;overflow:hidden;">'
+                f"{detail_rows}"
+                "</table>"
+                "</div>"
+            )
+
+        return (
+            "<!DOCTYPE html>"
+            '<html lang="en">'
+            "<head>"
+            '<meta charset="UTF-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1.0">'
+            "</head>"
+            '<body style="margin:0;padding:24px;background-color:#f3f4f6;'
+            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
+            'Helvetica,Arial,sans-serif;">'
+            '<div style="max-width:600px;margin:0 auto;">'
+            f'<div style="background:{header_color};border-radius:8px 8px 0 0;padding:24px 28px;">'
+            f'<p style="margin:0 0 6px;font-size:11px;font-weight:700;'
+            f"text-transform:uppercase;letter-spacing:0.1em;"
+            f'color:rgba(255,255,255,0.75);">'
+            f"{severity.upper()} &bull; {category}"
+            f"</p>"
+            f'<h1 style="margin:0;font-size:22px;font-weight:700;color:#ffffff;'
+            f'line-height:1.3;">{title}</h1>'
+            f"</div>"
+            '<div style="background:#ffffff;padding:24px 28px;'
+            'border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;">'
+            f'<p style="margin:0;font-size:15px;color:#374151;line-height:1.7;">{message}</p>'
+            f"{details_section}"
+            "</div>"
+            '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-top:none;'
+            'border-radius:0 0 8px 8px;padding:12px 28px;">'
+            '<p style="margin:0;font-size:12px;color:#9ca3af;">'
+            f"Alert Key:&nbsp;"
+            f'<code style="background:#e5e7eb;padding:2px 6px;border-radius:3px;'
+            f'font-size:11px;color:#374151;">{alert_key}</code>'
+            "</p>"
+            "</div>"
+            "</div>"
+            "</body>"
+            "</html>"
+        )
+
     @classmethod
     def _send_email_alert(
         cls,
@@ -49,19 +136,30 @@ class AlertService:
         email_message["Subject"] = f"[{severity.upper()}] {title}"
         email_message["From"] = sender
         email_message["To"] = ", ".join(recipients)
-        email_message.set_content(
-            "\n".join(
-                [
-                    f"Alert Key: {alert_key}",
-                    f"Category: {category}",
-                    f"Severity: {severity}",
-                    "",
-                    message,
-                    "",
-                    f"Payload: {payload or {}}",
-                ]
-            )
+
+        plain_lines = [
+            f"Alert Key: {alert_key}",
+            f"Category: {category}",
+            f"Severity: {severity}",
+            "",
+            message,
+        ]
+        if payload:
+            plain_lines += ["", "Details:"]
+            plain_lines += [
+                f"  {k}: {v}" for k, v in payload.items() if v is not None and v != ""
+            ]
+        email_message.set_content("\n".join(plain_lines))
+
+        html_body = cls._build_html_email(
+            alert_key=alert_key,
+            category=category,
+            severity=severity,
+            title=title,
+            message=message,
+            payload=payload,
         )
+        email_message.add_alternative(html_body, subtype="html")
 
         smtp_cls: type[smtplib.SMTP] = smtplib.SMTP
         with smtp_cls(host, settings.alert_smtp_port, timeout=10) as smtp:
