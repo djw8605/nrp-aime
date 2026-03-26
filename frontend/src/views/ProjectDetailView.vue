@@ -629,15 +629,78 @@
           <UsageDisplay :usage="usage" :loading="usageLoading" />
         </section>
       </div>
+
+      <!-- Danger Zone -->
+      <section class="mt-6 rounded-2xl border-2 border-red-300 bg-red-50 p-5">
+        <h2 class="m-0 mb-1 flex items-center gap-2 text-lg font-semibold text-red-700">
+          <i class="pi pi-exclamation-triangle text-base"></i>
+          Danger Zone
+        </h2>
+        <p class="m-0 mb-4 text-sm text-red-600">
+          Destructive actions. Project members will not be deleted.
+        </p>
+        <div class="flex items-center justify-between rounded-xl border border-red-200 bg-white p-4">
+          <div>
+            <p class="m-0 font-medium text-slate-800">Deactivate this project</p>
+            <p class="m-0 mt-0.5 text-sm text-slate-500">
+              Marks the project as inactive. Users in this project are not affected.
+            </p>
+          </div>
+          <Button
+            label="Deactivate Project"
+            severity="danger"
+            outlined
+            icon="pi pi-trash"
+            :loading="deletingProject"
+            @click="showDeleteProjectDialog = true"
+          />
+        </div>
+      </section>
+
+      <!-- Delete confirmation dialog -->
+      <Dialog
+        v-model:visible="showDeleteProjectDialog"
+        modal
+        header="Deactivate Project"
+        :style="{ width: '26rem' }"
+      >
+        <div class="space-y-4">
+          <p class="m-0 text-slate-700">
+            Are you sure you want to deactivate
+            <strong>{{ project.name }}</strong>?
+          </p>
+          <p class="m-0 text-sm text-slate-500">
+            The project will be marked inactive. Members and their accounts will not be deleted.
+            This action can be reversed by editing the project and setting it back to active.
+          </p>
+        </div>
+        <template #footer>
+          <Button
+            label="Cancel"
+            severity="secondary"
+            outlined
+            @click="showDeleteProjectDialog = false"
+          />
+          <Button
+            label="Yes, Deactivate"
+            severity="danger"
+            icon="pi pi-trash"
+            :loading="deletingProject"
+            @click="confirmDeleteProject"
+          />
+        </template>
+      </Dialog>
     </template>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Checkbox from 'primevue/checkbox'
+import Dialog from 'primevue/dialog'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
@@ -657,6 +720,7 @@ import {
 } from '../utils/formUtils'
 import {
   addProjectMember,
+  deleteProject,
   fetchProject,
   fetchProjectPackets,
   fetchProjectUsage,
@@ -671,6 +735,7 @@ import UsageDisplay from '../components/UsageDisplay.vue'
 import UserList from '../components/UserList.vue'
 
 const props = defineProps({ id: { type: String, required: true } })
+const router = useRouter()
 
 const project = ref(null)
 const projectForm = ref(createProjectForm())
@@ -686,6 +751,8 @@ const provisioningActionLoading = ref(false)
 const savingProject = ref(false)
 const addingMember = ref(false)
 const editingProject = ref(false)
+const deletingProject = ref(false)
+const showDeleteProjectDialog = ref(false)
 const provisioningSuccess = ref('')
 const provisioningError = ref('')
 const projectMessage = ref(null)
@@ -1152,6 +1219,22 @@ async function onProvisionInfrastructure() {
   } finally {
     provisioningActionLoading.value = false
     await loadProject()
+  }
+}
+
+async function confirmDeleteProject() {
+  deletingProject.value = true
+  showDeleteProjectDialog.value = false
+  try {
+    await deleteProject(props.id)
+    router.push({ name: 'projects' })
+  } catch (err) {
+    projectMessage.value = {
+      severity: 'error',
+      text: toErrorMessage(err, 'Failed to deactivate project.'),
+    }
+  } finally {
+    deletingProject.value = false
   }
 }
 

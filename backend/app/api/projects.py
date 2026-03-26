@@ -786,6 +786,23 @@ def send_account_email(
     }
 
 
+@router.delete("/{project_id}", status_code=204)
+def delete_project(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> None:
+    """Soft-delete a project by marking it inactive.
+
+    Does not affect user records; only the project is deactivated.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project.is_active = False
+    db.commit()
+    logger.info("Project soft-deleted project_id=%s name=%r", project_id, project.name)
+
+
 @router.post("/{project_id}/provision-infrastructure")
 def provision_project_infrastructure(
     project_id: uuid.UUID,
