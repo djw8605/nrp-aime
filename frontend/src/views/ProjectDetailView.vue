@@ -799,6 +799,9 @@ const projectLifecycleSteps = computed(() => {
   if (!p) return []
   const ps = String(p.provisioning_state || 'received').trim().toLowerCase()
 
+  // Find the PI membership from the loaded project members list.
+  const piMembership = users.value.find((u) => u.is_project_pi) ?? null
+
   // Step 1: Received packet creation — always complete
   const step1 = {
     label: 'Received packet creation',
@@ -838,26 +841,91 @@ const projectLifecycleSteps = computed(() => {
     }
   }
 
-  // Step 3: Notify project create back to AIME server
+  // Step 3: PI creates account
+  // The PI's account creation does NOT require a separate notify_account_create response to
+  // AIME — it is covered by the notify_project_create packet sent in step 4.
   let step3
-  if (ps !== 'ready') {
-    step3 = { label: 'Notify project create to AIME server', status: 'pending' }
-  } else if (p.provisioning_alerted_at) {
+  if (!piMembership) {
+    // PI membership not yet linked to a user record (e.g. still being ingested)
     step3 = {
-      label: 'Notify project create to AIME server',
+      label: 'PI creates account',
+      status: ps === 'received' ? 'pending' : 'waiting',
+      description: 'PI has not yet been linked as a project member.',
+      actionRequired:
+        ps !== 'received'
+          ? 'Add the PI as a project member and send them an invite from their user page.'
+          : null,
+    }
+  } else if (piMembership.account_made_at) {
+    step3 = {
+      label: 'PI creates account',
       status: 'completed',
-      timestamp: p.provisioning_alerted_at,
+      timestamp: piMembership.account_made_at,
+      description: `${piMembership.name} has completed account setup.`,
+      link: {
+        to: { name: 'person-detail', params: { id: piMembership.id } },
+        label: `View PI user page — ${piMembership.name}`,
+      },
+    }
+  } else if (piMembership.email_sent_at) {
+    step3 = {
+      label: 'PI creates account',
+      status: 'active',
+      timestamp: piMembership.email_sent_at,
+      description: 'Invite sent — waiting for the PI to complete account setup.',
+      link: {
+        to: { name: 'person-detail', params: { id: piMembership.id } },
+        label: `View PI user page — ${piMembership.name}`,
+      },
     }
   } else {
+    // PI is linked but no invite has been sent yet
+    const piLabel = piMembership.name || piMembership.email || 'the PI'
     step3 = {
-      label: 'Notify project create to AIME server',
-      status: 'active',
-      description: 'Sending project provisioning confirmation to AIME.',
+      label: 'PI creates account',
+      status: 'waiting',
+      actionRequired: `Send an invite email to ${piLabel} from their user page so they can create a local account.`,
+      link: {
+        to: { name: 'person-detail', params: { id: piMembership.id } },
+        label: `View PI user page — ${piLabel}`,
+      },
     }
   }
 
-  // Step 4: Received data project create (AIME acks back)
-  const step4 = {
+  const piAccountReady = Boolean(piMembership?.account_made_at)
+
+  // Step 4: Notify project create back to AIME server
+  // Requires both: namespace provisioned (ps === 'ready') AND PI account created.
+  // PI account creation is reported inside this notification — no separate
+  // notify_account_create response is needed for the PI.
+  let step4
+  if (ps !== 'ready' || !piAccountReady) {
+    step4 = {
+      label: 'Notify project create to AIME server',
+      status: 'pending',
+      description:
+        ps !== 'ready'
+          ? 'Waiting for namespace provisioning to complete.'
+          : 'Waiting for PI to complete account setup before sending project create notification.',
+    }
+  } else if (p.provisioning_alerted_at) {
+    step4 = {
+      label: 'Notify project create to AIME server',
+      status: 'completed',
+      timestamp: p.provisioning_alerted_at,
+      description: 'Project create notification sent to AIME (includes PI account creation).',
+    }
+  } else {
+    step4 = {
+      label: 'Notify project create to AIME server',
+      status: 'active',
+      description:
+        'Sending project provisioning confirmation to AIME (includes PI account creation).',
+    }
+  }
+
+  // Step 5: Received data project create (AIME acks back)
+  const step5 = {
     label: 'Received data project create',
     status: p.provisioning_alerted_at ? 'active' : 'pending',
     description: p.provisioning_alerted_at
@@ -865,13 +933,13 @@ const projectLifecycleSteps = computed(() => {
       : null,
   }
 
-  // Step 5: Inform transaction complete
-  const step5 = {
+  // Step 6: Inform transaction complete
+  const step6 = {
     label: 'Inform transaction complete',
     status: 'pending',
   }
 
-  return [step1, step2, step3, step4, step5]
+  return [step1, step2, step3, step4, step5, step6]
 })
 
 function createProjectForm(projectData = null) {
