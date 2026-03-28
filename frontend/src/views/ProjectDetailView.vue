@@ -831,6 +831,7 @@ const projectLifecycleSteps = computed(() => {
 
   // Canonical order: received → provisioning → provisioned → waiting_pi_account → aime_notified → active
   // waiting_pi_account only appears for project_create flow; non-PI projects skip it.
+  const ps = String(p.provisioning_state || 'received').trim().toLowerCase()
   const provisioningDone = ['provisioned', 'waiting_pi_account', 'aime_notified', 'active'].includes(ls)
   const pastWaiting = ['aime_notified', 'active'].includes(ls)
   const isCurrent = (targetState) => ls === targetState
