@@ -18,6 +18,7 @@ from app.models.project_invite import ProjectInvite
 from app.models.project_invite_event import ProjectInviteEvent
 from app.models.project_user import ProjectUser
 from app.models.user import User
+from app.models.user_action_log import UserActionLog
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.authentik.service import AuthentikService
 from app.services.email.service import EmailService
@@ -119,6 +120,29 @@ class InviteService:
         db.add(event)
         db.flush()
         return event
+
+    def _record_user_action(
+        self,
+        db: Session,
+        *,
+        user_id: uuid.UUID | None,
+        event_type: str,
+        event_status: str = "info",
+        message: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Record an entry in the user action log."""
+        if user_id is None:
+            return
+        entry = UserActionLog(
+            user_id=user_id,
+            event_type=event_type,
+            event_status=event_status,
+            message=message,
+            event_payload=payload or {},
+        )
+        db.add(entry)
+        db.flush()
 
     def record_unbound_failure(
         self,
@@ -338,6 +362,18 @@ class InviteService:
                 invite=invite,
                 message="Invite email dispatched",
             )
+            self._record_user_action(
+                db,
+                user_id=user.id if user is not None else None,
+                event_type=UserActionLog.EVENT_EMAIL_SENT,
+                message=f"Invite email dispatched to {normalized_email}",
+                payload={
+                    "to_email": normalized_email,
+                    "invite_id": str(invite.id),
+                    "project_names": user_project_names,
+                    "invited_by": invited_by,
+                },
+            )
 
         db.commit()
         db.refresh(invite)
@@ -421,6 +457,15 @@ class InviteService:
             event_type="invite_accept_started",
             invite=invite,
             message="Invite accept flow started",
+        )
+        self._record_user_action(
+            db,
+            user_id=invite.user_id,
+            event_type=UserActionLog.EVENT_OAUTH_FLOW_STARTED,
+            message="OAuth flow started — user redirected to identity provider",
+            payload={
+                "invite_id": str(invite.id),
+            },
         )
         db.commit()
         return login_redirect
@@ -618,6 +663,22 @@ class InviteService:
                 "user_id": str(user.id),
                 "project_user_ids": [str(row.id) for row in finalized_memberships],
                 "applied_group_names": sorted(applied_group_names),
+            },
+        )
+        self._record_user_action(
+            db,
+            user_id=user.id,
+            event_type=UserActionLog.EVENT_OAUTH_FLOW_COMPLETED,
+            message=f"OAuth flow completed — authenticated as {auth_username}",
+            payload={
+                "invite_id": str(invite.id),
+                "auth_email": auth_email,
+                "auth_username": auth_username,
+                "identity_name": identity.get("name"),
+                "identity_subject": identity.get("subject"),
+                "identity_preferred_username": identity.get("preferred_username"),
+                "applied_group_names": sorted(applied_group_names),
+                "project_user_ids": [str(row.id) for row in finalized_memberships],
             },
         )
 

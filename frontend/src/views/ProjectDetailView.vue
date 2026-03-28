@@ -649,15 +649,78 @@
           <UsageDisplay :usage="usage" :loading="usageLoading" />
         </section>
       </div>
+
+      <!-- Danger Zone -->
+      <section class="mt-6 rounded-2xl border-2 border-red-300 bg-red-50 p-5">
+        <h2 class="m-0 mb-1 flex items-center gap-2 text-lg font-semibold text-red-700">
+          <i class="pi pi-exclamation-triangle text-base"></i>
+          Danger Zone
+        </h2>
+        <p class="m-0 mb-4 text-sm text-red-600">
+          Destructive actions. Project members will not be deleted.
+        </p>
+        <div class="flex items-center justify-between rounded-xl border border-red-200 bg-white p-4">
+          <div>
+            <p class="m-0 font-medium text-slate-800">Deactivate this project</p>
+            <p class="m-0 mt-0.5 text-sm text-slate-500">
+              Marks the project as inactive. Users in this project are not affected.
+            </p>
+          </div>
+          <Button
+            label="Deactivate Project"
+            severity="danger"
+            outlined
+            icon="pi pi-trash"
+            :loading="deletingProject"
+            @click="showDeleteProjectDialog = true"
+          />
+        </div>
+      </section>
+
+      <!-- Delete confirmation dialog -->
+      <Dialog
+        v-model:visible="showDeleteProjectDialog"
+        modal
+        header="Deactivate Project"
+        :style="{ width: '26rem' }"
+      >
+        <div class="space-y-4">
+          <p class="m-0 text-slate-700">
+            Are you sure you want to deactivate
+            <strong>{{ project.name }}</strong>?
+          </p>
+          <p class="m-0 text-sm text-slate-500">
+            The project will be marked inactive. Members and their accounts will not be deleted.
+            This action can be reversed by editing the project and setting it back to active.
+          </p>
+        </div>
+        <template #footer>
+          <Button
+            label="Cancel"
+            severity="secondary"
+            outlined
+            @click="showDeleteProjectDialog = false"
+          />
+          <Button
+            label="Yes, Deactivate"
+            severity="danger"
+            icon="pi pi-trash"
+            :loading="deletingProject"
+            @click="confirmDeleteProject"
+          />
+        </template>
+      </Dialog>
     </template>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Checkbox from 'primevue/checkbox'
+import Dialog from 'primevue/dialog'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
@@ -679,6 +742,7 @@ import {
   addProjectMember,
   debugProvisionProject,
   debugCompleteUserAccount,
+  deleteProject,
   fetchProject,
   fetchProjectPackets,
   fetchProjectUsage,
@@ -693,6 +757,7 @@ import UsageDisplay from '../components/UsageDisplay.vue'
 import UserList from '../components/UserList.vue'
 
 const props = defineProps({ id: { type: String, required: true } })
+const router = useRouter()
 
 const project = ref(null)
 const projectForm = ref(createProjectForm())
@@ -709,6 +774,8 @@ const debugProvisionLoading = ref(false)
 const savingProject = ref(false)
 const addingMember = ref(false)
 const editingProject = ref(false)
+const deletingProject = ref(false)
+const showDeleteProjectDialog = ref(false)
 const provisioningSuccess = ref('')
 const provisioningError = ref('')
 const projectMessage = ref(null)
@@ -768,6 +835,9 @@ const projectLifecycleSteps = computed(() => {
   const pastWaiting = ['aime_notified', 'active'].includes(ls)
   const isCurrent = (targetState) => ls === targetState
 
+  // Find the PI membership from the loaded project members list.
+  const piMembership = users.value.find((u) => u.is_project_pi) ?? null
+
   // Step 1: Received packet creation — always complete
   const step1 = {
     label: 'Received packet creation',
@@ -798,45 +868,107 @@ const projectLifecycleSteps = computed(() => {
       timestamp: p.provisioning_started_at,
       description: p.provisioning_last_error || 'Provisioning failed.',
     }
-  } else if (provisioningDone) {
-    step2 = {
-      label: 'Create namespace in NRP',
-      status: 'completed',
-      timestamp: p.provisioning_completed_at || p.provisioning_started_at,
-    }
-  } else {
-    step2 = { label: 'Create namespace in NRP', status: 'pending' }
   }
 
-  // Step 3: Waiting on PI account creation (only for project_create flow)
-  const step3 = {
-    label: 'PI account creation',
-    status: isCurrent('waiting_pi_account') ? 'active'
-      : pastWaiting ? 'completed'
-      : provisioningDone ? 'pending'
-      : 'pending',
-    description: isCurrent('waiting_pi_account')
-      ? 'Namespace is ready. Waiting for PI to complete account onboarding.'
+  // Step 3: PI creates account
+  // The PI's account creation does NOT require a separate notify_account_create response to
+  // AIME — it is covered by the notify_project_create packet sent in step 4.
+  let step3
+  if (!piMembership) {
+    // PI membership not yet linked to a user record (e.g. still being ingested)
+    step3 = {
+      label: 'PI creates account',
+      status: ps === 'received' ? 'pending' : 'waiting',
+      description: 'PI has not yet been linked as a project member.',
+      actionRequired:
+        ps !== 'received'
+          ? 'Add the PI as a project member and send them an invite from their user page.'
+          : null,
+    }
+  } else if (piMembership.account_made_at) {
+    step3 = {
+      label: 'PI creates account',
+      status: 'completed',
+      timestamp: piMembership.account_made_at,
+      description: `${piMembership.name} has completed account setup.`,
+      link: {
+        to: { name: 'person-detail', params: { id: piMembership.id } },
+        label: `View PI user page — ${piMembership.name}`,
+      },
+    }
+  } else if (piMembership.email_sent_at) {
+    step3 = {
+      label: 'PI creates account',
+      status: 'active',
+      timestamp: piMembership.email_sent_at,
+      description: 'Invite sent — waiting for the PI to complete account setup.',
+      link: {
+        to: { name: 'person-detail', params: { id: piMembership.id } },
+        label: `View PI user page — ${piMembership.name}`,
+      },
+    }
+  } else {
+    // PI is linked but no invite has been sent yet
+    const piLabel = piMembership.name || piMembership.email || 'the PI'
+    step3 = {
+      label: 'PI creates account',
+      status: 'waiting',
+      actionRequired: `Send an invite email to ${piLabel} from their user page so they can create a local account.`,
+      link: {
+        to: { name: 'person-detail', params: { id: piMembership.id } },
+        label: `View PI user page — ${piLabel}`,
+      },
+    }
+  }
+
+  const piAccountReady = Boolean(piMembership?.account_made_at)
+
+  // Step 4: Notify project create back to AIME server
+  // Requires both: namespace provisioned (ps === 'ready') AND PI account created.
+  // PI account creation is reported inside this notification — no separate
+  // notify_account_create response is needed for the PI.
+  let step4
+  if (ps !== 'ready' || !piAccountReady) {
+    step4 = {
+      label: 'Notify project create to AIME server',
+      status: 'pending',
+      description:
+        ps !== 'ready'
+          ? 'Waiting for namespace provisioning to complete.'
+          : 'Waiting for PI to complete account setup before sending project create notification.',
+    }
+  } else if (p.provisioning_alerted_at) {
+    step4 = {
+      label: 'Notify project create to AIME server',
+      status: 'completed',
+      timestamp: p.provisioning_alerted_at,
+      description: 'Project create notification sent to AIME (includes PI account creation).',
+    }
+  } else {
+    step4 = {
+      label: 'Notify project create to AIME server',
+      status: 'active',
+      description:
+        'Sending project provisioning confirmation to AIME (includes PI account creation).',
+    }
+  }
+
+  // Step 5: Received data project create (AIME acks back)
+  const step5 = {
+    label: 'Received data project create',
+    status: p.provisioning_alerted_at ? 'active' : 'pending',
+    description: p.provisioning_alerted_at
+      ? 'Waiting for AIME to acknowledge the project creation.'
       : null,
   }
 
-  // Step 4: Notify AIME
-  const step4 = {
-    label: 'Notify project create to AIME server',
-    status: isCurrent('aime_notified') || isCurrent('active') ? 'completed'
-      : isCurrent('provisioned') ? 'active'
-      : 'pending',
+  // Step 6: Inform transaction complete
+  const step6 = {
+    label: 'Inform transaction complete',
+    status: 'pending',
   }
 
-  // Step 5: Active
-  const step5 = {
-    label: 'Project active',
-    status: ls === 'active' ? 'completed'
-      : ls === 'aime_notified' ? 'active'
-      : 'pending',
-  }
-
-  return [step1, step2, step3, step4, step5]
+  return [step1, step2, step3, step4, step5, step6]
 })
 
 function createProjectForm(projectData = null) {
@@ -1227,6 +1359,22 @@ async function onDebugCompleteAccount(projectUserId) {
     }
   }
   await Promise.all([loadProject(), loadUsers()])
+}
+
+async function confirmDeleteProject() {
+  deletingProject.value = true
+  showDeleteProjectDialog.value = false
+  try {
+    await deleteProject(props.id)
+    router.push({ name: 'projects' })
+  } catch (err) {
+    projectMessage.value = {
+      severity: 'error',
+      text: toErrorMessage(err, 'Failed to deactivate project.'),
+    }
+  } finally {
+    deletingProject.value = false
+  }
 }
 
 onMounted(async () => {

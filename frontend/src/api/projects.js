@@ -88,6 +88,15 @@ export function sendAccountEmail(id) {
 }
 
 /**
+ * Soft-delete a project (marks it inactive, does not delete users).
+ * @param {string} id
+ * @returns {Promise<void>}
+ */
+export function deleteProject(id) {
+  return apiClient.delete(`/projects/${id}`)
+}
+
+/**
  * Provision project namespace + authentik group.
  * @param {string} id
  * @returns {Promise<Object>}

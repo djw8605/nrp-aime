@@ -580,12 +580,162 @@
           </DataTable>
         </template>
       </Card>
+
+      <!-- User Action Log -->
+      <Card class="border border-slate-200 shadow-sm">
+        <template #title>
+          <div class="flex items-center gap-2">
+            <i class="pi pi-history text-base text-violet-600"></i>
+            <span class="text-lg font-semibold text-slate-800">User Action Log</span>
+          </div>
+        </template>
+        <template #content>
+          <Message v-if="actionLogLoading" severity="info" :closable="false">Loading action log…</Message>
+          <Message v-else-if="actionLog.length === 0" severity="info" :closable="false">
+            No action log entries yet for this person.
+          </Message>
+          <DataTable
+            v-else
+            :value="actionLog"
+            dataKey="id"
+            stripedRows
+            size="small"
+            paginator
+            :rows="20"
+            :rowsPerPageOptions="[20, 50]"
+            responsiveLayout="scroll"
+          >
+            <Column header="When" sortable field="created_at">
+              <template #body="{ data }">
+                <span class="text-xs">{{ formatDate(data.created_at) }}</span>
+              </template>
+            </Column>
+            <Column field="event_type" header="Event" sortable>
+              <template #body="{ data }">
+                <Tag
+                  :value="formatEventType(data.event_type)"
+                  :severity="actionEventSeverity(data.event_type, data.event_status)"
+                  rounded
+                />
+              </template>
+            </Column>
+            <Column field="event_status" header="Status" sortable>
+              <template #body="{ data }">
+                <span class="text-xs font-medium" :class="data.event_status === 'error' ? 'text-red-600' : 'text-slate-600'">
+                  {{ data.event_status }}
+                </span>
+              </template>
+            </Column>
+            <Column field="message" header="Message">
+              <template #body="{ data }">
+                <span class="text-xs text-slate-700">{{ data.message || '—' }}</span>
+              </template>
+            </Column>
+            <Column header="Details">
+              <template #body="{ data }">
+                <div v-if="data.event_type === 'oauth_flow_completed'" class="space-y-0.5 text-xs">
+                  <p v-if="data.event_payload?.auth_email" class="m-0">
+                    <strong>Email:</strong> {{ data.event_payload.auth_email }}
+                  </p>
+                  <p v-if="data.event_payload?.auth_username" class="m-0">
+                    <strong>Username:</strong> {{ data.event_payload.auth_username }}
+                  </p>
+                  <p v-if="data.event_payload?.identity_name" class="m-0">
+                    <strong>Name:</strong> {{ data.event_payload.identity_name }}
+                  </p>
+                  <p v-if="data.event_payload?.identity_subject" class="m-0">
+                    <strong>Subject:</strong>
+                    <span class="font-mono">{{ data.event_payload.identity_subject }}</span>
+                  </p>
+                  <p v-if="data.event_payload?.applied_group_names?.length" class="m-0">
+                    <strong>Groups:</strong> {{ data.event_payload.applied_group_names.join(', ') }}
+                  </p>
+                </div>
+                <div v-else-if="data.event_type === 'email_sent'" class="space-y-0.5 text-xs">
+                  <p v-if="data.event_payload?.to_email" class="m-0">
+                    <strong>To:</strong> {{ data.event_payload.to_email }}
+                  </p>
+                  <p v-if="data.event_payload?.invited_by" class="m-0">
+                    <strong>By:</strong> {{ data.event_payload.invited_by }}
+                  </p>
+                  <p v-if="data.event_payload?.project_names?.length" class="m-0">
+                    <strong>Projects:</strong> {{ data.event_payload.project_names.join(', ') }}
+                  </p>
+                </div>
+                <span v-else class="text-xs text-slate-400">—</span>
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </Card>
+
+      <!-- Danger Zone -->
+      <section class="rounded-2xl border-2 border-red-300 bg-red-50 p-5">
+        <h2 class="m-0 mb-1 flex items-center gap-2 text-lg font-semibold text-red-700">
+          <i class="pi pi-exclamation-triangle text-base"></i>
+          Danger Zone
+        </h2>
+        <p class="m-0 mb-4 text-sm text-red-600">
+          Destructive actions. This person's project memberships will not be deleted.
+        </p>
+        <div class="flex items-center justify-between rounded-xl border border-red-200 bg-white p-4">
+          <div>
+            <p class="m-0 font-medium text-slate-800">Deactivate this person</p>
+            <p class="m-0 mt-0.5 text-sm text-slate-500">
+              Marks the person as inactive. Projects they belong to are not affected.
+            </p>
+          </div>
+          <Button
+            label="Deactivate Person"
+            severity="danger"
+            outlined
+            icon="pi pi-user-minus"
+            :loading="deletingPerson"
+            @click="showDeletePersonDialog = true"
+          />
+        </div>
+      </section>
+
+      <!-- Delete confirmation dialog -->
+      <Dialog
+        v-model:visible="showDeletePersonDialog"
+        modal
+        header="Deactivate Person"
+        :style="{ width: '26rem' }"
+      >
+        <div class="space-y-4">
+          <p class="m-0 text-slate-700">
+            Are you sure you want to deactivate
+            <strong>{{ person.name }}</strong>?
+          </p>
+          <p class="m-0 text-sm text-slate-500">
+            The person will be marked inactive. Their project memberships and projects will not be
+            deleted. This action can be reversed by editing the person and setting them back to active.
+          </p>
+        </div>
+        <template #footer>
+          <Button
+            label="Cancel"
+            severity="secondary"
+            outlined
+            @click="showDeletePersonDialog = false"
+          />
+          <Button
+            label="Yes, Deactivate"
+            severity="danger"
+            icon="pi pi-user-minus"
+            :loading="deletingPerson"
+            @click="confirmDeletePerson"
+          />
+        </template>
+      </Dialog>
     </template>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import Accordion from 'primevue/accordion'
 import AccordionContent from 'primevue/accordioncontent'
 import AccordionHeader from 'primevue/accordionheader'
@@ -595,6 +745,7 @@ import Card from 'primevue/card'
 import Checkbox from 'primevue/checkbox'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
+import Dialog from 'primevue/dialog'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
@@ -613,7 +764,9 @@ import {
   toNullableNumber,
 } from '../utils/formUtils'
 import {
+  deleteUser,
   fetchUser,
+  fetchUserActionLog,
   fetchUserPackets,
   fetchUserMemberships,
   fetchUserPacketDetails,
@@ -622,18 +775,23 @@ import {
 } from '../api/users'
 
 const props = defineProps({ id: { type: String, required: true } })
+const router = useRouter()
 
 const person = ref(null)
 const personForm = ref(createPersonForm())
 const memberships = ref([])
 const packetDetails = ref([])
 const userPackets = ref([])
+const actionLog = ref([])
 const inviteMessage = ref(null)
 const personMessage = ref(null)
 const inviteTtlHours = ref(72)
 const sendingInvite = ref(false)
 const savingPerson = ref(false)
 const editingPerson = ref(false)
+const deletingPerson = ref(false)
+const showDeletePersonDialog = ref(false)
+const actionLogLoading = ref(false)
 const userPacketsLoading = ref(false)
 const loading = ref(false)
 const error = ref(null)
@@ -936,6 +1094,51 @@ async function sendPersonInvite() {
   }
 }
 
+function formatEventType(type) {
+  const labels = {
+    email_sent: 'Email Sent',
+    oauth_flow_started: 'OAuth Started',
+    oauth_flow_completed: 'OAuth Completed',
+    oauth_flow_failed: 'OAuth Failed',
+  }
+  return labels[type] || type
+}
+
+function actionEventSeverity(type, status) {
+  if (status === 'error') return 'danger'
+  if (type === 'oauth_flow_completed') return 'success'
+  if (type === 'oauth_flow_started') return 'info'
+  if (type === 'email_sent') return 'info'
+  return 'secondary'
+}
+
+async function loadActionLog() {
+  actionLogLoading.value = true
+  try {
+    actionLog.value = await fetchUserActionLog(props.id)
+  } catch {
+    actionLog.value = []
+  } finally {
+    actionLogLoading.value = false
+  }
+}
+
+async function confirmDeletePerson() {
+  deletingPerson.value = true
+  showDeletePersonDialog.value = false
+  try {
+    await deleteUser(props.id)
+    router.push({ name: 'people' })
+  } catch (err) {
+    personMessage.value = {
+      severity: 'error',
+      text: toErrorMessage(err, 'Failed to deactivate person.'),
+    }
+  } finally {
+    deletingPerson.value = false
+  }
+}
+
 async function loadPerson() {
   loading.value = true
   userPacketsLoading.value = true
@@ -963,6 +1166,6 @@ async function loadPerson() {
 }
 
 onMounted(async () => {
-  await loadPerson()
+  await Promise.all([loadPerson(), loadActionLog()])
 })
 </script>

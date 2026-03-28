@@ -78,3 +78,21 @@ export function sendUserInvite(id, payload) {
 export function createUser(payload) {
   return apiClient.post('/users/', payload).then((res) => res.data)
 }
+
+/**
+ * Soft-delete a user (marks them inactive, does not delete projects).
+ * @param {string} id
+ * @returns {Promise<void>}
+ */
+export function deleteUser(id) {
+  return apiClient.delete(`/users/${id}`)
+}
+
+/**
+ * Fetch the action log for a user (emails sent, OAuth events, etc.).
+ * @param {string} id
+ * @returns {Promise<Array>}
+ */
+export function fetchUserActionLog(id) {
+  return apiClient.get(`/users/${id}/action-log`).then((res) => res.data)
+}

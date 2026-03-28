@@ -7,6 +7,20 @@ from typing import Any
 from pydantic import BaseModel, EmailStr, Field
 
 
+class UserActionLogRead(BaseModel):
+    """Schema for reading a user action log entry."""
+
+    id: uuid.UUID
+    user_id: uuid.UUID | None
+    event_type: str
+    event_status: str
+    message: str | None
+    event_payload: dict[str, Any]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class UserCreate(BaseModel):
     """Schema for creating a new user."""
 

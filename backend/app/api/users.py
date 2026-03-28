@@ -1,5 +1,6 @@
 """User (person) API endpoints."""
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,9 +13,11 @@ from app.models.amie_new_user_packet import AMIENewUserPacket
 from app.models.amie_packet import AMIEPacket
 from app.models.project_user import ProjectUser
 from app.models.user import User
+from app.models.user_action_log import UserActionLog
 from app.schemas.invite import InviteCreateResponse
 from app.schemas.packets import EntityPacketRead
 from app.schemas.user import (
+    UserActionLogRead,
     UserCreate,
     UserInviteCreate,
     UserPacketDetailRead,
@@ -25,6 +28,7 @@ from app.schemas.user import (
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.invites.service import InviteService
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -606,3 +610,40 @@ def create_user_invite(
         invite_url=result.invite_url,
         email_dispatched=payload.send_email,
     )
+
+
+@router.delete("/{user_id}", status_code=204)
+def delete_user(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> None:
+    """Soft-delete a user by marking them inactive.
+
+    Does not affect project records; only the user is deactivated.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.is_active = False
+    db.commit()
+    logger.info("User soft-deleted user_id=%s email=%r", user_id, user.email)
+
+
+@router.get("/{user_id}/action-log", response_model=list[UserActionLogRead])
+def get_user_action_log(
+    user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> list[UserActionLogRead]:
+    """Return the action log for a user (emails sent, OAuth events, etc.)."""
+    user = db.query(User.id).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    logs = (
+        db.query(UserActionLog)
+        .filter(UserActionLog.user_id == user_id)
+        .order_by(UserActionLog.created_at.desc())
+        .limit(500)
+        .all()
+    )
+    return logs
