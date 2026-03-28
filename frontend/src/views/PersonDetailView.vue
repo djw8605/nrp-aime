@@ -352,6 +352,15 @@
                 :loading="sendingInvite"
                 @click="sendPersonInvite"
               />
+              <Button
+                icon="pi pi-bolt"
+                label="Mock OAuth (Debug)"
+                severity="help"
+                outlined
+                size="small"
+                :disabled="memberships.length === 0 || !memberships.some(m => canDebugComplete(m.account_state))"
+                @click="onDebugCompleteAllAccounts"
+              />
             </div>
           </div>
         </template>
@@ -1192,6 +1201,27 @@ async function loadPerson() {
 
 function canDebugComplete(state) {
   return state === 'received' || state === 'email_invite_sent'
+}
+
+async function onDebugCompleteAllAccounts() {
+  const eligible = memberships.value.filter(m => canDebugComplete(m.account_state))
+  if (eligible.length === 0) return
+  let completed = 0
+  for (const m of eligible) {
+    try {
+      await debugCompleteUserAccount(m.project_id, m.project_user_id)
+      completed++
+    } catch {
+      // continue with remaining memberships
+    }
+  }
+  personMessage.value = {
+    severity: completed > 0 ? 'success' : 'error',
+    text: completed > 0
+      ? `Debug OAuth completed for ${completed} membership(s).`
+      : 'Failed to debug-complete any memberships.',
+  }
+  await loadPerson()
 }
 
 async function onDebugCompleteAccount(projectId, projectUserId) {
