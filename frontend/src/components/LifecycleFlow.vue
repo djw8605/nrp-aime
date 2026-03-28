@@ -60,6 +60,14 @@
           <i class="pi pi-info-circle mt-0.5 shrink-0 text-xs text-amber-600"></i>
           <p class="m-0 text-xs font-medium text-amber-800">{{ step.actionRequired }}</p>
         </div>
+        <router-link
+          v-if="step.link"
+          :to="step.link.to"
+          class="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-sky-600 no-underline hover:underline"
+        >
+          {{ step.link.label }}
+          <i class="pi pi-arrow-right text-xs"></i>
+        </router-link>
       </div>
     </div>
   </div>

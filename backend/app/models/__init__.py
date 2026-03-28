@@ -14,6 +14,7 @@ from app.models.project_invite_event import ProjectInviteEvent
 from app.models.project_usage_snapshot import ProjectUsageSnapshot
 from app.models.project_user import ProjectUser
 from app.models.user import User
+from app.models.user_action_log import UserActionLog
 from app.models.worker_status import WorkerStatus
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "ProjectUsageSnapshot",
     "ProjectUser",
     "User",
+    "UserActionLog",
     "WorkerStatus",
 ]

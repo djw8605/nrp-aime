@@ -55,6 +55,12 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    action_logs: Mapped[list["UserActionLog"]] = relationship(
+        "UserActionLog",
+        back_populates="user",
+        cascade="save-update, merge",
+        order_by="UserActionLog.created_at.desc()",
+    )
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email!r}>"
