@@ -453,6 +453,20 @@
                 </div>
               </template>
             </Column>
+            <Column header="Debug">
+              <template #body="{ data }">
+                <Button
+                  v-if="canDebugComplete(data.account_state)"
+                  icon="pi pi-bolt"
+                  label="Mock OAuth"
+                  severity="help"
+                  outlined
+                  size="small"
+                  @click="onDebugCompleteAccount(data.project_id, data.project_user_id)"
+                />
+                <span v-else class="text-xs text-slate-400">--</span>
+              </template>
+            </Column>
           </DataTable>
         </template>
       </Card>
@@ -496,6 +510,16 @@
             </AccordionHeader>
             <AccordionContent>
               <LifecycleFlow :steps="item.steps" />
+              <div v-if="canDebugComplete(item.membership.account_state)" class="mt-3 border-t border-slate-100 pt-3">
+                <Button
+                  icon="pi pi-bolt"
+                  label="Mock OAuth (Debug)"
+                  severity="help"
+                  outlined
+                  size="small"
+                  @click="onDebugCompleteAccount(item.membership.project_id, item.membership.project_user_id)"
+                />
+              </div>
             </AccordionContent>
           </AccordionPanel>
         </Accordion>
@@ -763,6 +787,7 @@ import {
   toErrorMessage,
   toNullableNumber,
 } from '../utils/formUtils'
+import { debugCompleteUserAccount } from '../api/projects'
 import {
   deleteUser,
   fetchUser,
@@ -1163,6 +1188,28 @@ async function loadPerson() {
     userPacketsLoading.value = false
     loading.value = false
   }
+}
+
+function canDebugComplete(state) {
+  return state === 'received' || state === 'email_invite_sent'
+}
+
+async function onDebugCompleteAccount(projectId, projectUserId) {
+  try {
+    const result = await debugCompleteUserAccount(projectId, projectUserId)
+    if (result?.ok) {
+      personMessage.value = {
+        severity: 'success',
+        text: `Debug account complete for ${result.remote_site_login}. State: ${result.account_state}`,
+      }
+    }
+  } catch (err) {
+    personMessage.value = {
+      severity: 'error',
+      text: err?.response?.data?.detail || 'Failed to debug-complete user account.',
+    }
+  }
+  await loadPerson()
 }
 
 onMounted(async () => {
