@@ -152,6 +152,11 @@ import Skeleton from 'primevue/skeleton'
 import Tag from 'primevue/tag'
 
 function accountStateSeverity(state) {
+  if (state === 'aime_notified' || state === 'covered_by_project_notification') return 'success'
+  if (state === 'user_completed_oauth') return 'success'
+  if (state === 'email_invite_sent') return 'info'
+  if (state === 'received') return 'warning'
+  // Legacy states
   if (state === 'account_made') return 'success'
   if (state === 'sent_email') return 'info'
   if (state === 'not_sent_email_invite') return 'warning'

@@ -182,6 +182,10 @@
               <h2 class="m-0 text-base font-semibold text-slate-800">Provisioning and Source Tracking</h2>
               <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <div>
+                  <label class="mb-1 block text-sm font-medium text-slate-600">Lifecycle State</label>
+                  <InputText v-model="projectForm.lifecycle_state" class="w-full" />
+                </div>
+                <div>
                   <label class="mb-1 block text-sm font-medium text-slate-600">Provisioning State</label>
                   <InputText v-model="projectForm.provisioning_state" class="w-full" />
                 </div>
@@ -695,29 +699,36 @@ const addMemberMode = ref('existing')
 const addMemberForm = ref(createProjectMemberForm())
 
 const provisioningStateLabel = computed(() => {
-  const state = String(project.value?.provisioning_state || 'received')
+  const state = String(project.value?.lifecycle_state || 'received')
     .trim()
     .toLowerCase()
-  if (state === 'received') return 'Received (awaiting admin action)'
-  if (state === 'provisioning') return 'Provisioning in progress'
-  if (state === 'ready') return 'Ready'
-  if (state === 'failed') return 'Failed'
-  return state || 'Unknown'
+  const labels = {
+    received: 'Received',
+    waiting_pi_account: 'Waiting on PI Account Creation',
+    pending_provisioning: 'Pending Provisioning (awaiting admin action)',
+    provisioning: 'Provisioning in progress',
+    provisioning_failed: 'Provisioning Failed',
+    provisioned: 'Provisioned',
+    aime_notified: 'AIME Notified',
+    active: 'Active',
+    inactive: 'Inactive',
+  }
+  return labels[state] || state || 'Unknown'
 })
 
 const canProvision = computed(() => {
   const current = project.value
   if (!current) return false
-  const state = String(current.provisioning_state || '').trim().toLowerCase()
+  const state = String(current.lifecycle_state || '').trim().toLowerCase()
   if (state === 'provisioning') return false
-  if (state === 'received' || state === 'failed') return true
+  if (state === 'pending_provisioning' || state === 'provisioning_failed') return true
   if (!current.kubernetes_namespace || !current.authentik_group_name) return true
   return false
 })
 
 const provisionButtonLabel = computed(() => {
-  const state = String(project.value?.provisioning_state || '').trim().toLowerCase()
-  if (state === 'failed') return 'Retry Provisioning'
+  const state = String(project.value?.lifecycle_state || '').trim().toLowerCase()
+  if (state === 'provisioning_failed') return 'Retry Provisioning'
   return 'Create Namespace + Authentik Group'
 })
 
@@ -730,7 +741,24 @@ const availablePeople = computed(() =>
 const projectLifecycleSteps = computed(() => {
   const p = project.value
   if (!p) return []
-  const ps = String(p.provisioning_state || 'received').trim().toLowerCase()
+  const ls = String(p.lifecycle_state || 'received').trim().toLowerCase()
+
+  const stateOrder = [
+    'received',
+    'waiting_pi_account',
+    'pending_provisioning',
+    'provisioning',
+    'provisioning_failed',
+    'provisioned',
+    'aime_notified',
+    'active',
+  ]
+  const stateIndex = stateOrder.indexOf(ls)
+  const isPast = (targetState) => {
+    const targetIndex = stateOrder.indexOf(targetState)
+    return stateIndex > targetIndex
+  }
+  const isCurrent = (targetState) => ls === targetState
 
   // Step 1: Received packet creation — always complete
   const step1 = {
@@ -740,68 +768,63 @@ const projectLifecycleSteps = computed(() => {
     description: 'AIME packet received and project record created.',
   }
 
-  // Step 2: Create namespace in NRP
-  let step2
-  if (ps === 'received') {
-    step2 = {
+  // Step 2: Waiting on PI account (only relevant for project_create flow)
+  const step2 = {
+    label: 'PI account creation',
+    status: isPast('waiting_pi_account') ? 'completed'
+      : isCurrent('waiting_pi_account') ? 'active'
+      : isCurrent('received') ? 'pending' : 'completed',
+    description: isCurrent('waiting_pi_account')
+      ? 'Waiting for PI to complete account onboarding before project can be provisioned.'
+      : null,
+  }
+
+  // Step 3: Provisioning
+  let step3
+  if (isCurrent('pending_provisioning')) {
+    step3 = {
       label: 'Create namespace in NRP',
       status: 'waiting',
       actionRequired: 'Admin must click the "Create Namespace + Authentik Group" button above.',
     }
-  } else if (ps === 'provisioning') {
-    step2 = {
+  } else if (isCurrent('provisioning')) {
+    step3 = {
       label: 'Create namespace in NRP',
       status: 'active',
       timestamp: p.provisioning_started_at,
       description: 'Kubernetes namespace and Authentik group are being created.',
     }
-  } else if (ps === 'ready') {
-    step2 = {
-      label: 'Create namespace in NRP',
-      status: 'completed',
-      timestamp: p.provisioning_completed_at || p.provisioning_started_at,
-    }
-  } else {
-    // failed
-    step2 = {
+  } else if (isCurrent('provisioning_failed')) {
+    step3 = {
       label: 'Create namespace in NRP',
       status: 'error',
       timestamp: p.provisioning_started_at,
       description: p.provisioning_last_error || 'Provisioning failed.',
     }
-  }
-
-  // Step 3: Notify project create back to AIME server
-  let step3
-  if (ps !== 'ready') {
-    step3 = { label: 'Notify project create to AIME server', status: 'pending' }
-  } else if (p.provisioning_alerted_at) {
+  } else if (isPast('provisioning')) {
     step3 = {
-      label: 'Notify project create to AIME server',
+      label: 'Create namespace in NRP',
       status: 'completed',
-      timestamp: p.provisioning_alerted_at,
+      timestamp: p.provisioning_completed_at || p.provisioning_started_at,
     }
   } else {
-    step3 = {
-      label: 'Notify project create to AIME server',
-      status: 'active',
-      description: 'Sending project provisioning confirmation to AIME.',
-    }
+    step3 = { label: 'Create namespace in NRP', status: 'pending' }
   }
 
-  // Step 4: Received data project create (AIME acks back)
+  // Step 4: Notify AIME
   const step4 = {
-    label: 'Received data project create',
-    status: p.provisioning_alerted_at ? 'active' : 'pending',
-    description: p.provisioning_alerted_at
-      ? 'Waiting for AIME to acknowledge the project creation.'
-      : null,
+    label: 'Notify project create to AIME server',
+    status: isPast('provisioned') ? 'completed'
+      : isCurrent('provisioned') ? 'active'
+      : 'pending',
   }
 
-  // Step 5: Inform transaction complete
+  // Step 5: Active
   const step5 = {
-    label: 'Inform transaction complete',
-    status: 'pending',
+    label: 'Project active',
+    status: ls === 'active' ? 'completed'
+      : ls === 'aime_notified' ? 'active'
+      : 'pending',
   }
 
   return [step1, step2, step3, step4, step5]
@@ -846,6 +869,7 @@ function createProjectForm(projectData = null) {
     is_active: Boolean(projectData?.is_active ?? true),
     kubernetes_namespace: projectData?.kubernetes_namespace || '',
     authentik_group_name: projectData?.authentik_group_name || '',
+    lifecycle_state: projectData?.lifecycle_state || 'received',
     provisioning_state: projectData?.provisioning_state || 'received',
     provisioning_requested_at: toDateTimeLocalInput(projectData?.provisioning_requested_at),
     provisioning_started_at: toDateTimeLocalInput(projectData?.provisioning_started_at),
@@ -865,7 +889,7 @@ function createProjectMemberForm() {
     membership_service_units_remaining: null,
     account_remote_site_login: '',
     account_is_active: true,
-    account_state: 'not_sent_email_invite',
+    account_state: 'received',
     source_packet_rec_id: null,
     source_trans_rec_id: null,
     source_transaction_id: null,

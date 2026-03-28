@@ -40,28 +40,47 @@ class AccountLifecycleService:
         """Initialize account lifecycle service."""
 
     @staticmethod
-    def mark_just_received(
+    def mark_received(
         project_user: ProjectUser,
         *,
         source_packet_rec_id: int | None = None,
     ) -> None:
         """Set state for newly received account requests."""
-        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET)
+        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_RECEIVED)
         if source_packet_rec_id is not None:
             project_user.source_packet_rec_id = source_packet_rec_id
 
+    # Legacy alias kept for call-sites that haven't been updated yet.
+    mark_just_received = mark_received
+
     @staticmethod
     def mark_email_sent(project_user: ProjectUser) -> None:
-        """Set state when account creation email has been sent."""
-        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_SENT_EMAIL)
+        """Set state when invite email has been sent."""
+        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT)
         project_user.email_sent_at = datetime.now(UTC)
 
     @staticmethod
-    def mark_account_made(project_user: ProjectUser) -> None:
-        """Set state when account existence has been confirmed."""
-        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE)
+    def mark_user_completed_oauth(project_user: ProjectUser) -> None:
+        """Set state when user completed the OAuth onboarding flow."""
+        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
         if project_user.account_made_at is None:
             project_user.account_made_at = datetime.now(UTC)
+
+    # Legacy alias – callers that used mark_account_made now mean OAuth complete.
+    mark_account_made = mark_user_completed_oauth
+
+    @staticmethod
+    def mark_aime_notified(project_user: ProjectUser) -> None:
+        """Set state when notify_account_create has been sent to AIME."""
+        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED)
+        project_user.aime_confirmation_sent_at = datetime.now(UTC)
+
+    @staticmethod
+    def mark_covered_by_project(project_user: ProjectUser) -> None:
+        """Set state when PI account is covered by notify_project_create."""
+        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT)
+        if project_user.aime_confirmation_sent_at is None:
+            project_user.aime_confirmation_sent_at = datetime.now(UTC)
 
     @staticmethod
     def _role_is_pi(role: str | None) -> bool:
@@ -132,7 +151,11 @@ class AccountLifecycleService:
         for membership in project.project_users:
             if not self.is_project_create_pi_membership(db, membership):
                 continue
-            if membership.aime_confirmation_sent_at is None:
+            if membership.account_state not in (
+                ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+                ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+            ):
+                self.mark_covered_by_project(membership)
                 membership.aime_confirmation_sent_at = effective_covered_at
                 marked += 1
         return marked
@@ -503,7 +526,7 @@ class AccountLifecycleService:
                         outbound.outbound_packet_rec_id,
                     )
 
-            project_user.aime_confirmation_sent_at = datetime.now(UTC)
+            self.mark_aime_notified(project_user)
             project_user.source_packet_rec_id = source_packet_rec_id
             logger.info(
                 "Sent notify_account_create confirmation for project_user=%s source_packet_rec_id=%s",
@@ -531,10 +554,11 @@ class AccountLifecycleService:
         db: Session,
         project_user: ProjectUser,
     ) -> bool:
-        """Return whether invite email dispatch and acceptance are complete."""
+        """Return whether invite email dispatch and OAuth completion are done."""
+        if project_user.account_state != ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH:
+            return False
         if project_user.email_sent_at is None:
             return False
-
         if project_user.account_made_at is None:
             return False
         if project_user.account_made_at < project_user.email_sent_at:
@@ -559,8 +583,8 @@ class AccountLifecycleService:
         return invite is not None
 
     def reconcile_pending_confirmations(self, db: Session) -> dict[str, int]:
-        """Send AIME confirmations for account rows already marked account_made."""
-        review_states = (ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,)
+        """Send AIME confirmations for account rows where OAuth is complete."""
+        review_states = (ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,)
         review_accounts = (
             db.query(ProjectUser)
             .options(joinedload(ProjectUser.user), joinedload(ProjectUser.project))
@@ -601,6 +625,7 @@ class AccountLifecycleService:
                                 db, project_user
                             )
                             if covered_at is not None:
+                                self.mark_covered_by_project(project_user)
                                 project_user.aime_confirmation_sent_at = covered_at
                                 _log_amie_interaction(
                                     "account_confirmation.covered_by_project_create",
@@ -704,7 +729,7 @@ class AccountLifecycleService:
             db.query(Project)
             .filter(
                 Project.is_active.is_(True),
-                Project.provisioning_state == Project.PROVISIONING_STATE_READY,
+                Project.lifecycle_state == Project.LIFECYCLE_STATE_PROVISIONED,
                 Project.source_packet_rec_id.isnot(None),
             )
             .all()
@@ -1001,6 +1026,7 @@ class AccountLifecycleService:
                             source_packet_rec_id=project.source_packet_rec_id,
                             membership_count=covered_count,
                         )
+                    project.set_lifecycle_state(Project.LIFECYCLE_STATE_AIME_NOTIFIED)
                     notifications_sent += 1
                     db.commit()
                     logger.info(

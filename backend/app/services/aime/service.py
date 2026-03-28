@@ -628,14 +628,8 @@ class AIMEService:
     ) -> ProjectUser:
         """Assign a user to a project if not already assigned."""
         now = datetime.now(UTC)
-        state_value = account_state or ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET
-        state_rank = {
-            ProjectUser.ACCOUNT_STATE_NOT_SENT_EMAIL_INVITE: 1,
-            ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET_LEGACY: 1,
-            ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET: 1,
-            ProjectUser.ACCOUNT_STATE_SENT_EMAIL: 2,
-            ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE: 3,
-        }
+        state_value = account_state or ProjectUser.ACCOUNT_STATE_RECEIVED
+        state_rank = ProjectUser.ACCOUNT_STATE_RANK
         existing = (
             db.query(ProjectUser)
             .filter(
@@ -663,12 +657,16 @@ class AIMEService:
                 account_state_updated_at=now,
                 email_sent_at=(
                     now
-                    if state_value == ProjectUser.ACCOUNT_STATE_SENT_EMAIL
+                    if state_value == ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT
                     else None
                 ),
                 account_made_at=(
                     now
-                    if state_value == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE
+                    if state_value in (
+                        ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+                        ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+                        ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+                    )
                     else None
                 ),
             )
@@ -691,9 +689,13 @@ class AIMEService:
             if desired_rank >= current_rank:
                 existing.account_state = account_state
                 existing.account_state_updated_at = now
-                if account_state == ProjectUser.ACCOUNT_STATE_SENT_EMAIL:
+                if account_state == ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT:
                     existing.email_sent_at = now
-                if account_state == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE:
+                if account_state in (
+                    ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+                    ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+                    ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+                ):
                     existing.account_made_at = existing.account_made_at or now
         if source_packet_rec_id is not None:
             existing.source_packet_rec_id = source_packet_rec_id
@@ -954,7 +956,7 @@ class AIMEService:
             )
             for pu in project_users:
                 pu.is_active = True
-                pu.set_account_state(ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE)
+                pu.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
                 if pu.account_made_at is None:
                     pu.account_made_at = datetime.now(UTC)
                 result = self.authentik_service.ensure_user_in_project(
@@ -1038,7 +1040,7 @@ class AIMEService:
             if project_users:
                 for pu in project_users:
                     pu.is_active = True
-                    pu.set_account_state(ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE)
+                    pu.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
                     if pu.account_made_at is None:
                         pu.account_made_at = datetime.now(UTC)
                     result = self.authentik_service.ensure_user_in_project(
@@ -1073,7 +1075,7 @@ class AIMEService:
                     project,
                     user,
                     is_active=True,
-                    account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                    account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
                 )
                 project_users = (
                     db.query(ProjectUser)
@@ -1418,7 +1420,7 @@ class AIMEService:
                 service_units_allocated=self._to_decimal(body.ServiceUnitsAllocated),
                 service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
             )
             user.is_active = True
 
@@ -1567,7 +1569,7 @@ class AIMEService:
                 resource=resource,
                 allocated_resource=body.AllocatedResource,
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
             )
             project_users = (
                 db.query(ProjectUser)
@@ -1755,7 +1757,7 @@ class AIMEService:
                 service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
                 remote_site_login=body.PiRemoteSiteLogin,
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
             )
 
         self._record_lifecycle_packet(
@@ -1890,7 +1892,7 @@ class AIMEService:
                 service_units_remaining=self._to_decimal(body.ServiceUnitsRemaining),
                 remote_site_login=body.UserRemoteSiteLogin,
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
             )
 
         self._record_lifecycle_packet(
@@ -2294,11 +2296,13 @@ class AIMEService:
                     bound_packet.body.ServiceUnitsRemaining
                 ),
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                account_state=ProjectUser.ACCOUNT_STATE_RECEIVED,
                 source_packet_rec_id=packet_record.packet_rec_id,
                 source_trans_rec_id=packet_record.trans_rec_id,
                 source_transaction_id=packet_record.transaction_id,
             )
+            # PI account creation gates project progress.
+            self.project_provisioning.mark_waiting_pi_account(project)
 
         elif isinstance(bound_packet, RequestAccountCreatePacketBinding):
             project = self._upsert_project_from_account(
@@ -2350,7 +2354,7 @@ class AIMEService:
                 ),
                 remote_site_login=bound_packet.body.UserRemoteSiteLogin,
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET,
+                account_state=ProjectUser.ACCOUNT_STATE_RECEIVED,
                 source_packet_rec_id=packet_record.packet_rec_id,
                 source_trans_rec_id=packet_record.trans_rec_id,
                 source_transaction_id=packet_record.transaction_id,

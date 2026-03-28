@@ -22,6 +22,7 @@ from app.services.account_lifecycle import AccountLifecycleService
 from app.services.authentik.service import AuthentikService
 from app.services.email.service import EmailService
 from app.services.kubernetes.service import KubernetesProvisioningService
+from app.services.project_provisioning import ProjectProvisioningService
 from app.utils.security import (
     generate_secure_token,
     hash_invite_token,
@@ -569,6 +570,15 @@ class InviteService:
             # Authentik callback username is the authoritative namespace identity.
             membership.remote_site_login = auth_username
             AccountLifecycleService.mark_account_made(membership)
+
+            # If this PI completing OAuth was blocking project progression,
+            # advance the project past the waiting_pi_account gate.
+            if (
+                AccountLifecycleService._role_is_pi(membership.role)
+                and membership.project.lifecycle_state
+                == Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT
+            ):
+                ProjectProvisioningService.mark_pi_account_ready(membership.project)
 
             access_result = self.kubernetes_service.ensure_user_project_access(
                 project=membership.project,

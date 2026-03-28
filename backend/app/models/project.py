@@ -27,6 +27,62 @@ class Project(Base):
 
     __tablename__ = "projects"
 
+    # -- Project lifecycle state machine -----------------------------------
+    LIFECYCLE_STATE_RECEIVED = "received"
+    LIFECYCLE_STATE_WAITING_PI_ACCOUNT = "waiting_pi_account"
+    LIFECYCLE_STATE_PENDING_PROVISIONING = "pending_provisioning"
+    LIFECYCLE_STATE_PROVISIONING = "provisioning"
+    LIFECYCLE_STATE_PROVISIONING_FAILED = "provisioning_failed"
+    LIFECYCLE_STATE_PROVISIONED = "provisioned"
+    LIFECYCLE_STATE_AIME_NOTIFIED = "aime_notified"
+    LIFECYCLE_STATE_ACTIVE = "active"
+    LIFECYCLE_STATE_INACTIVE = "inactive"
+
+    LIFECYCLE_STATES = (
+        LIFECYCLE_STATE_RECEIVED,
+        LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
+        LIFECYCLE_STATE_PENDING_PROVISIONING,
+        LIFECYCLE_STATE_PROVISIONING,
+        LIFECYCLE_STATE_PROVISIONING_FAILED,
+        LIFECYCLE_STATE_PROVISIONED,
+        LIFECYCLE_STATE_AIME_NOTIFIED,
+        LIFECYCLE_STATE_ACTIVE,
+        LIFECYCLE_STATE_INACTIVE,
+    )
+
+    LIFECYCLE_STATE_TRANSITIONS: dict[str, set[str]] = {
+        LIFECYCLE_STATE_RECEIVED: {
+            LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
+            LIFECYCLE_STATE_PENDING_PROVISIONING,
+        },
+        LIFECYCLE_STATE_WAITING_PI_ACCOUNT: {
+            LIFECYCLE_STATE_PENDING_PROVISIONING,
+        },
+        LIFECYCLE_STATE_PENDING_PROVISIONING: {
+            LIFECYCLE_STATE_PROVISIONING,
+        },
+        LIFECYCLE_STATE_PROVISIONING: {
+            LIFECYCLE_STATE_PROVISIONED,
+            LIFECYCLE_STATE_PROVISIONING_FAILED,
+        },
+        LIFECYCLE_STATE_PROVISIONING_FAILED: {
+            LIFECYCLE_STATE_PROVISIONING,  # retry
+        },
+        LIFECYCLE_STATE_PROVISIONED: {
+            LIFECYCLE_STATE_AIME_NOTIFIED,
+        },
+        LIFECYCLE_STATE_AIME_NOTIFIED: {
+            LIFECYCLE_STATE_ACTIVE,
+        },
+        LIFECYCLE_STATE_ACTIVE: {
+            LIFECYCLE_STATE_INACTIVE,
+        },
+        LIFECYCLE_STATE_INACTIVE: {
+            LIFECYCLE_STATE_ACTIVE,  # reactivation
+        },
+    }
+
+    # Legacy aliases mapping old provisioning_state values.
     PROVISIONING_STATE_RECEIVED = "received"
     PROVISIONING_STATE_PROVISIONING = "provisioning"
     PROVISIONING_STATE_READY = "ready"
@@ -79,6 +135,12 @@ class Project(Base):
     gpu_allocated: Mapped[int] = mapped_column(Integer, default=0)
     kubernetes_namespace: Mapped[str | None] = mapped_column(String, nullable=True)
     authentik_group_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    lifecycle_state: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default=LIFECYCLE_STATE_RECEIVED,
+        index=True,
+    )
     provisioning_state: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -129,6 +191,19 @@ class Project(Base):
 
     def __repr__(self) -> str:
         return f"<Project id={self.id} name={self.name!r}>"
+
+    def set_lifecycle_state(self, state: str) -> None:
+        """Transition to a new lifecycle state with validation."""
+        if state not in self.LIFECYCLE_STATES:
+            raise ValueError(f"Unknown lifecycle state: {state}")
+        self.lifecycle_state = state
+
+    def can_lifecycle_transition_to(self, target: str) -> bool:
+        """Return whether *target* is a valid next lifecycle state."""
+        allowed = self.LIFECYCLE_STATE_TRANSITIONS.get(self.lifecycle_state)
+        if allowed is None:
+            return False
+        return target in allowed
 
 
 @event.listens_for(Project, "before_delete")

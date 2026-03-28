@@ -76,11 +76,11 @@
           </p>
         </div>
         <div class="rounded-lg bg-slate-50 p-3">
-          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Provisioning State</p>
+          <p class="m-0 text-xs uppercase tracking-wide text-slate-500">Lifecycle State</p>
           <Tag
             class="mt-2"
-            :value="formatProvisioningState(project.provisioning_state)"
-            :severity="provisioningSeverity(project.provisioning_state)"
+            :value="formatLifecycleState(project.lifecycle_state)"
+            :severity="lifecycleSeverity(project.lifecycle_state)"
             rounded
           />
         </div>
@@ -134,20 +134,27 @@ defineProps({
   },
 })
 
-function formatProvisioningState(value) {
-  const state = String(value || 'received').trim().toLowerCase()
-  if (state === 'received') return 'Received'
-  if (state === 'provisioning') return 'Provisioning'
-  if (state === 'ready') return 'Ready'
-  if (state === 'failed') return 'Failed'
-  return state || 'Unknown'
+function formatLifecycleState(state) {
+  const labels = {
+    received: 'Received',
+    waiting_pi_account: 'Waiting PI Account',
+    pending_provisioning: 'Pending Provisioning',
+    provisioning: 'Provisioning',
+    provisioning_failed: 'Provisioning Failed',
+    provisioned: 'Provisioned',
+    aime_notified: 'AIME Notified',
+    active: 'Active',
+    inactive: 'Inactive',
+  }
+  return labels[state] || state || 'Unknown'
 }
 
-function provisioningSeverity(value) {
+function lifecycleSeverity(value) {
   const state = String(value || 'received').trim().toLowerCase()
-  if (state === 'ready') return 'success'
-  if (state === 'provisioning') return 'warning'
-  if (state === 'failed') return 'danger'
+  if (state === 'active' || state === 'aime_notified' || state === 'provisioned') return 'success'
+  if (state === 'provisioning' || state === 'waiting_pi_account') return 'warning'
+  if (state === 'provisioning_failed') return 'danger'
+  if (state === 'inactive') return 'secondary'
   return 'info'
 }
 

@@ -331,7 +331,7 @@ class AuditService:
 
         invalid_states = (
             db.query(ProjectUser)
-            .filter(~ProjectUser.account_state.in_(ProjectUser.ACCOUNT_STATES))
+            .filter(~ProjectUser.account_state.in_(ProjectUser.ALL_ACCOUNT_STATES))
             .count()
         )
         pending_confirmations = (
@@ -339,7 +339,7 @@ class AuditService:
             .filter(
                 and_(
                     ProjectUser.account_state
-                    == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                    == ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
                     ProjectUser.aime_confirmation_sent_at.is_(None),
                     ProjectUser.is_active.is_(True),
                 )

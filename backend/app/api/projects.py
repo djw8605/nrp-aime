@@ -214,6 +214,7 @@ def _to_project_read(
         is_active=project.is_active,
         kubernetes_namespace=project.kubernetes_namespace,
         authentik_group_name=project.authentik_group_name,
+        lifecycle_state=project.lifecycle_state,
         provisioning_state=project.provisioning_state,
         provisioning_requested_at=project.provisioning_requested_at,
         provisioning_started_at=project.provisioning_started_at,
@@ -477,7 +478,7 @@ def update_project(
     if "tags" in updates:
         project.tags = _normalize_tags(updates["tags"])
 
-    required_string_fields = ("aime_allocation_id", "name", "provisioning_state")
+    required_string_fields = ("aime_allocation_id", "name", "lifecycle_state", "provisioning_state")
     for field in required_string_fields:
         if field in updates:
             cleaned = _clean_string(updates[field])
@@ -738,7 +739,11 @@ def send_account_email(
             continue
 
         needs_invite = any(
-            membership.account_state != ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE
+            membership.account_state not in (
+                ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+                ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+                ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+            )
             for membership in relevant_memberships
         )
         if not needs_invite:
@@ -747,7 +752,7 @@ def send_account_email(
 
         try:
             for membership in relevant_memberships:
-                if membership.account_state != ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE:
+                if membership.account_state == ProjectUser.ACCOUNT_STATE_RECEIVED:
                     lifecycle.mark_email_sent(membership)
             invites.create_invite(
                 db,
