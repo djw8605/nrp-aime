@@ -3,8 +3,8 @@
 Introduces ``lifecycle_state`` on projects and migrates ``account_state``
 on project_users to the new canonical state machine values.
 
-Revision ID: 0019_lifecycle_state_machine
-Revises: 0018_project_admin_tags
+Revision ID: 0020_lifecycle_state_machine
+Revises: 0019_user_action_log
 Create Date: 2026-03-28 00:00:00.000000
 """
 
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "0019_lifecycle_state_machine"
-down_revision = "0018_project_admin_tags"
+revision = "0020_lifecycle_state_machine"
+down_revision = "0019_user_action_log"
 branch_labels = None
 depends_on = None
 
