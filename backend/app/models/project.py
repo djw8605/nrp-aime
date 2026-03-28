@@ -52,10 +52,6 @@ class Project(Base):
 
     LIFECYCLE_STATE_TRANSITIONS: dict[str, set[str]] = {
         LIFECYCLE_STATE_RECEIVED: {
-            LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
-            LIFECYCLE_STATE_PENDING_PROVISIONING,
-        },
-        LIFECYCLE_STATE_WAITING_PI_ACCOUNT: {
             LIFECYCLE_STATE_PENDING_PROVISIONING,
         },
         LIFECYCLE_STATE_PENDING_PROVISIONING: {
@@ -69,7 +65,11 @@ class Project(Base):
             LIFECYCLE_STATE_PROVISIONING,  # retry
         },
         LIFECYCLE_STATE_PROVISIONED: {
+            LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
             LIFECYCLE_STATE_AIME_NOTIFIED,
+        },
+        LIFECYCLE_STATE_WAITING_PI_ACCOUNT: {
+            LIFECYCLE_STATE_PROVISIONED,  # PI completed → ready for notification
         },
         LIFECYCLE_STATE_AIME_NOTIFIED: {
             LIFECYCLE_STATE_ACTIVE,

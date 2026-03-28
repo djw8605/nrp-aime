@@ -2301,8 +2301,6 @@ class AIMEService:
                 source_trans_rec_id=packet_record.trans_rec_id,
                 source_transaction_id=packet_record.transaction_id,
             )
-            # PI account creation gates project progress.
-            self.project_provisioning.mark_waiting_pi_account(project)
 
         elif isinstance(bound_packet, RequestAccountCreatePacketBinding):
             project = self._upsert_project_from_account(

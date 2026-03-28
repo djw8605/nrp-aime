@@ -743,21 +743,10 @@ const projectLifecycleSteps = computed(() => {
   if (!p) return []
   const ls = String(p.lifecycle_state || 'received').trim().toLowerCase()
 
-  const stateOrder = [
-    'received',
-    'waiting_pi_account',
-    'pending_provisioning',
-    'provisioning',
-    'provisioning_failed',
-    'provisioned',
-    'aime_notified',
-    'active',
-  ]
-  const stateIndex = stateOrder.indexOf(ls)
-  const isPast = (targetState) => {
-    const targetIndex = stateOrder.indexOf(targetState)
-    return stateIndex > targetIndex
-  }
+  // Canonical order: received → provisioning → provisioned → waiting_pi_account → aime_notified → active
+  // waiting_pi_account only appears for project_create flow; non-PI projects skip it.
+  const provisioningDone = ['provisioned', 'waiting_pi_account', 'aime_notified', 'active'].includes(ls)
+  const pastWaiting = ['aime_notified', 'active'].includes(ls)
   const isCurrent = (targetState) => ls === targetState
 
   // Step 1: Received packet creation — always complete
@@ -768,53 +757,54 @@ const projectLifecycleSteps = computed(() => {
     description: 'AIME packet received and project record created.',
   }
 
-  // Step 2: Waiting on PI account (only relevant for project_create flow)
-  const step2 = {
-    label: 'PI account creation',
-    status: isPast('waiting_pi_account') ? 'completed'
-      : isCurrent('waiting_pi_account') ? 'active'
-      : isCurrent('received') ? 'pending' : 'completed',
-    description: isCurrent('waiting_pi_account')
-      ? 'Waiting for PI to complete account onboarding before project can be provisioned.'
-      : null,
-  }
-
-  // Step 3: Provisioning
-  let step3
-  if (isCurrent('pending_provisioning')) {
-    step3 = {
+  // Step 2: Provisioning (namespace + Authentik group)
+  let step2
+  if (isCurrent('pending_provisioning') || isCurrent('received')) {
+    step2 = {
       label: 'Create namespace in NRP',
       status: 'waiting',
       actionRequired: 'Admin must click the "Create Namespace + Authentik Group" button above.',
     }
   } else if (isCurrent('provisioning')) {
-    step3 = {
+    step2 = {
       label: 'Create namespace in NRP',
       status: 'active',
       timestamp: p.provisioning_started_at,
       description: 'Kubernetes namespace and Authentik group are being created.',
     }
   } else if (isCurrent('provisioning_failed')) {
-    step3 = {
+    step2 = {
       label: 'Create namespace in NRP',
       status: 'error',
       timestamp: p.provisioning_started_at,
       description: p.provisioning_last_error || 'Provisioning failed.',
     }
-  } else if (isPast('provisioning')) {
-    step3 = {
+  } else if (provisioningDone) {
+    step2 = {
       label: 'Create namespace in NRP',
       status: 'completed',
       timestamp: p.provisioning_completed_at || p.provisioning_started_at,
     }
   } else {
-    step3 = { label: 'Create namespace in NRP', status: 'pending' }
+    step2 = { label: 'Create namespace in NRP', status: 'pending' }
+  }
+
+  // Step 3: Waiting on PI account creation (only for project_create flow)
+  const step3 = {
+    label: 'PI account creation',
+    status: isCurrent('waiting_pi_account') ? 'active'
+      : pastWaiting ? 'completed'
+      : provisioningDone ? 'pending'
+      : 'pending',
+    description: isCurrent('waiting_pi_account')
+      ? 'Namespace is ready. Waiting for PI to complete account onboarding.'
+      : null,
   }
 
   // Step 4: Notify AIME
   const step4 = {
     label: 'Notify project create to AIME server',
-    status: isPast('provisioned') ? 'completed'
+    status: isCurrent('aime_notified') || isCurrent('active') ? 'completed'
       : isCurrent('provisioned') ? 'active'
       : 'pending',
   }

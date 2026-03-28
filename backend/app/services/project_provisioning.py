@@ -26,6 +26,24 @@ class ProjectProvisioningService:
         self.kubernetes_service = kubernetes_service or KubernetesProvisioningService()
 
     @staticmethod
+    def _has_pending_pi_account(project: Project) -> bool:
+        """Return True if the project has a PI member still awaiting onboarding."""
+        from app.models.project_user import ProjectUser
+
+        completed_states = (
+            ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+            ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+            ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+            # Legacy values that also indicate completion.
+            ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+        )
+        for pu in project.project_users:
+            if str(pu.role or "").strip().lower() == "pi":
+                if pu.account_state not in completed_states:
+                    return True
+        return False
+
+    @staticmethod
     def _required_alert_key(project: Project) -> str:
         return f"project_provision_required:{project.id}"
 
@@ -71,23 +89,26 @@ class ProjectProvisioningService:
 
     @staticmethod
     def mark_waiting_pi_account(project: Project) -> None:
-        """Mark project as waiting for PI account creation before provisioning.
+        """Mark project as waiting for PI account creation.
 
-        Can be called after mark_received (which advances to
-        pending_provisioning) to override the lifecycle state back to
-        waiting_pi_account when the PI account hasn't been created yet.
+        Called after provisioning completes when the project was created
+        via request_project_create and the PI still needs to onboard.
+        The namespace must exist before the PI can create their account.
         """
-        if project.lifecycle_state in (
-            Project.LIFECYCLE_STATE_RECEIVED,
-            Project.LIFECYCLE_STATE_PENDING_PROVISIONING,
-        ):
-            project.lifecycle_state = Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT
+        if project.lifecycle_state == Project.LIFECYCLE_STATE_PROVISIONED:
+            project.set_lifecycle_state(Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT)
 
     @staticmethod
     def mark_pi_account_ready(project: Project) -> None:
-        """Advance project past the PI account wait gate."""
+        """Advance project past the PI account wait gate.
+
+        Called when the PI completes OAuth.  Moves the project back to
+        ``provisioned`` so the reconciler can send ``notify_project_create``.
+        """
         if project.lifecycle_state == Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT:
-            project.set_lifecycle_state(Project.LIFECYCLE_STATE_PENDING_PROVISIONING)
+            # Go back to provisioned so the normal notification reconciler
+            # picks this project up and sends notify_project_create.
+            project.lifecycle_state = Project.LIFECYCLE_STATE_PROVISIONED
 
     def emit_required_alert(self, db: Session, *, project: Project, reason: str) -> None:
         """Send admin alert for newly received project provisioning action."""
@@ -194,6 +215,12 @@ class ProjectProvisioningService:
                 project.provisioning_alerted_at = None
                 AlertService.resolve(db, alert_key=self._required_alert_key(project))
                 AlertService.resolve(db, alert_key=self._failed_alert_key(project))
+
+                # If there's a PI that hasn't completed onboarding yet,
+                # the project must wait for PI account creation before
+                # the AIME notification can be sent.
+                if self._has_pending_pi_account(project):
+                    self.mark_waiting_pi_account(project)
 
             db.commit()
         except Exception as exc:  # noqa: BLE001
