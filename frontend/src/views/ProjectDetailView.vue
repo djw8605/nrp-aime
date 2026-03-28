@@ -869,6 +869,15 @@ const projectLifecycleSteps = computed(() => {
       timestamp: p.provisioning_started_at,
       description: p.provisioning_last_error || 'Provisioning failed.',
     }
+  } else if (provisioningDone) {
+    step2 = {
+      label: 'Create namespace in NRP',
+      status: 'completed',
+      timestamp: p.provisioning_completed_at || p.provisioning_started_at,
+      description: p.kubernetes_namespace ? `Namespace: ${p.kubernetes_namespace}` : null,
+    }
+  } else {
+    step2 = { label: 'Create namespace in NRP', status: 'pending' }
   }
 
   // Step 3: PI creates account
@@ -925,48 +934,50 @@ const projectLifecycleSteps = computed(() => {
   const piAccountReady = Boolean(piMembership?.account_made_at)
 
   // Step 4: Notify project create back to AIME server
-  // Requires both: namespace provisioned (ps === 'ready') AND PI account created.
-  // PI account creation is reported inside this notification — no separate
-  // notify_account_create response is needed for the PI.
+  // Requires both: namespace provisioned AND PI account created.
   let step4
-  if (ps !== 'ready' || !piAccountReady) {
+  const notifyDone = ['aime_notified', 'active', 'inactive'].includes(ls)
+  if (isCurrent('waiting_pi_account')) {
+    step4 = {
+      label: 'Notify project create to AIME server',
+      status: 'waiting',
+      actionRequired: 'Waiting for PI to complete account setup before sending project create notification.',
+    }
+  } else if (!provisioningDone) {
     step4 = {
       label: 'Notify project create to AIME server',
       status: 'pending',
-      description:
-        ps !== 'ready'
-          ? 'Waiting for namespace provisioning to complete.'
-          : 'Waiting for PI to complete account setup before sending project create notification.',
+      description: 'Waiting for namespace provisioning to complete.',
     }
-  } else if (p.provisioning_alerted_at) {
+  } else if (notifyDone) {
     step4 = {
       label: 'Notify project create to AIME server',
       status: 'completed',
       timestamp: p.provisioning_alerted_at,
-      description: 'Project create notification sent to AIME (includes PI account creation).',
+      description: 'Project create notification sent to AIME.',
     }
   } else {
+    // provisioned state — ready to notify, waiting on worker
     step4 = {
       label: 'Notify project create to AIME server',
       status: 'active',
-      description:
-        'Sending project provisioning confirmation to AIME (includes PI account creation).',
+      description: 'Namespace ready. Worker will send notify_project_create to AIME shortly.',
     }
   }
 
-  // Step 5: Received data project create (AIME acks back)
+  // Step 5: Project active
   const step5 = {
-    label: 'Received data project create',
-    status: p.provisioning_alerted_at ? 'active' : 'pending',
-    description: p.provisioning_alerted_at
-      ? 'Waiting for AIME to acknowledge the project creation.'
-      : null,
+    label: 'Project active',
+    status: ['active', 'inactive'].includes(ls) ? 'completed'
+      : notifyDone ? 'active'
+      : 'pending',
+    description: ls === 'inactive' ? 'Project is currently inactive.' : null,
   }
 
-  // Step 6: Inform transaction complete
+  // Step 6: Inactive / deactivated (only relevant when inactive)
   const step6 = {
-    label: 'Inform transaction complete',
-    status: 'pending',
+    label: 'Project lifecycle complete',
+    status: ['active', 'inactive'].includes(ls) ? 'completed' : 'pending',
   }
 
   return [step1, step2, step3, step4, step5, step6]
