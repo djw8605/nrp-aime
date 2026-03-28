@@ -26,6 +26,24 @@ class ProjectProvisioningService:
         self.kubernetes_service = kubernetes_service or KubernetesProvisioningService()
 
     @staticmethod
+    def _has_pending_pi_account(project: Project) -> bool:
+        """Return True if the project has a PI member still awaiting onboarding."""
+        from app.models.project_user import ProjectUser
+
+        completed_states = (
+            ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+            ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+            ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+            # Legacy values that also indicate completion.
+            ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+        )
+        for pu in project.project_users:
+            if str(pu.role or "").strip().lower() == "pi":
+                if pu.account_state not in completed_states:
+                    return True
+        return False
+
+    @staticmethod
     def _required_alert_key(project: Project) -> str:
         return f"project_provision_required:{project.id}"
 
@@ -40,25 +58,57 @@ class ProjectProvisioningService:
             ``True`` when an admin alert should be dispatched.
         """
         now = datetime.now(UTC)
-        needs_admin_action = (
-            project.provisioning_state != Project.PROVISIONING_STATE_READY
-            or not project.kubernetes_namespace
-            or not project.authentik_group_name
+        already_provisioned = (
+            project.lifecycle_state in (
+                Project.LIFECYCLE_STATE_PROVISIONED,
+                Project.LIFECYCLE_STATE_AIME_NOTIFIED,
+                Project.LIFECYCLE_STATE_ACTIVE,
+            )
+            and project.kubernetes_namespace
+            and project.authentik_group_name
         )
-        if not needs_admin_action:
+        if already_provisioned:
             return False
 
+        # Keep provisioning_state in sync for backwards compatibility.
         if project.provisioning_state != Project.PROVISIONING_STATE_RECEIVED:
             project.provisioning_state = Project.PROVISIONING_STATE_RECEIVED
             project.provisioning_last_error = None
             project.provisioning_started_at = None
             project.provisioning_completed_at = None
 
+        # Advance lifecycle_state if still at initial received.
+        if project.lifecycle_state == Project.LIFECYCLE_STATE_RECEIVED:
+            project.set_lifecycle_state(Project.LIFECYCLE_STATE_PENDING_PROVISIONING)
+
         if project.provisioning_requested_at is None:
             project.provisioning_requested_at = now
 
         _ = reason
         return project.provisioning_alerted_at is None
+
+    @staticmethod
+    def mark_waiting_pi_account(project: Project) -> None:
+        """Mark project as waiting for PI account creation.
+
+        Called after provisioning completes when the project was created
+        via request_project_create and the PI still needs to onboard.
+        The namespace must exist before the PI can create their account.
+        """
+        if project.lifecycle_state == Project.LIFECYCLE_STATE_PROVISIONED:
+            project.set_lifecycle_state(Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT)
+
+    @staticmethod
+    def mark_pi_account_ready(project: Project) -> None:
+        """Advance project past the PI account wait gate.
+
+        Called when the PI completes OAuth.  Moves the project back to
+        ``provisioned`` so the reconciler can send ``notify_project_create``.
+        """
+        if project.lifecycle_state == Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT:
+            # Go back to provisioned so the normal notification reconciler
+            # picks this project up and sends notify_project_create.
+            project.lifecycle_state = Project.LIFECYCLE_STATE_PROVISIONED
 
     def emit_required_alert(self, db: Session, *, project: Project, reason: str) -> None:
         """Send admin alert for newly received project provisioning action."""
@@ -100,6 +150,7 @@ class ProjectProvisioningService:
         """Provision namespace + group infrastructure for a project."""
         now = datetime.now(UTC)
         project.provisioning_state = Project.PROVISIONING_STATE_PROVISIONING
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONING)
         project.provisioning_started_at = now
         project.provisioning_last_error = None
         if project.provisioning_requested_at is None:
@@ -135,6 +186,7 @@ class ProjectProvisioningService:
 
             if errors:
                 project.provisioning_state = Project.PROVISIONING_STATE_FAILED
+                project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONING_FAILED)
                 project.provisioning_last_error = "; ".join(errors)
                 project.provisioning_completed_at = None
                 AlertService.send(
@@ -157,11 +209,18 @@ class ProjectProvisioningService:
                 )
             else:
                 project.provisioning_state = Project.PROVISIONING_STATE_READY
+                project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
                 project.provisioning_completed_at = datetime.now(UTC)
                 project.provisioning_last_error = None
                 project.provisioning_alerted_at = None
                 AlertService.resolve(db, alert_key=self._required_alert_key(project))
                 AlertService.resolve(db, alert_key=self._failed_alert_key(project))
+
+                # If there's a PI that hasn't completed onboarding yet,
+                # the project must wait for PI account creation before
+                # the AIME notification can be sent.
+                if self._has_pending_pi_account(project):
+                    self.mark_waiting_pi_account(project)
 
             db.commit()
         except Exception as exc:  # noqa: BLE001
@@ -170,6 +229,7 @@ class ProjectProvisioningService:
                 project.id,
             )
             project.provisioning_state = Project.PROVISIONING_STATE_FAILED
+            project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONING_FAILED)
             project.provisioning_last_error = str(exc)
             project.provisioning_completed_at = None
             AlertService.send(

@@ -63,6 +63,7 @@ class ProjectRead(BaseModel):
     is_active: bool
     kubernetes_namespace: str | None
     authentik_group_name: str | None = None
+    lifecycle_state: str
     provisioning_state: str
     provisioning_requested_at: datetime | None = None
     provisioning_started_at: datetime | None = None
@@ -111,6 +112,7 @@ class ProjectUpdate(BaseModel):
     gpu_allocated: int | None = None
     kubernetes_namespace: str | None = None
     authentik_group_name: str | None = None
+    lifecycle_state: str | None = None
     provisioning_state: str | None = None
     provisioning_requested_at: datetime | None = None
     provisioning_started_at: datetime | None = None

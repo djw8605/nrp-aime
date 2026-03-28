@@ -221,3 +221,6 @@ postgres_data/
 !deployment/
 !deployment/**
 deployment/config/secret.env
+
+# Personal agent overrides (per-developer, not shared)
+CLAUDE.local.md

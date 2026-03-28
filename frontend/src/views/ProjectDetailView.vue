@@ -182,6 +182,10 @@
               <h2 class="m-0 text-base font-semibold text-slate-800">Provisioning and Source Tracking</h2>
               <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                 <div>
+                  <label class="mb-1 block text-sm font-medium text-slate-600">Lifecycle State</label>
+                  <InputText v-model="projectForm.lifecycle_state" class="w-full" />
+                </div>
+                <div>
                   <label class="mb-1 block text-sm font-medium text-slate-600">Provisioning State</label>
                   <InputText v-model="projectForm.provisioning_state" class="w-full" />
                 </div>
@@ -323,13 +327,24 @@
               <span class="font-semibold">{{ provisioningStateLabel }}</span>
             </p>
           </div>
-          <Button
-            icon="pi pi-cloud-upload"
-            :label="provisionButtonLabel"
-            :disabled="!canProvision"
-            :loading="provisioningActionLoading"
-            @click="onProvisionInfrastructure"
-          />
+          <div class="flex flex-wrap gap-2">
+            <Button
+              icon="pi pi-cloud-upload"
+              :label="provisionButtonLabel"
+              :disabled="!canProvision"
+              :loading="provisioningActionLoading"
+              @click="onProvisionInfrastructure"
+            />
+            <Button
+              icon="pi pi-bolt"
+              label="Debug Provision (Mock)"
+              severity="help"
+              outlined
+              :disabled="!canProvision"
+              :loading="debugProvisionLoading"
+              @click="onDebugProvision"
+            />
+          </div>
         </div>
         <Message
           v-if="provisioningSuccess"
@@ -619,7 +634,12 @@
           <Message severity="info" :closable="false">
             Invite links are managed per person on the People page.
           </Message>
-          <UserList :users="users" :loading="usersLoading" />
+          <UserList
+            :users="users"
+            :loading="usersLoading"
+            :show-debug-actions="true"
+            @debug-complete-account="onDebugCompleteAccount"
+          />
         </section>
         <section class="space-y-3">
           <h2 class="m-0 flex items-center gap-2 text-xl font-semibold text-slate-700">
@@ -720,6 +740,8 @@ import {
 } from '../utils/formUtils'
 import {
   addProjectMember,
+  debugProvisionProject,
+  debugCompleteUserAccount,
   deleteProject,
   fetchProject,
   fetchProjectPackets,
@@ -748,6 +770,7 @@ const usersLoading = ref(false)
 const usageLoading = ref(false)
 const projectPacketsLoading = ref(false)
 const provisioningActionLoading = ref(false)
+const debugProvisionLoading = ref(false)
 const savingProject = ref(false)
 const addingMember = ref(false)
 const editingProject = ref(false)
@@ -762,29 +785,36 @@ const addMemberMode = ref('existing')
 const addMemberForm = ref(createProjectMemberForm())
 
 const provisioningStateLabel = computed(() => {
-  const state = String(project.value?.provisioning_state || 'received')
+  const state = String(project.value?.lifecycle_state || 'received')
     .trim()
     .toLowerCase()
-  if (state === 'received') return 'Received (awaiting admin action)'
-  if (state === 'provisioning') return 'Provisioning in progress'
-  if (state === 'ready') return 'Ready'
-  if (state === 'failed') return 'Failed'
-  return state || 'Unknown'
+  const labels = {
+    received: 'Received',
+    waiting_pi_account: 'Waiting on PI Account Creation',
+    pending_provisioning: 'Pending Provisioning (awaiting admin action)',
+    provisioning: 'Provisioning in progress',
+    provisioning_failed: 'Provisioning Failed',
+    provisioned: 'Provisioned',
+    aime_notified: 'AIME Notified',
+    active: 'Active',
+    inactive: 'Inactive',
+  }
+  return labels[state] || state || 'Unknown'
 })
 
 const canProvision = computed(() => {
   const current = project.value
   if (!current) return false
-  const state = String(current.provisioning_state || '').trim().toLowerCase()
+  const state = String(current.lifecycle_state || '').trim().toLowerCase()
   if (state === 'provisioning') return false
-  if (state === 'received' || state === 'failed') return true
+  if (state === 'pending_provisioning' || state === 'provisioning_failed') return true
   if (!current.kubernetes_namespace || !current.authentik_group_name) return true
   return false
 })
 
 const provisionButtonLabel = computed(() => {
-  const state = String(project.value?.provisioning_state || '').trim().toLowerCase()
-  if (state === 'failed') return 'Retry Provisioning'
+  const state = String(project.value?.lifecycle_state || '').trim().toLowerCase()
+  if (state === 'provisioning_failed') return 'Retry Provisioning'
   return 'Create Namespace + Authentik Group'
 })
 
@@ -797,7 +827,13 @@ const availablePeople = computed(() =>
 const projectLifecycleSteps = computed(() => {
   const p = project.value
   if (!p) return []
-  const ps = String(p.provisioning_state || 'received').trim().toLowerCase()
+  const ls = String(p.lifecycle_state || 'received').trim().toLowerCase()
+
+  // Canonical order: received → provisioning → provisioned → waiting_pi_account → aime_notified → active
+  // waiting_pi_account only appears for project_create flow; non-PI projects skip it.
+  const provisioningDone = ['provisioned', 'waiting_pi_account', 'aime_notified', 'active'].includes(ls)
+  const pastWaiting = ['aime_notified', 'active'].includes(ls)
+  const isCurrent = (targetState) => ls === targetState
 
   // Find the PI membership from the loaded project members list.
   const piMembership = users.value.find((u) => u.is_project_pi) ?? null
@@ -810,29 +846,22 @@ const projectLifecycleSteps = computed(() => {
     description: 'AIME packet received and project record created.',
   }
 
-  // Step 2: Create namespace in NRP
+  // Step 2: Provisioning (namespace + Authentik group)
   let step2
-  if (ps === 'received') {
+  if (isCurrent('pending_provisioning') || isCurrent('received')) {
     step2 = {
       label: 'Create namespace in NRP',
       status: 'waiting',
       actionRequired: 'Admin must click the "Create Namespace + Authentik Group" button above.',
     }
-  } else if (ps === 'provisioning') {
+  } else if (isCurrent('provisioning')) {
     step2 = {
       label: 'Create namespace in NRP',
       status: 'active',
       timestamp: p.provisioning_started_at,
       description: 'Kubernetes namespace and Authentik group are being created.',
     }
-  } else if (ps === 'ready') {
-    step2 = {
-      label: 'Create namespace in NRP',
-      status: 'completed',
-      timestamp: p.provisioning_completed_at || p.provisioning_started_at,
-    }
-  } else {
-    // failed
+  } else if (isCurrent('provisioning_failed')) {
     step2 = {
       label: 'Create namespace in NRP',
       status: 'error',
@@ -981,6 +1010,7 @@ function createProjectForm(projectData = null) {
     is_active: Boolean(projectData?.is_active ?? true),
     kubernetes_namespace: projectData?.kubernetes_namespace || '',
     authentik_group_name: projectData?.authentik_group_name || '',
+    lifecycle_state: projectData?.lifecycle_state || 'received',
     provisioning_state: projectData?.provisioning_state || 'received',
     provisioning_requested_at: toDateTimeLocalInput(projectData?.provisioning_requested_at),
     provisioning_started_at: toDateTimeLocalInput(projectData?.provisioning_started_at),
@@ -1000,7 +1030,7 @@ function createProjectMemberForm() {
     membership_service_units_remaining: null,
     account_remote_site_login: '',
     account_is_active: true,
-    account_state: 'not_sent_email_invite',
+    account_state: 'received',
     source_packet_rec_id: null,
     source_trans_rec_id: null,
     source_transaction_id: null,
@@ -1288,6 +1318,47 @@ async function onProvisionInfrastructure() {
     provisioningActionLoading.value = false
     await loadProject()
   }
+}
+
+async function onDebugProvision() {
+  if (!project.value) return
+  debugProvisionLoading.value = true
+  provisioningSuccess.value = ''
+  provisioningError.value = ''
+  try {
+    const result = await debugProvisionProject(project.value.id)
+    if (result?.ok) {
+      provisioningSuccess.value =
+        `Debug provisioning complete. Mock namespace: ${result.kubernetes_namespace}`
+    } else {
+      provisioningError.value = 'Debug provisioning failed.'
+    }
+  } catch (err) {
+    provisioningError.value =
+      err?.response?.data?.detail || 'Failed to debug-provision project.'
+  } finally {
+    debugProvisionLoading.value = false
+    await Promise.all([loadProject(), loadUsers()])
+  }
+}
+
+async function onDebugCompleteAccount(projectUserId) {
+  if (!project.value) return
+  try {
+    const result = await debugCompleteUserAccount(project.value.id, projectUserId)
+    if (result?.ok) {
+      projectMessage.value = {
+        severity: 'success',
+        text: `Debug account complete for ${result.remote_site_login}. State: ${result.account_state}`,
+      }
+    }
+  } catch (err) {
+    projectMessage.value = {
+      severity: 'error',
+      text: err?.response?.data?.detail || 'Failed to debug-complete user account.',
+    }
+  }
+  await Promise.all([loadProject(), loadUsers()])
 }
 
 async function confirmDeleteProject() {

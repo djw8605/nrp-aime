@@ -159,31 +159,37 @@ class ObservabilityService:
     @staticmethod
     def lifecycle_funnel_metrics(db: Session) -> dict[str, Any]:
         """Return lifecycle funnel counts."""
-        just_received = (
+        received = (
             db.query(ProjectUser)
-            .filter(ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET)
+            .filter(ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_RECEIVED)
             .count()
         )
-        sent_email = (
+        email_invite_sent = (
             db.query(ProjectUser)
-            .filter(ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_SENT_EMAIL)
+            .filter(ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT)
             .count()
         )
-        account_made = (
+        user_completed_oauth = (
             db.query(ProjectUser)
-            .filter(ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE)
+            .filter(ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
             .count()
         )
-        confirmation_sent = (
+        aime_notified = (
             db.query(ProjectUser)
-            .filter(ProjectUser.aime_confirmation_sent_at.is_not(None))
+            .filter(ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED)
+            .count()
+        )
+        covered_by_project = (
+            db.query(ProjectUser)
+            .filter(ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT)
             .count()
         )
         return {
-            "just_received_packet": just_received,
-            "sent_email": sent_email,
-            "account_made": account_made,
-            "notify_account_create_sent": confirmation_sent,
+            "received": received,
+            "email_invite_sent": email_invite_sent,
+            "user_completed_oauth": user_completed_oauth,
+            "aime_notified": aime_notified,
+            "covered_by_project_notification": covered_by_project,
         }
 
     @staticmethod
@@ -258,7 +264,7 @@ class ObservabilityService:
             db.query(ProjectUser)
             .filter(
                 and_(
-                    ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET,
+                    ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_RECEIVED,
                     ProjectUser.email_sent_at.is_(None),
                 )
             )
@@ -268,7 +274,7 @@ class ObservabilityService:
             db.query(ProjectUser)
             .filter(
                 and_(
-                    ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                    ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
                     ProjectUser.aime_confirmation_sent_at.is_(None),
                 )
             )

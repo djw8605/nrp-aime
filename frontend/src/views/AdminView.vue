@@ -149,10 +149,11 @@
         <template #title>Lifecycle Funnel</template>
         <template #content>
           <div class="grid grid-cols-2 gap-2 text-sm text-slate-700">
-            <p class="m-0"><strong>Just Received:</strong> {{ lifecycleFunnel?.just_received_packet ?? 0 }}</p>
-            <p class="m-0"><strong>Sent Email:</strong> {{ lifecycleFunnel?.sent_email ?? 0 }}</p>
-            <p class="m-0"><strong>Account Made:</strong> {{ lifecycleFunnel?.account_made ?? 0 }}</p>
-            <p class="m-0"><strong>Notify Sent:</strong> {{ lifecycleFunnel?.notify_account_create_sent ?? 0 }}</p>
+            <p class="m-0"><strong>Received:</strong> {{ lifecycleFunnel?.received ?? 0 }}</p>
+            <p class="m-0"><strong>Email Invite Sent:</strong> {{ lifecycleFunnel?.email_invite_sent ?? 0 }}</p>
+            <p class="m-0"><strong>User Completed OAuth:</strong> {{ lifecycleFunnel?.user_completed_oauth ?? 0 }}</p>
+            <p class="m-0"><strong>AIME Notified:</strong> {{ lifecycleFunnel?.aime_notified ?? 0 }}</p>
+            <p class="m-0"><strong>Covered by Project:</strong> {{ lifecycleFunnel?.covered_by_project_notification ?? 0 }}</p>
           </div>
         </template>
       </Card>
