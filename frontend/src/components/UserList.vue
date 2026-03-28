@@ -138,12 +138,27 @@
             />
           </template>
         </Column>
+        <Column v-if="showDebugActions" header="Debug">
+          <template #body="{ data }">
+            <Button
+              v-if="canDebugComplete(data.account_state)"
+              icon="pi pi-bolt"
+              label="Mock OAuth"
+              severity="help"
+              outlined
+              size="small"
+              @click="$emit('debug-complete-account', data.project_user_id)"
+            />
+            <span v-else class="text-xs text-slate-400">--</span>
+          </template>
+        </Column>
       </DataTable>
     </template>
   </Card>
 </template>
 
 <script setup>
+import Button from 'primevue/button'
 import Card from 'primevue/card'
 import Column from 'primevue/column'
 import DataTable from 'primevue/datatable'
@@ -187,6 +202,10 @@ function confirmationTagSeverity(membership) {
   return membership?.aime_confirmation_sent_at ? 'success' : 'warning'
 }
 
+function canDebugComplete(state) {
+  return state === 'received' || state === 'email_invite_sent'
+}
+
 defineProps({
   users: {
     type: Array,
@@ -196,5 +215,11 @@ defineProps({
     type: Boolean,
     default: false,
   },
+  showDebugActions: {
+    type: Boolean,
+    default: false,
+  },
 })
+
+defineEmits(['debug-complete-account'])
 </script>

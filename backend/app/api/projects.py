@@ -1,7 +1,9 @@
 """Project API endpoints."""
 
 import logging
+import re
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import cast, case, func, or_
@@ -813,3 +815,171 @@ def provision_project_infrastructure(
             result,
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Debug / mock endpoints — bypass external services for development
+# ---------------------------------------------------------------------------
+
+_SAFE_NS = re.compile(r"[^a-z0-9-]+")
+
+
+@router.post("/{project_id}/debug-provision")
+def debug_provision_project(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Mock-provision a project without contacting the NRP portal.
+
+    Generates a namespace name using the same logic as the real
+    provisioning service, writes it to the database, and advances the
+    project lifecycle to ``provisioned`` (or ``waiting_pi_account`` if
+    the PI still needs to onboard).
+    """
+    project = db.query(Project).options(
+        joinedload(Project.project_users)
+    ).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    now = datetime.now(UTC)
+
+    # Generate namespace name using the same deterministic logic.
+    if project.kubernetes_namespace:
+        namespace = project.kubernetes_namespace
+    else:
+        seed = (
+            project.site_project_id
+            or project.grant_number
+            or project.aime_allocation_id
+            or str(project.id)
+        )
+        fragment = _SAFE_NS.sub("-", seed.strip().lower()).strip("-")[:63] or "project"
+        namespace = f"nrp-{fragment}"
+
+    # Fill in infrastructure fields as if portal RPC succeeded.
+    project.kubernetes_namespace = namespace
+    project.authentik_group_name = namespace
+    project.provisioning_state = Project.PROVISIONING_STATE_READY
+    project.provisioning_started_at = now
+    project.provisioning_completed_at = now
+    project.provisioning_last_error = None
+    if project.provisioning_requested_at is None:
+        project.provisioning_requested_at = now
+
+    # Walk lifecycle through the intermediate states so set_lifecycle_state
+    # validation passes regardless of the current state.
+    if project.lifecycle_state == Project.LIFECYCLE_STATE_RECEIVED:
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_PENDING_PROVISIONING)
+    if project.lifecycle_state == Project.LIFECYCLE_STATE_PENDING_PROVISIONING:
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONING)
+    if project.lifecycle_state in (
+        Project.LIFECYCLE_STATE_PROVISIONING,
+        Project.LIFECYCLE_STATE_PROVISIONING_FAILED,
+    ):
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
+
+    # Check if PI still needs to onboard.
+    if project.lifecycle_state == Project.LIFECYCLE_STATE_PROVISIONED:
+        if ProjectProvisioningService._has_pending_pi_account(project):
+            project.set_lifecycle_state(Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT)
+
+    db.commit()
+    db.refresh(project)
+
+    logger.info(
+        "Debug-provisioned project project_id=%s namespace=%s lifecycle=%s",
+        project.id,
+        namespace,
+        project.lifecycle_state,
+    )
+    return {
+        "ok": True,
+        "debug": True,
+        "project_id": str(project.id),
+        "kubernetes_namespace": namespace,
+        "authentik_group_name": namespace,
+        "lifecycle_state": project.lifecycle_state,
+        "provisioning_state": project.provisioning_state,
+    }
+
+
+@router.post("/{project_id}/users/{project_user_id}/debug-complete-account")
+def debug_complete_user_account(
+    project_id: uuid.UUID,
+    project_user_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Mock a user completing the OAuth onboarding flow.
+
+    Bypasses email invite and Authentik OAuth. Generates a mock
+    ``remote_site_login``, advances the account state to
+    ``user_completed_oauth``, and — if the user is a PI — advances
+    the project lifecycle past the ``waiting_pi_account`` gate.
+    """
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    pu = (
+        db.query(ProjectUser)
+        .filter(
+            ProjectUser.id == project_user_id,
+            ProjectUser.project_id == project_id,
+        )
+        .first()
+    )
+    if not pu:
+        raise HTTPException(status_code=404, detail="Project user not found")
+
+    user = db.query(User).filter(User.id == pu.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    now = datetime.now(UTC)
+
+    # Generate a mock remote_site_login from the user's email or name.
+    mock_login = (
+        (user.email or "").split("@")[0]
+        or (user.name or "").replace(" ", ".").lower()
+        or f"debug-user-{str(user.id)[:8]}"
+    )
+
+    # Update User record as if Authentik OAuth returned this identity.
+    user.remote_site_login = mock_login
+    user.is_active = True
+
+    # Update ProjectUser record — walk through intermediate states.
+    pu.remote_site_login = mock_login
+    pu.is_active = True
+
+    if pu.account_state == ProjectUser.ACCOUNT_STATE_RECEIVED:
+        pu.set_account_state(ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT)
+        pu.email_sent_at = now
+
+    if pu.account_state == ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT:
+        pu.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
+        pu.account_made_at = now
+
+    # If user is PI, advance project past waiting_pi_account.
+    is_pi = str(pu.role or "").strip().lower() == "pi"
+    if is_pi and project.lifecycle_state == Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT:
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
+
+    db.commit()
+
+    logger.info(
+        "Debug-completed user account project_user_id=%s mock_login=%s is_pi=%s",
+        pu.id,
+        mock_login,
+        is_pi,
+    )
+    return {
+        "ok": True,
+        "debug": True,
+        "project_user_id": str(pu.id),
+        "user_id": str(user.id),
+        "remote_site_login": mock_login,
+        "account_state": pu.account_state,
+        "project_lifecycle_state": project.lifecycle_state,
+    }

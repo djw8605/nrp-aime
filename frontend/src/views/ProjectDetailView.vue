@@ -327,13 +327,24 @@
               <span class="font-semibold">{{ provisioningStateLabel }}</span>
             </p>
           </div>
-          <Button
-            icon="pi pi-cloud-upload"
-            :label="provisionButtonLabel"
-            :disabled="!canProvision"
-            :loading="provisioningActionLoading"
-            @click="onProvisionInfrastructure"
-          />
+          <div class="flex flex-wrap gap-2">
+            <Button
+              icon="pi pi-cloud-upload"
+              :label="provisionButtonLabel"
+              :disabled="!canProvision"
+              :loading="provisioningActionLoading"
+              @click="onProvisionInfrastructure"
+            />
+            <Button
+              icon="pi pi-bolt"
+              label="Debug Provision (Mock)"
+              severity="help"
+              outlined
+              :disabled="!canProvision"
+              :loading="debugProvisionLoading"
+              @click="onDebugProvision"
+            />
+          </div>
         </div>
         <Message
           v-if="provisioningSuccess"
@@ -623,7 +634,12 @@
           <Message severity="info" :closable="false">
             Invite links are managed per person on the People page.
           </Message>
-          <UserList :users="users" :loading="usersLoading" />
+          <UserList
+            :users="users"
+            :loading="usersLoading"
+            :show-debug-actions="true"
+            @debug-complete-account="onDebugCompleteAccount"
+          />
         </section>
         <section class="space-y-3">
           <h2 class="m-0 flex items-center gap-2 text-xl font-semibold text-slate-700">
@@ -661,6 +677,8 @@ import {
 } from '../utils/formUtils'
 import {
   addProjectMember,
+  debugProvisionProject,
+  debugCompleteUserAccount,
   fetchProject,
   fetchProjectPackets,
   fetchProjectUsage,
@@ -687,6 +705,7 @@ const usersLoading = ref(false)
 const usageLoading = ref(false)
 const projectPacketsLoading = ref(false)
 const provisioningActionLoading = ref(false)
+const debugProvisionLoading = ref(false)
 const savingProject = ref(false)
 const addingMember = ref(false)
 const editingProject = ref(false)
@@ -1167,6 +1186,47 @@ async function onProvisionInfrastructure() {
     provisioningActionLoading.value = false
     await loadProject()
   }
+}
+
+async function onDebugProvision() {
+  if (!project.value) return
+  debugProvisionLoading.value = true
+  provisioningSuccess.value = ''
+  provisioningError.value = ''
+  try {
+    const result = await debugProvisionProject(project.value.id)
+    if (result?.ok) {
+      provisioningSuccess.value =
+        `Debug provisioning complete. Mock namespace: ${result.kubernetes_namespace}`
+    } else {
+      provisioningError.value = 'Debug provisioning failed.'
+    }
+  } catch (err) {
+    provisioningError.value =
+      err?.response?.data?.detail || 'Failed to debug-provision project.'
+  } finally {
+    debugProvisionLoading.value = false
+    await Promise.all([loadProject(), loadUsers()])
+  }
+}
+
+async function onDebugCompleteAccount(projectUserId) {
+  if (!project.value) return
+  try {
+    const result = await debugCompleteUserAccount(project.value.id, projectUserId)
+    if (result?.ok) {
+      projectMessage.value = {
+        severity: 'success',
+        text: `Debug account complete for ${result.remote_site_login}. State: ${result.account_state}`,
+      }
+    }
+  } catch (err) {
+    projectMessage.value = {
+      severity: 'error',
+      text: err?.response?.data?.detail || 'Failed to debug-complete user account.',
+    }
+  }
+  await Promise.all([loadProject(), loadUsers()])
 }
 
 onMounted(async () => {

@@ -133,3 +133,24 @@ export function sendDemoPacket(scenario = 'project_and_account') {
 export function refreshAccountingStubs() {
   return apiClient.post('/projects/accounting/stub-sync').then((res) => res.data)
 }
+
+/**
+ * Debug-provision a project without contacting the NRP portal.
+ * @param {string} id
+ * @returns {Promise<Object>}
+ */
+export function debugProvisionProject(id) {
+  return apiClient.post(`/projects/${id}/debug-provision`).then((res) => res.data)
+}
+
+/**
+ * Debug-complete a user's account (bypass email invite + OAuth).
+ * @param {string} projectId
+ * @param {string} projectUserId
+ * @returns {Promise<Object>}
+ */
+export function debugCompleteUserAccount(projectId, projectUserId) {
+  return apiClient
+    .post(`/projects/${projectId}/users/${projectUserId}/debug-complete-account`)
+    .then((res) => res.data)
+}
