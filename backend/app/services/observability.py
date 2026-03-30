@@ -419,14 +419,14 @@ class ObservabilityService:
         """Return items that require admin intervention.
 
         Categories:
-        - projects_pending_provisioning: projects in ``received`` or
-          ``pending_provisioning`` state that need namespace provisioning.
-        - projects_provisioning_failed: projects in ``provisioning_failed``
+        - projects_pending_provisioning: projects in received or
+          pending_provisioning state that need namespace provisioning.
+        - projects_provisioning_failed: projects in provisioning_failed
           state that need admin to retry provisioning.
-        - users_pending_email_invite: project-users in ``received`` state
+        - users_pending_email_invite: project-users in received state
           whose invite email has not been sent yet.
         - users_pending_aime_notification: project-users in
-          ``user_completed_oauth`` state awaiting AMIE confirmation.
+          user_completed_oauth state awaiting AIME confirmation.
         """
 
         # -- Projects needing provisioning ---------------------------------

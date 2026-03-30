@@ -17,12 +17,14 @@
       </template>
       <template #end>
         <div class="flex items-center gap-2">
-          <router-link :to="{ name: 'projects' }" class="no-underline">
-            <Button label="Projects" size="small" text>
-              <template v-if="pendingCount > 0" #icon>
-                <Badge :value="pendingCount" severity="warn" />
-              </template>
-            </Button>
+          <router-link :to="{ name: 'projects' }" class="relative no-underline">
+            <Button label="Projects" size="small" text />
+            <Badge
+              v-if="pendingCount > 0"
+              :value="pendingCount"
+              severity="warn"
+              class="absolute -right-2 -top-2"
+            />
           </router-link>
           <router-link :to="{ name: 'people' }" class="no-underline">
             <Button
