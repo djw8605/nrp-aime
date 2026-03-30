@@ -1578,7 +1578,7 @@ class AIMEService:
                 resource=resource,
                 allocated_resource=body.AllocatedResource,
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
             )
             project_users = (
                 db.query(ProjectUser)
@@ -2305,7 +2305,7 @@ class AIMEService:
                     bound_packet.body.ServiceUnitsRemaining
                 ),
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_RECEIVED,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
                 source_packet_rec_id=packet_record.packet_rec_id,
                 source_trans_rec_id=packet_record.trans_rec_id,
                 source_transaction_id=packet_record.transaction_id,
