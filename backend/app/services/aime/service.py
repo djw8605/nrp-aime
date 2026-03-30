@@ -706,6 +706,15 @@ class AIMEService:
         db.flush()
         return existing
 
+    @staticmethod
+    def _parse_packet_timestamp(value: Any) -> datetime | None:
+        if value is None or isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+
     def _record_packet(
         self,
         db: Session,
@@ -729,7 +738,7 @@ class AIMEService:
             existing.transaction_state = header.get("transaction_state")
             existing.packet_state = header.get("packet_state")
             existing.client_state = header.get("client_state")
-            existing.packet_timestamp = header.get("packet_timestamp")
+            existing.packet_timestamp = self._parse_packet_timestamp(header.get("packet_timestamp"))
             existing.raw_packet = self._json_compatible(raw_packet)
             existing.ingest_source = ingest_source
             existing.processing_status = AMIEPacket.PROCESSING_STATUS_RECEIVED
@@ -751,7 +760,7 @@ class AIMEService:
             transaction_state=header.get("transaction_state"),
             packet_state=header.get("packet_state"),
             client_state=header.get("client_state"),
-            packet_timestamp=header.get("packet_timestamp"),
+            packet_timestamp=self._parse_packet_timestamp(header.get("packet_timestamp")),
             processing_status=AMIEPacket.PROCESSING_STATUS_RECEIVED,
             ingest_source=ingest_source,
             raw_packet=self._json_compatible(raw_packet),
@@ -1569,7 +1578,7 @@ class AIMEService:
                 resource=resource,
                 allocated_resource=body.AllocatedResource,
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
             )
             project_users = (
                 db.query(ProjectUser)
@@ -2296,7 +2305,7 @@ class AIMEService:
                     bound_packet.body.ServiceUnitsRemaining
                 ),
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_RECEIVED,
+                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
                 source_packet_rec_id=packet_record.packet_rec_id,
                 source_trans_rec_id=packet_record.trans_rec_id,
                 source_transaction_id=packet_record.transaction_id,

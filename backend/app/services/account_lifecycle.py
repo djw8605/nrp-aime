@@ -217,13 +217,12 @@ class AccountLifecycleService:
 
     @staticmethod
     def _fallback_login(project_user: ProjectUser) -> str | None:
-        # For notify_account_create we prefer the OAuth-resolved email identity.
-        if project_user.user.email:
-            return project_user.user.email
         if project_user.remote_site_login:
             return project_user.remote_site_login
         if project_user.user.remote_site_login:
             return project_user.user.remote_site_login
+        if project_user.user.email:
+            return project_user.user.email
         return project_user.user.person_id
 
     @staticmethod
@@ -880,6 +879,7 @@ class AccountLifecycleService:
                         or self._clean_scalar(
                             allocation_packet.pi_person_id if allocation_packet else None
                         )
+                        or pi_remote_login
                     )
                     pi_global_id = self._clean_scalar(
                         self._source_packet_field(source_packet, "PiGlobalID")

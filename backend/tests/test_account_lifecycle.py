@@ -81,7 +81,7 @@ class AccountLifecycleTests(unittest.TestCase):
         )
         membership.remote_site_login = "pi-login"
         membership.user.remote_site_login = "pi-login"
-        project.provisioning_state = Project.PROVISIONING_STATE_READY
+        project.lifecycle_state = Project.LIFECYCLE_STATE_PROVISIONED
         self.db.commit()
 
         lifecycle = AccountLifecycleService()
