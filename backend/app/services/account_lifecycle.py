@@ -864,13 +864,20 @@ class AccountLifecycleService:
                     pi_user = next(
                         (pu for pu in project.project_users if pu.role == "pi"), None
                     )
-                    pi_remote_login = (
+                    _pi_raw_login = (
                         (
                             pi_user.remote_site_login
                             or (pi_user.user.remote_site_login if pi_user.user else None)
                         )
                         if pi_user
                         else None
+                    )
+                    # AMIE's system_accounts.username is varchar(30). CILogon subject
+                    # URLs (used as the primary identity at NRP) are longer, so take
+                    # the last 30 characters which preserve the unique trailing ID.
+                    pi_remote_login = (
+                        _pi_raw_login[-30:] if _pi_raw_login and len(_pi_raw_login) > 30
+                        else _pi_raw_login
                     )
                     pi_person_id = (
                         project.pi_person_id
