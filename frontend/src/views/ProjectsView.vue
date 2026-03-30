@@ -26,6 +26,119 @@
       </div>
     </div>
 
+    <!-- Pending Admin Actions -->
+    <div
+      v-if="pendingActions && pendingActions.total_pending_count > 0"
+      class="rounded-2xl border border-amber-300 bg-amber-50 p-4 shadow-sm"
+    >
+      <div class="mb-3 flex items-center gap-2">
+        <i class="pi pi-exclamation-triangle text-lg text-amber-600"></i>
+        <h2 class="m-0 text-lg font-semibold text-amber-800">
+          Pending Admin Actions
+          <Tag :value="pendingActions.total_pending_count" severity="warn" rounded class="ml-2" />
+        </h2>
+      </div>
+
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <!-- Projects needing provisioning -->
+        <div v-if="pendingActions.projects_pending_provisioning.length > 0">
+          <p class="m-0 mb-2 text-sm font-semibold text-slate-700">
+            <i class="pi pi-server mr-1 text-sky-600"></i>
+            Projects Needing Provisioning
+            <Tag :value="pendingActions.projects_pending_provisioning.length" severity="warn" rounded class="ml-1" />
+          </p>
+          <ul class="m-0 list-none space-y-1 p-0">
+            <li
+              v-for="item in pendingActions.projects_pending_provisioning"
+              :key="item.project_id"
+              class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+            >
+              <router-link
+                :to="{ name: 'project-detail', params: { id: item.project_id } }"
+                class="font-medium text-sky-700 no-underline hover:underline"
+              >
+                {{ item.project_name }}
+              </router-link>
+              <Tag :value="item.lifecycle_state" severity="warn" rounded class="ml-2 text-xs" />
+            </li>
+          </ul>
+        </div>
+
+        <!-- Projects with provisioning failures -->
+        <div v-if="pendingActions.projects_provisioning_failed.length > 0">
+          <p class="m-0 mb-2 text-sm font-semibold text-slate-700">
+            <i class="pi pi-times-circle mr-1 text-red-600"></i>
+            Projects With Provisioning Failures
+            <Tag :value="pendingActions.projects_provisioning_failed.length" severity="danger" rounded class="ml-1" />
+          </p>
+          <ul class="m-0 list-none space-y-1 p-0">
+            <li
+              v-for="item in pendingActions.projects_provisioning_failed"
+              :key="item.project_id"
+              class="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm"
+            >
+              <router-link
+                :to="{ name: 'project-detail', params: { id: item.project_id } }"
+                class="font-medium text-red-700 no-underline hover:underline"
+              >
+                {{ item.project_name }}
+              </router-link>
+              <Tag value="provisioning_failed" severity="danger" rounded class="ml-2 text-xs" />
+            </li>
+          </ul>
+        </div>
+
+        <!-- Users needing email invite -->
+        <div v-if="pendingActions.users_pending_email_invite.length > 0">
+          <p class="m-0 mb-2 text-sm font-semibold text-slate-700">
+            <i class="pi pi-envelope mr-1 text-amber-600"></i>
+            Users Needing Email Invite
+            <Tag :value="pendingActions.users_pending_email_invite.length" severity="warn" rounded class="ml-1" />
+          </p>
+          <ul class="m-0 list-none space-y-1 p-0">
+            <li
+              v-for="item in pendingActions.users_pending_email_invite"
+              :key="item.project_user_id"
+              class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+            >
+              <router-link
+                :to="{ name: 'project-detail', params: { id: item.project_id } }"
+                class="font-medium text-sky-700 no-underline hover:underline"
+              >
+                {{ item.user_name }}
+              </router-link>
+              <span class="ml-1 text-slate-500">in {{ item.project_name }}</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Users needing AIME notification -->
+        <div v-if="pendingActions.users_pending_aime_notification.length > 0">
+          <p class="m-0 mb-2 text-sm font-semibold text-slate-700">
+            <i class="pi pi-check-circle mr-1 text-emerald-600"></i>
+            Users Awaiting AIME Notification
+            <Tag :value="pendingActions.users_pending_aime_notification.length" severity="info" rounded class="ml-1" />
+          </p>
+          <ul class="m-0 list-none space-y-1 p-0">
+            <li
+              v-for="item in pendingActions.users_pending_aime_notification"
+              :key="item.project_user_id"
+              class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+            >
+              <router-link
+                :to="{ name: 'project-detail', params: { id: item.project_id } }"
+                class="font-medium text-sky-700 no-underline hover:underline"
+              >
+                {{ item.user_name }}
+              </router-link>
+              <span class="ml-1 text-slate-500">in {{ item.project_name }}</span>
+              <Tag value="oauth complete" severity="success" rounded class="ml-2 text-xs" />
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
     <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
       <Card
         v-for="kpi in kpis"
@@ -107,9 +220,11 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Tag from 'primevue/tag'
 import { fetchProjects, fetchProjectsSummary } from '../api/projects'
+import { fetchPendingActions } from '../api/ops'
 import ProjectList from '../components/ProjectList.vue'
 
 const projects = ref([])
+const pendingActions = ref(null)
 const summary = ref({
   active_projects: 0,
   total_service_units_allocated: 0,
@@ -186,9 +301,10 @@ async function loadProjects() {
   loading.value = true
   error.value = null
   try {
-    const [projectsResponse, summaryResponse] = await Promise.allSettled([
+    const [projectsResponse, summaryResponse, pendingResponse] = await Promise.allSettled([
       fetchProjects(showDebug.value),
       fetchProjectsSummary(),
+      fetchPendingActions(),
     ])
 
     if (projectsResponse.status === 'fulfilled') {
@@ -199,6 +315,10 @@ async function loadProjects() {
 
     if (summaryResponse.status === 'fulfilled') {
       summary.value = summaryResponse.value
+    }
+
+    if (pendingResponse.status === 'fulfilled') {
+      pendingActions.value = pendingResponse.value
     }
   } catch {
     error.value = 'Failed to load projects. Please try again later.'
