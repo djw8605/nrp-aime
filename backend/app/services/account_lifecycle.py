@@ -880,6 +880,7 @@ class AccountLifecycleService:
                         or self._clean_scalar(
                             allocation_packet.pi_person_id if allocation_packet else None
                         )
+                        or pi_remote_login
                     )
                     pi_global_id = self._clean_scalar(
                         self._source_packet_field(source_packet, "PiGlobalID")
