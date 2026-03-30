@@ -254,6 +254,22 @@ class AIMEService:
             )
             if user is not None:
                 return user
+            # Suffix match: AMIE truncates CILogon subject URLs to 30
+            # chars and echoes the truncated value in subsequent packets.
+            # Match when the stored person_id ends with the incoming value.
+            if len(person_id) >= 20:
+                query = db.query(User).filter(
+                    User.person_id.endswith(person_id),
+                    User.person_id != person_id,
+                )
+                user = self._site_scoped_first(
+                    query,
+                    site_field=User.source_site_name,
+                    site_name=site_name,
+                    allow_other_sites_when_missing=True,
+                )
+                if user is not None:
+                    return user
         if email:
             query = db.query(User).filter(User.email == email)
             user = self._site_scoped_first(
