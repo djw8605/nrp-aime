@@ -865,10 +865,7 @@ class AccountLifecycleService:
                         (pu for pu in project.project_users if pu.role == "pi"), None
                     )
                     pi_remote_login = (
-                        (
-                            pi_user.remote_site_login
-                            or (pi_user.user.remote_site_login if pi_user.user else None)
-                        )
+                        pi_user.remote_site_login
                         if pi_user
                         else None
                     )
