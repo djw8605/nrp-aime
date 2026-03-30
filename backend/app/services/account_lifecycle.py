@@ -844,6 +844,7 @@ class AccountLifecycleService:
                     )
                     project_site_id = (
                         project.site_project_id
+                        or project.kubernetes_namespace
                         or self._source_packet_project_id(source_packet)
                     )
                     pfos_number = (
