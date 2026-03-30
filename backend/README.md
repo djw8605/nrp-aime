@@ -25,6 +25,19 @@ uvicorn app.main:app --reload
 
 ## Recent Changes
 
+- ClickHouse accounting integration replaces Prometheus as the source of GPU usage data for AMIE reporting.
+  - New service: `app/services/clickhouse/service.py` (`ClickHouseUsageService`).
+  - Queries `access_accounting.cluster_namespace_usage_daily` filtered to `resource = 'gpu'`, grouped per `(namespace, created_by, date)`.
+  - `created_by` is the CILogon subject ID — matched to `User.remote_site_login` to find the NRP user.
+  - `namespace` is the Kubernetes namespace — matched to `Project.kubernetes_namespace` to find the project.
+  - AMIE `Username` is resolved from `ProjectUser.remote_site_login` (the HPC site login registered with AMIE).
+  - One `AdjustmentUsageRecord` (debit) is sent per user × namespace × calendar day; records are idempotent via `amie_usage_exports.local_record_id`.
+  - `local_record_id` format: `nrp-gpu-{project_id}-{YYYYMMDD}-{sha256(cilogon_id)[:12]}`.
+  - New env vars: `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_TABLE`, `CLICKHOUSE_SECURE`, `AMIE_GPU_RESOURCE_NAME`.
+  - Prometheus service is retained for live usage display in the project-detail API (`GET /api/v1/projects/{id}/usage`) but is no longer used by the usage export pipeline.
+
+
+
 - Person-centric magic-link invite onboarding is enabled.
   - Invite links are sent per person (`POST /api/v1/users/{id}/invites`), not per project row.
   - Invite flow uses `preview -> accept -> Authentik login redirect -> callback finalize`.
@@ -98,9 +111,11 @@ FROM project_usage_snapshots
 ORDER BY last_collected_at DESC;
 ```
 
-Usage exports to AMIE are sent as interval deltas (`AdjustmentUsageRecord`
-with `adjustment_type=debit`) for each collection interval, not as repeatedly
-sent cumulative totals.
+Usage exports to AMIE are sent as `AdjustmentUsageRecord` records with
+`adjustment_type=debit`, one per user × namespace × calendar day, sourced from
+ClickHouse. `cpu_used_current` and `cpu_used_interval` are always `0` in the
+snapshot because CPU is not tracked through ClickHouse; only GPU hours are
+reported to AMIE.
 
 ## API Documentation
 
@@ -139,7 +154,15 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `postgresql://nrp:nrp@localhost:5432/nrp_aime` | PostgreSQL connection string |
-| `PROMETHEUS_URL` | `https://prometheus.nrp-nautilus.io` | NRP Prometheus endpoint |
+| `PROMETHEUS_URL` | `https://prometheus.nrp-nautilus.io` | NRP Prometheus endpoint (live display only, not used for AMIE export) |
+| `CLICKHOUSE_HOST` | `` | ClickHouse hostname — leave blank to disable GPU accounting queries |
+| `CLICKHOUSE_PORT` | `8443` | ClickHouse HTTPS port |
+| `CLICKHOUSE_USER` | `default` | ClickHouse username |
+| `CLICKHOUSE_PASSWORD` | `` | ClickHouse password |
+| `CLICKHOUSE_DATABASE` | `access_accounting` | ClickHouse accounting database |
+| `CLICKHOUSE_TABLE` | `cluster_namespace_usage_daily` | ClickHouse daily usage table |
+| `CLICKHOUSE_SECURE` | `true` | Use TLS for ClickHouse connection |
+| `AMIE_GPU_RESOURCE_NAME` | `` | AMIE resource string for GPU usage records — must match the resource registered in AMIE; falls back to `Project.resource_type` if blank |
 | `AMIE_SITE_NAME` | `NRP` | Site name for AMIE client |
 | `AMIE_SITE_NAMES` | `` | Optional comma-separated AMIE site names to poll one-by-one (for example `NRP,ACCESS`) |
 | `AMIE_API_KEY` | `` | API key for AMIE client |

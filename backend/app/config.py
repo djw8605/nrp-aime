@@ -9,8 +9,21 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql://nrp:nrp@localhost:5432/nrp_aime"
 
-    # Prometheus
+    # Prometheus (used for live usage display in the API)
     prometheus_url: str = "https://prometheus.nrp-nautilus.io"
+
+    # ClickHouse accounting database
+    clickhouse_host: str = ""
+    clickhouse_port: int = 8443
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "access_accounting"
+    clickhouse_table: str = "cluster_namespace_usage_daily"
+    clickhouse_secure: bool = True
+
+    # GPU resource name sent to AMIE Usage API — must match the resource registered in AMIE.
+    # Falls back to Project.resource_type when blank.
+    amie_gpu_resource_name: str = ""
 
     # AIME / AMIE
     amie_site_name: str = "NRP"

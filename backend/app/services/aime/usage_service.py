@@ -1,9 +1,17 @@
-"""AMIE Usage API export service."""
+"""AMIE Usage API export service.
 
+Usage data is sourced from ClickHouse (``cluster_namespace_usage_daily``).
+One AMIE adjustment-debit record is sent per user × namespace × calendar day,
+identified by the user's CILogon subject ID (``created_by`` in ClickHouse,
+stored as ``User.remote_site_login`` in the NRP database).
+"""
+
+from __future__ import annotations
+
+import hashlib
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from math import isfinite
 
 from amieclient import UsageClient
 from amieclient.usage import AdjustmentUsageRecord
@@ -13,14 +21,14 @@ from app.config import settings
 from app.models.amie_usage_export import AMIEUsageExport
 from app.models.project import Project
 from app.models.project_usage_snapshot import ProjectUsageSnapshot
-from app.schemas.project import ProjectUsage
-from app.services.prometheus.service import PrometheusService
+from app.models.user import User
+from app.services.clickhouse.service import ClickHouseUsageService, GpuUsageRow
 
 logger = logging.getLogger(__name__)
 
 
 class AMIEUsageService:
-    """Builds and exports usage records to AMIE's usage endpoint."""
+    """Collects GPU usage from ClickHouse and exports records to AMIE."""
 
     def __init__(
         self,
@@ -35,7 +43,11 @@ class AMIEUsageService:
         self.gpu_charge_factor = Decimal(str(settings.amie_usage_gpu_charge_factor))
         self.default_username = settings.amie_usage_default_username
         self.interval_minutes = max(1, settings.amie_usage_interval_minutes)
-        self.prometheus = PrometheusService()
+        self.clickhouse = ClickHouseUsageService()
+
+    # ------------------------------------------------------------------
+    # Interval helpers
+    # ------------------------------------------------------------------
 
     def _current_interval(self) -> tuple[datetime, datetime]:
         """Return the last completed interval window in UTC."""
@@ -48,35 +60,58 @@ class AMIEUsageService:
         interval_start = interval_end - timedelta(seconds=interval_seconds)
         return interval_start, interval_end
 
-    def _pick_username(self, project: Project) -> str:
-        # Prefer an explicit AMIE/remote login from project membership.
-        for pu in project.project_users:
-            if pu.remote_site_login:
+    def _date_range(
+        self, interval_start: datetime, interval_end: datetime
+    ) -> tuple[date, date]:
+        """Convert an interval window to an inclusive ClickHouse date range.
+
+        ``interval_end`` is typically midnight UTC (time == 00:00:00), in which
+        case the last full day of data ends at ``interval_end − 1 second``.
+        """
+        date_from = interval_start.date()
+        date_to = (interval_end - timedelta(seconds=1)).date()
+        return date_from, date_to
+
+    # ------------------------------------------------------------------
+    # Username resolution
+    # ------------------------------------------------------------------
+
+    def _pick_username(self, user: User, project: Project) -> str:
+        """Return the best available AMIE username for a user in a project.
+
+        Priority:
+        1. ``ProjectUser.remote_site_login`` — the HPC/site login registered
+           with AMIE for this membership.
+        2. ``user.person_id`` — AMIE person identifier.
+        3. Local part of ``user.email``.
+        4. Configured default username.
+        """
+        for pu in user.project_users:
+            if pu.project_id == project.id and pu.remote_site_login:
                 return pu.remote_site_login
-            if pu.user.remote_site_login:
-                return pu.user.remote_site_login
-        for pu in project.project_users:
-            if pu.user.email and "@" in pu.user.email:
-                return pu.user.email.split("@", 1)[0]
-            if pu.user.person_id:
-                return pu.user.person_id
+        if user.person_id:
+            return user.person_id
+        if user.email and "@" in user.email:
+            return user.email.split("@", 1)[0]
         return self.default_username
 
-    def _compute_charge(self, project_usage) -> Decimal:
-        if not isfinite(project_usage.cpu_used) or not isfinite(project_usage.gpu_used):
-            return Decimal("0")
-        cpu = Decimal(str(project_usage.cpu_used))
-        gpu = Decimal(str(project_usage.gpu_used))
-        return (cpu + (gpu * self.gpu_charge_factor)).quantize(Decimal("0.000001"))
+    # ------------------------------------------------------------------
+    # Record ID
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _decimal_or_zero(value: float) -> Decimal:
-        if not isfinite(value):
-            return Decimal("0")
-        return Decimal(str(value))
+    def _local_record_id(project: Project, cilogon_id: str, usage_date: date) -> str:
+        """Generate a stable, unique local record ID for one user-day export.
 
-    def _local_record_id(self, project: Project, interval_start: datetime) -> str:
-        return f"nrp-usage-{project.id}-{interval_start.strftime('%Y%m%d%H%M')}"
+        The CILogon ID may be a long URL so it is hashed to 12 hex chars.
+        """
+        cilogon_hash = hashlib.sha256(cilogon_id.encode()).hexdigest()[:12]
+        date_str = usage_date.strftime("%Y%m%d")
+        return f"nrp-gpu-{project.id}-{date_str}-{cilogon_hash}"
+
+    # ------------------------------------------------------------------
+    # Deduplication
+    # ------------------------------------------------------------------
 
     def _already_exported(self, db: Session, local_record_id: str) -> bool:
         return (
@@ -86,36 +121,22 @@ class AMIEUsageService:
             is not None
         )
 
-    def _build_record(
-        self,
-        *,
-        project: Project,
-        username: str,
-        charge: Decimal,
-        interval_start: datetime,
-        local_record_id: str,
-    ) -> AdjustmentUsageRecord:
-        return AdjustmentUsageRecord(
-            adjustment_type="debit",
-            charge=str(charge),
-            start_time=interval_start.isoformat(),
-            local_project_id=project.site_project_id,
-            local_record_id=local_record_id,
-            resource=project.resource_type,
-            username=username,
-            comment=f"NRP periodic usage export for interval starting {interval_start.isoformat()}",
-            local_reference=local_record_id,
-        )
+    # ------------------------------------------------------------------
+    # Snapshot management
+    # ------------------------------------------------------------------
 
     def _upsert_usage_snapshot(
         self,
         db: Session,
         *,
         project: Project,
-        current_usage: ProjectUsage,
-        interval_usage: ProjectUsage,
+        gpu_hours_interval: Decimal,
         interval_charge: Decimal,
-    ) -> ProjectUsageSnapshot:
+        sent_charge: Decimal,
+        now: datetime,
+        mark_sent: bool,
+    ) -> None:
+        """Create or update the ``ProjectUsageSnapshot`` for *project*."""
         snapshot = (
             db.query(ProjectUsageSnapshot)
             .filter(ProjectUsageSnapshot.project_id == project.id)
@@ -126,79 +147,75 @@ class AMIEUsageService:
             db.add(snapshot)
 
         snapshot.interval_minutes = self.interval_minutes
-        snapshot.cpu_used_current = self._decimal_or_zero(current_usage.cpu_used)
-        snapshot.gpu_used_current = self._decimal_or_zero(current_usage.gpu_used)
-        snapshot.cpu_used_interval = self._decimal_or_zero(interval_usage.cpu_used)
-        snapshot.gpu_used_interval = self._decimal_or_zero(interval_usage.gpu_used)
-        snapshot.charge_interval = interval_charge
-        snapshot.last_collected_at = datetime.now(UTC)
-        return snapshot
+        # CPU is not tracked through ClickHouse.
+        snapshot.cpu_used_current = Decimal("0")
+        snapshot.cpu_used_interval = Decimal("0")
+        # GPU hours for the interval are surfaced as both current and interval.
+        snapshot.gpu_used_current = gpu_hours_interval.quantize(Decimal("0.000001"))
+        snapshot.gpu_used_interval = gpu_hours_interval.quantize(Decimal("0.000001"))
+        snapshot.charge_interval = interval_charge.quantize(Decimal("0.000001"))
+        snapshot.last_collected_at = now
+        if mark_sent:
+            snapshot.last_sent_at = now
+            snapshot.total_charge_sent = (
+                (snapshot.total_charge_sent or Decimal("0")) + sent_charge
+            ).quantize(Decimal("0.000001"))
+        db.commit()
 
-    def send_project_usage(
+    # ------------------------------------------------------------------
+    # Per-row export
+    # ------------------------------------------------------------------
+
+    def _export_row(
         self,
         db: Session,
         *,
+        row: GpuUsageRow,
         project: Project,
-        interval_start: datetime,
-        interval_end: datetime,
-        enable_send: bool,
-    ) -> str:
-        """Send one usage adjustment record for a project."""
-        current_usage = self.prometheus.get_usage(project)
-        interval_usage = self.prometheus.get_interval_usage(
-            project, self.interval_minutes, interval_end=interval_end
-        )
-        charge = self._compute_charge(interval_usage)
+        username: str,
+        resource: str,
+        local_record_id: str,
+    ) -> tuple[str, Decimal]:
+        """Send one adjustment-debit record to AMIE for a single ClickHouse row.
 
-        snapshot = self._upsert_usage_snapshot(
-            db,
-            project=project,
-            current_usage=current_usage,
-            interval_usage=interval_usage,
-            interval_charge=charge,
-        )
-        # Persist usage snapshots even if AMIE export is disabled or fails.
-        db.commit()
-
-        if not enable_send:
-            logger.debug(
-                "Collected usage snapshot for project %s (API key missing; export disabled)",
-                project.id,
-            )
-            return "updated_only"
-
-        if not project.site_project_id:
-            logger.debug("Skipping project %s: no site_project_id", project.id)
-            return "skipped"
-        if not project.resource_type:
-            logger.debug("Skipping project %s: no resource_type", project.id)
-            return "skipped"
-
-        local_record_id = self._local_record_id(project, interval_start)
-        if self._already_exported(db, local_record_id):
-            logger.debug("Skipping project %s: usage record already exported", project.id)
-            return "skipped"
+        Returns ``(status, charge)`` where *status* is ``"sent"``, ``"failed"``,
+        or ``"skipped"`` and *charge* is the computed allocation debit.
+        """
+        charge = (row.gpu_hours * self.gpu_charge_factor).quantize(Decimal("0.000001"))
         if charge <= Decimal("0"):
-            logger.debug("Skipping project %s: computed charge is zero", project.id)
-            return "skipped"
+            logger.debug(
+                "Skipping zero-charge row local_record_id=%s", local_record_id
+            )
+            return "skipped", Decimal("0")
 
-        username = self._pick_username(project)
-        record = self._build_record(
-            project=project,
-            username=username,
-            charge=charge,
-            interval_start=interval_start,
+        interval_start = datetime(
+            row.date.year, row.date.month, row.date.day, tzinfo=UTC
+        )
+        interval_end = interval_start + timedelta(days=1)
+
+        record = AdjustmentUsageRecord(
+            adjustment_type="debit",
+            charge=str(charge),
+            start_time=interval_start.isoformat(),
+            local_project_id=project.site_project_id,
             local_record_id=local_record_id,
+            resource=resource,
+            username=username,
+            comment=(
+                f"NRP GPU usage export for {row.date.isoformat()} "
+                f"namespace={row.namespace}"
+            ),
+            local_reference=local_record_id,
         )
 
         logger.debug(
-            "Sending AMIE usage record local_record_id=%s project_id=%s resource=%s project_code=%s charge=%s username=%s",
+            "Sending AMIE usage record local_record_id=%s namespace=%s "
+            "cilogon_id=%s username=%s charge=%s",
             local_record_id,
-            project.id,
-            project.resource_type,
-            project.site_project_id,
-            str(charge),
+            row.namespace,
+            row.created_by,
             username,
+            charge,
         )
 
         with UsageClient(
@@ -207,11 +224,7 @@ class AMIEUsageService:
             responses = usage_client.send(record)
 
         validation_failed = any(r.failed_records for r in responses)
-        snapshot.last_sent_at = datetime.now(UTC)
-        if not validation_failed:
-            snapshot.total_charge_sent = (
-                (snapshot.total_charge_sent or Decimal("0")) + charge
-            ).quantize(Decimal("0.000001"))
+        status = "failed" if validation_failed else "sent"
 
         export_row = AMIEUsageExport(
             project_id=project.id,
@@ -221,9 +234,9 @@ class AMIEUsageService:
             interval_start=interval_start,
             interval_end=interval_end,
             charge=charge,
-            resource=project.resource_type,
+            resource=resource,
             username=username,
-            status="failed" if validation_failed else "sent",
+            status=status,
             response_payload={
                 "responses": [
                     {
@@ -236,52 +249,187 @@ class AMIEUsageService:
         )
         db.add(export_row)
         db.commit()
-        return "failed" if validation_failed else "sent"
+        return status, charge
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     def send_all_projects_usage(self, db: Session) -> dict[str, int]:
-        """Collect usage snapshots and send interval deltas to AMIE when enabled."""
+        """Query ClickHouse for the last interval and send AMIE usage records.
+
+        For each ``(namespace, created_by, date)`` row returned by ClickHouse:
+
+        1. Resolve the ``Project`` via ``kubernetes_namespace``.
+        2. Resolve the ``User`` via ``User.remote_site_login == created_by``
+           (the CILogon subject ID acquired during the OAuth invite flow).
+        3. Determine the AMIE username from the user's ``ProjectUser``
+           membership (``ProjectUser.remote_site_login``).
+        4. Send one adjustment-debit record per row (idempotent via
+           ``local_record_id`` uniqueness in ``amie_usage_exports``).
+        5. Update each project's ``ProjectUsageSnapshot`` with aggregate GPU
+           hours and charges for the interval.
+        """
         enable_send = bool(self.api_key)
         if not enable_send:
             logger.warning(
-                "AMIE_API_KEY is not configured; collecting usage snapshots without export."
+                "AMIE_API_KEY is not configured; collecting usage snapshots "
+                "without AMIE export."
             )
 
         interval_start, interval_end = self._current_interval()
-        updated = 0
-        sent = 0
-        failed = 0
-        skipped = 0
+        date_from, date_to = self._date_range(interval_start, interval_end)
+        now = datetime.now(UTC)
 
-        projects = db.query(Project).all()
-        for project in projects:
+        usage_rows = self.clickhouse.get_gpu_usage(date_from, date_to)
+
+        # namespace → Project index
+        namespace_to_project: dict[str, Project] = {
+            p.kubernetes_namespace: p
+            for p in db.query(Project).all()
+            if p.kubernetes_namespace
+        }
+        # project.id → Project (for snapshot updates)
+        id_to_project: dict = {p.id: p for p in namespace_to_project.values()}
+
+        counters = {"updated": 0, "sent": 0, "failed": 0, "skipped": 0}
+
+        # project.id → (total_gpu_hours, total_charge, sent_charge)
+        project_totals: dict = {}
+
+        for row in usage_rows:
+            project = namespace_to_project.get(row.namespace)
+            if project is None:
+                logger.warning(
+                    "No project found for namespace=%s; skipping row.", row.namespace
+                )
+                counters["skipped"] += 1
+                continue
+
+            if not project.site_project_id:
+                logger.debug(
+                    "Project %s has no site_project_id; skipping namespace=%s.",
+                    project.id,
+                    row.namespace,
+                )
+                counters["skipped"] += 1
+                continue
+
+            resource = settings.amie_gpu_resource_name or project.resource_type or ""
+            if not resource:
+                logger.debug(
+                    "No AMIE resource name configured for project %s; skipping.",
+                    project.id,
+                )
+                counters["skipped"] += 1
+                continue
+
+            user = (
+                db.query(User)
+                .filter(User.remote_site_login == row.created_by)
+                .first()
+            )
+            if user is None:
+                logger.warning(
+                    "No user found for cilogon_id=%s namespace=%s; skipping.",
+                    row.created_by,
+                    row.namespace,
+                )
+                counters["skipped"] += 1
+                continue
+
+            local_record_id = self._local_record_id(project, row.created_by, row.date)
+
+            if self._already_exported(db, local_record_id):
+                logger.debug(
+                    "Already exported local_record_id=%s; skipping.", local_record_id
+                )
+                counters["skipped"] += 1
+                continue
+
+            username = self._pick_username(user, project)
+            row_charge = (row.gpu_hours * self.gpu_charge_factor).quantize(
+                Decimal("0.000001")
+            )
+
+            # Accumulate totals for snapshot update regardless of send outcome
+            pid = project.id
+            gpu_acc, charge_acc, sent_acc = project_totals.get(
+                pid, (Decimal("0"), Decimal("0"), Decimal("0"))
+            )
+            project_totals[pid] = (
+                gpu_acc + row.gpu_hours,
+                charge_acc + row_charge,
+                sent_acc,
+            )
+
+            if not enable_send:
+                counters["updated"] += 1
+                counters["skipped"] += 1
+                continue
+
             try:
-                result = self.send_project_usage(
+                status, sent_charge = self._export_row(
+                    db,
+                    row=row,
+                    project=project,
+                    username=username,
+                    resource=resource,
+                    local_record_id=local_record_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed exporting AMIE usage row local_record_id=%s",
+                    local_record_id,
+                )
+                db.rollback()
+                counters["failed"] += 1
+                continue
+
+            counters["updated"] += 1
+            if status == "sent":
+                counters["sent"] += 1
+                # Add this row's charge to the project's sent total
+                gpu_acc, charge_acc, sent_acc = project_totals[pid]
+                project_totals[pid] = (gpu_acc, charge_acc, sent_acc + sent_charge)
+            elif status == "failed":
+                counters["failed"] += 1
+            else:
+                counters["skipped"] += 1
+
+        # Update ProjectUsageSnapshot for every project that had ClickHouse rows
+        for project_id, (gpu_hours, interval_charge, sent_charge) in project_totals.items():
+            project = id_to_project.get(project_id)
+            if project is None:
+                project = db.query(Project).filter(Project.id == project_id).first()
+            if project is None:
+                continue
+            try:
+                self._upsert_usage_snapshot(
                     db,
                     project=project,
-                    interval_start=interval_start,
-                    interval_end=interval_end,
-                    enable_send=enable_send,
+                    gpu_hours_interval=gpu_hours,
+                    interval_charge=interval_charge,
+                    sent_charge=sent_charge,
+                    now=now,
+                    mark_sent=enable_send and sent_charge > Decimal("0"),
                 )
-                updated += 1
-                if result == "sent":
-                    sent += 1
-                elif result == "failed":
-                    failed += 1
-                else:
-                    skipped += 1
-            except Exception:  # noqa: BLE001
-                failed += 1
-                db.rollback()
+            except Exception:
                 logger.exception(
-                    "Failed sending AMIE usage for project %s", project.id
+                    "Failed updating usage snapshot for project %s", project_id
                 )
+                db.rollback()
 
         logger.info(
-            "AMIE usage export cycle complete interval_start=%s updated=%s sent=%s failed=%s skipped=%s",
+            "AMIE usage export cycle complete "
+            "interval_start=%s date_from=%s date_to=%s "
+            "updated=%d sent=%d failed=%d skipped=%d",
             interval_start.isoformat(),
-            updated,
-            sent,
-            failed,
-            skipped,
+            date_from,
+            date_to,
+            counters["updated"],
+            counters["sent"],
+            counters["failed"],
+            counters["skipped"],
         )
-        return {"updated": updated, "sent": sent, "failed": failed, "skipped": skipped}
+        return counters

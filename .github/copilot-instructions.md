@@ -60,6 +60,7 @@ received → email_invite_sent → user_completed_oauth → aime_notified   (reg
 - `provisioning_state` is a legacy column kept for backwards compat — `lifecycle_state` is the source of truth.
 - `amieclient` is installed `--no-deps` to avoid its stale `python-dateutil<2.7` constraint. Do not add it to `requirements.txt` with deps.
 - Migrations are numbered `NNNN_slug.py`. Always inspect autogenerate output before committing.
+- **GPU usage export** (`services/aime/usage_service.py`) sources data from **ClickHouse** via `services/clickhouse/service.py`. Prometheus is only used for the live display endpoint. `User.remote_site_login` holds the CILogon subject ID matched against `created_by` in ClickHouse; `ProjectUser.remote_site_login` is the AMIE `Username`.
 
 ### Vue / JavaScript
 - All components use `<script setup>` Composition API — no Options API.
@@ -119,6 +120,14 @@ All settings are in `backend/app/config.py` (Pydantic `Settings`, loaded from `.
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `AMIE_*` | AMIE client — site names, API key, usage interval |
+| `CLICKHOUSE_HOST` | ClickHouse hostname — blank disables GPU accounting |
+| `CLICKHOUSE_PORT` | ClickHouse port (default `8443`) |
+| `CLICKHOUSE_USER` | ClickHouse username (default `default`) |
+| `CLICKHOUSE_PASSWORD` | ClickHouse password |
+| `CLICKHOUSE_DATABASE` | ClickHouse database (default `access_accounting`) |
+| `CLICKHOUSE_TABLE` | ClickHouse table (default `cluster_namespace_usage_daily`) |
+| `CLICKHOUSE_SECURE` | Use TLS (default `true`) |
+| `AMIE_GPU_RESOURCE_NAME` | AMIE resource string for GPU records — must match AMIE registration; falls back to `Project.resource_type` |
 | `PORTAL_RPC_*` | NRP portal JSON-RPC — URL, token, namespace |
 | `AUTH_ADMIN_*` | Admin portal OIDC |
 | `AUTHENTIK_*` | Invite onboarding OIDC |

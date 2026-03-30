@@ -24,7 +24,8 @@ It currently:
 | Backend API | FastAPI (Python) |
 | Database | PostgreSQL + SQLAlchemy (ORM) + Alembic (migrations) |
 | Allocation ingestion | AMIE client (`amieclient`) |
-| Usage metrics | Prometheus (NRP endpoint) |
+| Usage accounting | ClickHouse (`access_accounting` database) |
+| Usage metrics (live display) | Prometheus (NRP endpoint) |
 | Frontend | Vue 3 + PrimeVue + TailwindCSS + Axios |
 | Container orchestration | Docker Compose + Kubernetes (Kustomize) |
 
@@ -41,10 +42,11 @@ nrp-aime/
 │   │   ├── schemas/          # Pydantic request/response schemas
 │   │   ├── api/              # FastAPI route handlers
 │   │   └── services/
-│   │       ├── aime/         # AMIE packet ingestion
+│   │       ├── aime/         # AMIE packet ingestion + usage export
+│   │       ├── clickhouse/   # ClickHouse accounting queries (GPU usage)
 │   │       ├── invites/      # Magic-link invite + callback flow
 │   │       ├── email/        # Invite email template + sending stub
-│   │       ├── prometheus/   # NRP metrics queries
+│   │       ├── prometheus/   # NRP metrics queries (live display only)
 │   │       ├── authentik/    # Authentik group/login integration (stubbed API calls)
 │   │       └── kubernetes/   # Portal JSON-RPC namespace/user provisioning
 │   ├── migrations/           # Alembic migrations
@@ -111,6 +113,11 @@ pip install -r requirements.txt
 export DATABASE_URL=postgresql://nrp:nrp@localhost:5432/nrp_aime
 export PROMETHEUS_URL=https://prometheus.nrp-nautilus.io
 
+# ClickHouse accounting (required for GPU usage export)
+export CLICKHOUSE_HOST=clickhouse.example.org
+export CLICKHOUSE_PASSWORD=secret
+export AMIE_GPU_RESOURCE_NAME=nrp.example.access-ci.org
+
 # Run migrations
 alembic upgrade head
 
@@ -156,7 +163,15 @@ npm run dev
 | Variable | Default | Description |
 |---|---|---|
 | `DATABASE_URL` | `postgresql://nrp:nrp@localhost:5432/nrp_aime` | PostgreSQL connection string |
-| `PROMETHEUS_URL` | `https://prometheus.nrp-nautilus.io` | NRP Prometheus endpoint |
+| `PROMETHEUS_URL` | `https://prometheus.nrp-nautilus.io` | NRP Prometheus endpoint (live usage display) |
+| `CLICKHOUSE_HOST` | `` | ClickHouse hostname for GPU accounting queries |
+| `CLICKHOUSE_PORT` | `8443` | ClickHouse HTTPS port |
+| `CLICKHOUSE_USER` | `default` | ClickHouse username |
+| `CLICKHOUSE_PASSWORD` | `` | ClickHouse password |
+| `CLICKHOUSE_DATABASE` | `access_accounting` | ClickHouse accounting database name |
+| `CLICKHOUSE_TABLE` | `cluster_namespace_usage_daily` | ClickHouse daily usage table name |
+| `CLICKHOUSE_SECURE` | `true` | Use TLS for ClickHouse connection |
+| `AMIE_GPU_RESOURCE_NAME` | `` | AMIE resource string for GPU records — must match the resource registered in AMIE; falls back to `Project.resource_type` if blank |
 | `AMIE_SITE_NAME` | `NRP` | Site name for AMIE client |
 | `AMIE_SITE_NAMES` | `` | Optional comma-separated AMIE site names to poll one-by-one (for example `NRP,ACCESS`) |
 | `AMIE_API_KEY` | `` | API key for AMIE client |
@@ -209,8 +224,9 @@ See the full backend configuration reference in [backend/README.md](/Users/derek
 
 - The **PostgreSQL database** acts as the central interface between the frontend dashboard and the backend services.
 - The **AIME worker** (`workers/aime_worker.py`) polls one or more AMIE sites (`AMIE_SITE_NAMES`) each cycle (incoming + outgoing queues), logs packet receipt, and persists normalized Project + User lifecycle records tagged with `source_site_name`, `allocated_resource`, and `service_units_*`.
-- The **Usage worker** (`workers/usage_worker.py`) sends periodic usage records to the AMIE Usage API using `amieclient.UsageClient`.
-- The **Prometheus service** queries namespace-scoped pod metrics to report CPU/GPU usage.
+- The **Usage worker** (`workers/usage_worker.py`) sends periodic usage records to the AMIE Usage API using `amieclient.UsageClient`. Usage data is sourced from ClickHouse (see below).
+- The **ClickHouse accounting service** (`services/clickhouse/service.py`) queries the `access_accounting.cluster_namespace_usage_daily` table for GPU hours, filtered to `resource = 'gpu'` and grouped per `(namespace, created_by, date)`. Each `created_by` value is a CILogon subject ID that is matched to a `User` record via `User.remote_site_login`. One AMIE adjustment-debit record is submitted per user × namespace × calendar day; records are idempotent via the `amie_usage_exports.local_record_id` uniqueness constraint.
+- The **Prometheus service** (`services/prometheus/service.py`) is used only for live GPU/CPU display in the project-detail API response — it is not part of the AMIE usage export pipeline.
 - The **Invite service** (`services/invites/service.py`) provides person-centric magic-link onboarding:
   - admin sends invite from person page
   - invite link opens portal landing page

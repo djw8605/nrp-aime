@@ -326,7 +326,13 @@ class AccountLifecycleService:
 
     @classmethod
     def _mapping_site_person_id(cls, value: dict[str, Any]) -> str | None:
-        for key in ("site_person_id", "SitePersonId", "SitePersonID"):
+        for key in (
+            "site_person_id",
+            "SitePersonId",
+            "SitePersonID",
+            "person_id",
+            "PersonID",
+        ):
             cleaned = cls._clean_scalar(value.get(key))
             if cleaned:
                 return cleaned

@@ -19,6 +19,8 @@ All changes go to the branch specified at session start (usually `claude/<slug>`
 - SQLite (used in tests) doesn't support `ALTER COLUMN` — keep migrations `op.add_column` / `op.drop_column` only; never rename columns in a single step.
 - `AUTH_DEV_BYPASS=true` skips admin auth in dev. It is set in `docker-compose.yml` — do not commit it to K8s config.
 - `[skip deploy]` in the commit message prevents the build-and-deploy workflow from firing.
+- **`User.remote_site_login` stores the CILogon subject ID** (not an HPC username). `ProjectUser.remote_site_login` stores the actual AMIE/HPC site login. Do not confuse them.
+- GPU usage for AMIE export comes from **ClickHouse** (`services/clickhouse/service.py`), not Prometheus. Prometheus is only used for the live display API. Set `CLICKHOUSE_HOST` to enable; leave blank to disable gracefully.
 
 ### Personal overrides
 Put per-developer notes, local paths, and experimental flags in `CLAUDE.local.md` (gitignored).

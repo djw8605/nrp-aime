@@ -113,9 +113,38 @@ kubectl kustomize deployment         # Preview manifests
 | **Lifecycle state** | `Project.lifecycle_state` — the single authoritative project state |
 | **Account state** | `ProjectUser.account_state` — per-user onboarding progression |
 | **Service Units** | Standardized allocation currency (CPU/GPU); debit/credit model |
+| **ClickHouse** | Time-series accounting DB — source of per-user GPU hours for AMIE export |
+| **CILogon ID** | OAuth subject ID stored in `User.remote_site_login`; matched against `created_by` in ClickHouse |
 | **Authentik** | Identity provider used for invite-based OAuth onboarding |
 | **Portal RPC** | NRP portal JSON-RPC endpoint for namespace/membership provisioning |
 | **SealedSecret** | Bitnami-encrypted K8s secret; commit the `.yaml`, never the plaintext |
+
+---
+
+## GPU Usage Export Pipeline
+
+GPU hours for AMIE reporting come from **ClickHouse**, not Prometheus. Prometheus is only used for the live display endpoint `GET /api/v1/projects/{id}/usage`.
+
+```
+ClickHouse: access_accounting.cluster_namespace_usage_daily
+  WHERE resource = 'gpu'
+  GROUP BY (namespace, created_by, date)
+       │                │
+       ▼                ▼
+  Project.kubernetes_namespace    User.remote_site_login   ← CILogon subject ID
+       │                │
+       └──── ProjectUser ────┘
+                  │
+          ProjectUser.remote_site_login  ← AMIE Username (HPC site login)
+                  │
+          AdjustmentUsageRecord (debit) → AMIE Usage API
+                  │
+          amie_usage_exports  ← idempotent; local_record_id = nrp-gpu-{project_id}-{YYYYMMDD}-{sha256(cilogon)[:12]}
+```
+
+**Identity field semantics** — do not confuse:
+- `User.remote_site_login` — CILogon subject ID (set during OAuth invite callback)
+- `ProjectUser.remote_site_login` — HPC/site login sent as AMIE `Username`
 
 ---
 
@@ -172,6 +201,8 @@ All config lives in `backend/app/config.py` as a Pydantic `Settings` class loade
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `AMIE_*` | AMIE client: site names, API key, usage interval |
+| `CLICKHOUSE_*` | ClickHouse accounting database connection (GPU usage source) |
+| `AMIE_GPU_RESOURCE_NAME` | AMIE resource string for GPU records — must match AMIE registration |
 | `PORTAL_RPC_*` | NRP portal JSON-RPC: URL, token, namespace |
 | `AUTH_ADMIN_*` | Admin portal OIDC (separate IdP from invite flow) |
 | `AUTHENTIK_*` | Invite onboarding OIDC via Authentik |
@@ -180,6 +211,8 @@ All config lives in `backend/app/config.py` as a Pydantic `Settings` class loade
 Multi-site: set `AMIE_SITE_NAMES=NRP,ACCESS` (comma-separated). `AMIE_SITE_NAME` is used as the default/first site.
 
 Dev shortcuts: `AUTH_DEV_BYPASS=true`, `AUTHENTIK_STUB_AUTO_ACCOUNT_MADE=true`.
+
+ClickHouse key vars: `CLICKHOUSE_HOST` (blank = GPU accounting disabled), `CLICKHOUSE_PORT` (default `8443`), `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` (default `access_accounting`), `CLICKHOUSE_TABLE` (default `cluster_namespace_usage_daily`), `CLICKHOUSE_SECURE` (default `true`).
 
 ---
 
