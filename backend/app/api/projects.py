@@ -15,6 +15,8 @@ from app.models.amie_allocation_packet import AMIEAllocationPacket
 from app.models.amie_lifecycle_packet import AMIELifecyclePacket
 from app.models.amie_packet import AMIEPacket
 from app.models.project import Project
+from app.models.project_invite import ProjectInvite
+from app.models.project_invite_event import ProjectInviteEvent
 from app.models.project_usage_snapshot import ProjectUsageSnapshot
 from app.models.user import User
 from app.models.project_user import ProjectUser
@@ -921,6 +923,42 @@ def debug_provision_project(
     }
 
 
+def _create_mock_invite_for_confirmation(
+    db: Session,
+    user: User,
+    project_user: ProjectUser,
+    project: Project,
+    now: datetime,
+) -> None:
+    """Create a mock ProjectInvite record to satisfy AIME confirmation checks.
+
+    The mock OAuth flow bypasses the normal email invite process, so we need
+    to create the invite record and event that _invite_completion_allows_confirmation()
+    expects in order to send the notify_account_create packet back to AIME.
+    """
+    invite = ProjectInvite(
+        project_id=project.id,
+        user_id=user.id,
+        email=user.email or "",
+        token_hash="mock-oauth-bypass",
+        status=ProjectInvite.STATUS_USED,
+        expires_at=now,
+        used_at=now,
+        invited_by="mock-oauth-debug",
+    )
+    db.add(invite)
+    db.flush()
+
+    event = ProjectInviteEvent(
+        invite_id=invite.id,
+        event_type="invite_email_dispatched",
+        event_status="info",
+        message="Mock OAuth bypass: email dispatched",
+        event_payload={"mock": True, "debug": True},
+    )
+    db.add(event)
+
+
 @router.post("/{project_id}/users/{project_user_id}/debug-complete-account")
 def debug_complete_user_account(
     project_id: uuid.UUID,
@@ -977,6 +1015,7 @@ def debug_complete_user_account(
     if pu.account_state == ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT:
         pu.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
         pu.account_made_at = now
+        _create_mock_invite_for_confirmation(db, user, pu, project, now)
 
     # If user is PI, advance project past waiting_pi_account.
     is_pi = str(pu.role or "").strip().lower() == "pi"
