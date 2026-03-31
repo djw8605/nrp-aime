@@ -333,12 +333,15 @@ class TestOutgoingFlagParsing(unittest.TestCase):
     def _ingest_with_flag(self, outgoing_flag: Any, packet_rec_id: int) -> AMIEPacket:
         packet = request_project_create_packet(packet_rec_id=packet_rec_id)
         packet["header"]["outgoing_flag"] = outgoing_flag
-        self.service.ingest_packet(self.db, packet)
-        return (
+        result = self.service.ingest_packet(self.db, packet)
+        self.assertTrue(result.handled, f"Packet {packet_rec_id} was not handled")
+        row = (
             self.db.query(AMIEPacket)
             .filter(AMIEPacket.packet_rec_id == packet_rec_id)
             .one()
         )
+        self.assertEqual(row.processing_status, AMIEPacket.PROCESSING_STATUS_PROCESSED)
+        return row
 
     def test_string_zero_is_not_outgoing(self) -> None:
         row = self._ingest_with_flag("0", 9001)
