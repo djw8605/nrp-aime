@@ -17,6 +17,7 @@ export function fetchPacketLogs(params = {}) {
     q = '',
     status = '',
     direction = '',
+    threaded = false,
   } = params
 
   return apiClient
@@ -29,6 +30,7 @@ export function fetchPacketLogs(params = {}) {
         q: q || undefined,
         status: status || undefined,
         direction: direction || undefined,
+        threaded: threaded || undefined,
       },
     })
     .then((res) => res.data)

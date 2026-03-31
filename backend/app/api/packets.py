@@ -169,6 +169,10 @@ def list_packet_logs(
         default=None,
         description="Filter by direction: 'incoming', 'outgoing', or omit for all",
     ),
+    threaded: bool = Query(
+        default=False,
+        description="When true, sort by trans_rec_id to group related packets",
+    ),
 ) -> PacketLogPage:
     """Return packet logs with paging, sorting, and search."""
     query = db.query(AMIEPacket)
@@ -201,29 +205,42 @@ def list_packet_logs(
             )
         )
 
-    sort_column_map = {
-        "received_at": AMIEPacket.created_at,
-        "processed_at": AMIEPacket.processed_at,
-        "packet_type": AMIEPacket.packet_type,
-        "packet_rec_id": AMIEPacket.packet_rec_id,
-        "trans_rec_id": AMIEPacket.trans_rec_id,
-        "transaction_id": AMIEPacket.transaction_id,
-        "processing_status": AMIEPacket.processing_status,
-    }
-    sort_column = sort_column_map.get(sort_by, AMIEPacket.created_at)
-    order_clause = (
-        sort_column.asc().nullslast()
-        if sort_order == "asc"
-        else sort_column.desc().nullslast()
-    )
-
     total = query.count()
-    rows = (
-        query.order_by(order_clause, AMIEPacket.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
+
+    if threaded:
+        # Group related packets by sorting on trans_rec_id first, then
+        # chronologically within each group.
+        rows = (
+            query.order_by(
+                AMIEPacket.trans_rec_id.desc().nullslast(),
+                AMIEPacket.created_at.asc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+    else:
+        sort_column_map = {
+            "received_at": AMIEPacket.created_at,
+            "processed_at": AMIEPacket.processed_at,
+            "packet_type": AMIEPacket.packet_type,
+            "packet_rec_id": AMIEPacket.packet_rec_id,
+            "trans_rec_id": AMIEPacket.trans_rec_id,
+            "transaction_id": AMIEPacket.transaction_id,
+            "processing_status": AMIEPacket.processing_status,
+        }
+        sort_column = sort_column_map.get(sort_by, AMIEPacket.created_at)
+        order_clause = (
+            sort_column.asc().nullslast()
+            if sort_order == "asc"
+            else sort_column.desc().nullslast()
+        )
+        rows = (
+            query.order_by(order_clause, AMIEPacket.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
 
     return PacketLogPage(
         items=[_to_read_model(row) for row in rows],
