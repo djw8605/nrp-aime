@@ -296,7 +296,7 @@ const displayPackets = computed(() => {
   const threadGroups = new Map()
   for (const pkt of items) {
     const key = pkt.trans_rec_id
-    if (key == null) continue
+    if (key === null || key === undefined) continue
     if (!threadGroups.has(key)) {
       threadGroups.set(key, [])
     }
@@ -318,7 +318,7 @@ const displayPackets = computed(() => {
 
   return items.map((pkt) => {
     const key = pkt.trans_rec_id
-    const group = key != null ? threadGroups.get(key) : null
+    const group = (key !== null && key !== undefined) ? threadGroups.get(key) : null
     if (!group || group.length <= 1) return pkt
 
     const isFirst = !seenFirst.has(key)

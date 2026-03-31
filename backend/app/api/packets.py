@@ -208,8 +208,9 @@ def list_packet_logs(
     total = query.count()
 
     if threaded:
-        # Group related packets by sorting on trans_rec_id first, then
-        # chronologically within each group.
+        # Newest transactions first (trans_rec_id DESC), but within each
+        # transaction show packets in chronological order (created_at ASC)
+        # so the conversation flow reads top-to-bottom.
         rows = (
             query.order_by(
                 AMIEPacket.trans_rec_id.desc().nullslast(),
