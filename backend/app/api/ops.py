@@ -46,6 +46,12 @@ def evaluate_alerts(db: Session = Depends(get_db)) -> dict:
     return ObservabilityService.evaluate_alerts(db)
 
 
+@router.get("/pending-actions")
+def get_pending_actions(db: Session = Depends(get_db)) -> dict:
+    """Return items that require admin attention."""
+    return ObservabilityService.pending_actions(db)
+
+
 @router.get("/outbound-packets")
 def list_outbound_packet_logs(
     db: Session = Depends(get_db),

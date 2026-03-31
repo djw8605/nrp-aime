@@ -27,6 +27,10 @@ export function evaluateAlerts() {
   return apiClient.post('/ops/alerts/evaluate').then((res) => res.data)
 }
 
+export function fetchPendingActions() {
+  return apiClient.get('/ops/pending-actions').then((res) => res.data)
+}
+
 export function fetchOutboundPacketLogs(limit = 200) {
   return apiClient
     .get('/ops/outbound-packets', { params: { limit } })

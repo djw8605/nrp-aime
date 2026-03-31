@@ -415,6 +415,108 @@ class ObservabilityService:
         return {"alerts_evaluated_at": now.isoformat(), "results": sent}
 
     @staticmethod
+    def pending_actions(db: Session) -> dict[str, Any]:
+        """Return items that require admin intervention.
+
+        Categories:
+        - projects_pending_provisioning: projects in received or
+          pending_provisioning state that need namespace provisioning.
+        - projects_provisioning_failed: projects in provisioning_failed
+          state that need admin to retry provisioning.
+        - users_pending_email_invite: project-users in received state
+          whose invite email has not been sent yet.
+        - users_pending_aime_notification: project-users in
+          user_completed_oauth state awaiting AIME confirmation.
+        """
+
+        # -- Projects needing provisioning ---------------------------------
+        provisioning_needed = (
+            db.query(Project)
+            .filter(
+                Project.lifecycle_state.in_([
+                    Project.LIFECYCLE_STATE_RECEIVED,
+                    Project.LIFECYCLE_STATE_PENDING_PROVISIONING,
+                ]),
+                Project.is_active.is_(True),
+            )
+            .order_by(Project.created_at.asc())
+            .all()
+        )
+
+        # -- Projects with provisioning failures --------------------------
+        provisioning_failed = (
+            db.query(Project)
+            .filter(
+                Project.lifecycle_state == Project.LIFECYCLE_STATE_PROVISIONING_FAILED,
+                Project.is_active.is_(True),
+            )
+            .order_by(Project.created_at.asc())
+            .all()
+        )
+
+        # -- Users awaiting email invite -----------------------------------
+        email_pending_rows = (
+            db.query(ProjectUser, User, Project)
+            .join(User, User.id == ProjectUser.user_id)
+            .join(Project, Project.id == ProjectUser.project_id)
+            .filter(
+                ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_RECEIVED,
+                ProjectUser.is_active.is_(True),
+            )
+            .order_by(ProjectUser.created_at.asc())
+            .all()
+        )
+
+        # -- Users awaiting AIME notification ------------------------------
+        aime_pending_rows = (
+            db.query(ProjectUser, User, Project)
+            .join(User, User.id == ProjectUser.user_id)
+            .join(Project, Project.id == ProjectUser.project_id)
+            .filter(
+                ProjectUser.account_state == ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+                ProjectUser.is_active.is_(True),
+            )
+            .order_by(ProjectUser.created_at.asc())
+            .all()
+        )
+
+        def _project_item(p: Project) -> dict[str, Any]:
+            return {
+                "project_id": str(p.id),
+                "project_name": p.name,
+                "lifecycle_state": p.lifecycle_state,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+
+        def _user_item(pu: ProjectUser, u: User, p: Project) -> dict[str, Any]:
+            return {
+                "project_user_id": str(pu.id),
+                "user_id": str(u.id),
+                "user_name": u.name,
+                "user_email": u.email,
+                "project_id": str(p.id),
+                "project_name": p.name,
+                "account_state": pu.account_state,
+                "created_at": pu.created_at.isoformat() if pu.created_at else None,
+            }
+
+        projects_prov = [_project_item(p) for p in provisioning_needed]
+        projects_failed = [_project_item(p) for p in provisioning_failed]
+        users_email = [_user_item(pu, u, p) for pu, u, p in email_pending_rows]
+        users_aime = [_user_item(pu, u, p) for pu, u, p in aime_pending_rows]
+
+        return {
+            "projects_pending_provisioning": projects_prov,
+            "projects_provisioning_failed": projects_failed,
+            "users_pending_email_invite": users_email,
+            "users_pending_aime_notification": users_aime,
+            "total_pending_count": (
+                len(projects_prov) + len(projects_failed)
+                + len(users_email) + len(users_aime)
+            ),
+        }
+
+    @staticmethod
     def project_user_packet_alert_fields(packet: AMIEPacket) -> tuple[str, str] | None:
         """Return alert classification for new user account request packets."""
         packet_type = (packet.packet_type or "").strip().lower()

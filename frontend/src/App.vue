@@ -17,8 +17,14 @@
       </template>
       <template #end>
         <div class="flex items-center gap-2">
-          <router-link :to="{ name: 'projects' }" class="no-underline">
+          <router-link :to="{ name: 'projects' }" class="relative no-underline">
             <Button label="Projects" size="small" text />
+            <Badge
+              v-if="pendingCount > 0"
+              :value="pendingCount"
+              severity="warn"
+              class="absolute -right-2 -top-2"
+            />
           </router-link>
           <router-link :to="{ name: 'people' }" class="no-underline">
             <Button
@@ -84,15 +90,18 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import Badge from 'primevue/badge'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Toolbar from 'primevue/toolbar'
 
 import { fetchAuthSession, logoutPortal } from './api/auth'
+import { fetchPendingActions } from './api/ops'
 import { clearAuthSessionCache } from './router'
 
 const route = useRoute()
 const session = ref({ authenticated: false })
+const pendingCount = ref(0)
 
 const isPublicInviteRoute = computed(() => Boolean(route.meta.publicRoute))
 
@@ -115,12 +124,22 @@ const principalLabel = computed(() => {
 async function refreshSession() {
   if (isPublicInviteRoute.value) {
     session.value = { authenticated: false }
+    pendingCount.value = 0
     return
   }
   try {
     session.value = await fetchAuthSession()
+    if (session.value?.authenticated) {
+      try {
+        const actions = await fetchPendingActions()
+        pendingCount.value = actions?.total_pending_count || 0
+      } catch {
+        pendingCount.value = 0
+      }
+    }
   } catch {
     session.value = { authenticated: false }
+    pendingCount.value = 0
   }
 }
 
