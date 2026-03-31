@@ -723,6 +723,18 @@ class AIMEService:
         return existing
 
     @staticmethod
+    def _parse_outgoing_flag(value: Any) -> bool | None:
+        """Coerce the AMIE ``outgoing_flag`` header to a Python bool.
+
+        The AMIE API may send this as a string (``"0"``/``"1"``),
+        integer, or boolean.  A bare ``bool("0")`` is ``True``, so we
+        must normalise explicitly.
+        """
+        if value is None:
+            return None
+        return str(value).strip().lower() in {"1", "true", "yes"}
+
+    @staticmethod
     def _parse_packet_timestamp(value: Any) -> datetime | None:
         if value is None or isinstance(value, datetime):
             return value
@@ -750,7 +762,7 @@ class AIMEService:
             existing.local_site_name = header.get("local_site_name")
             existing.remote_site_name = header.get("remote_site_name")
             existing.originating_site_name = header.get("originating_site_name")
-            existing.outgoing_flag = header.get("outgoing_flag")
+            existing.outgoing_flag = self._parse_outgoing_flag(header.get("outgoing_flag"))
             existing.transaction_state = header.get("transaction_state")
             existing.packet_state = header.get("packet_state")
             existing.client_state = header.get("client_state")
@@ -772,7 +784,7 @@ class AIMEService:
             local_site_name=header.get("local_site_name"),
             remote_site_name=header.get("remote_site_name"),
             originating_site_name=header.get("originating_site_name"),
-            outgoing_flag=header.get("outgoing_flag"),
+            outgoing_flag=self._parse_outgoing_flag(header.get("outgoing_flag")),
             transaction_state=header.get("transaction_state"),
             packet_state=header.get("packet_state"),
             client_state=header.get("client_state"),

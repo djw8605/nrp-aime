@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from app.models.amie_allocation_packet import AMIEAllocationPacket
@@ -308,6 +309,76 @@ class AIMEPacketProcessingTests(unittest.TestCase):
             second_call_count,
             "Re-ingesting a duplicate packet should not emit another alert",
         )
+
+
+class TestOutgoingFlagParsing(unittest.TestCase):
+    """Verify outgoing_flag is correctly coerced from various AMIE formats."""
+
+    def setUp(self) -> None:
+        self.engine, self.db = create_test_session()
+        self.alert_patch = patch("app.services.aime.service.AlertService.send")
+        self.mock_alert = self.alert_patch.start()
+        self.service = AIMEService(
+            site_name="NRP",
+            authentik_service=TrackingAuthentikService(),
+            kubernetes_service=TrackingKubernetesService(),
+            project_provisioning_service=TrackingProjectProvisioningService(),
+        )
+
+    def tearDown(self) -> None:
+        self.alert_patch.stop()
+        self.db.close()
+        self.engine.dispose()
+
+    def _ingest_with_flag(self, outgoing_flag: Any, packet_rec_id: int) -> AMIEPacket:
+        packet = request_project_create_packet(packet_rec_id=packet_rec_id)
+        packet["header"]["outgoing_flag"] = outgoing_flag
+        self.service.ingest_packet(self.db, packet)
+        return (
+            self.db.query(AMIEPacket)
+            .filter(AMIEPacket.packet_rec_id == packet_rec_id)
+            .one()
+        )
+
+    def test_string_zero_is_not_outgoing(self) -> None:
+        row = self._ingest_with_flag("0", 9001)
+        self.assertFalse(row.outgoing_flag)
+
+    def test_string_one_is_outgoing(self) -> None:
+        row = self._ingest_with_flag("1", 9002)
+        self.assertTrue(row.outgoing_flag)
+
+    def test_string_false_is_not_outgoing(self) -> None:
+        row = self._ingest_with_flag("false", 9003)
+        self.assertFalse(row.outgoing_flag)
+
+    def test_string_true_is_outgoing(self) -> None:
+        row = self._ingest_with_flag("true", 9004)
+        self.assertTrue(row.outgoing_flag)
+
+    def test_bool_false_is_not_outgoing(self) -> None:
+        row = self._ingest_with_flag(False, 9005)
+        self.assertFalse(row.outgoing_flag)
+
+    def test_bool_true_is_outgoing(self) -> None:
+        row = self._ingest_with_flag(True, 9006)
+        self.assertTrue(row.outgoing_flag)
+
+    def test_none_is_none(self) -> None:
+        row = self._ingest_with_flag(None, 9007)
+        self.assertIsNone(row.outgoing_flag)
+
+    def test_int_zero_is_not_outgoing(self) -> None:
+        row = self._ingest_with_flag(0, 9008)
+        self.assertFalse(row.outgoing_flag)
+
+    def test_int_one_is_outgoing(self) -> None:
+        row = self._ingest_with_flag(1, 9009)
+        self.assertTrue(row.outgoing_flag)
+
+    def test_string_yes_is_outgoing(self) -> None:
+        row = self._ingest_with_flag("yes", 9010)
+        self.assertTrue(row.outgoing_flag)
 
 
 if __name__ == "__main__":
