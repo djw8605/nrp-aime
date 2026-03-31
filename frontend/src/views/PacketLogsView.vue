@@ -7,13 +7,22 @@
           Full stream of received packets with processing status.
         </p>
       </div>
-      <Button
-        icon="pi pi-refresh"
-        label="Refresh"
-        :loading="loading"
-        severity="secondary"
-        @click="loadPackets"
-      />
+      <div class="flex items-center gap-2">
+        <Button
+          :icon="threaded ? 'pi pi-list' : 'pi pi-sitemap'"
+          :label="threaded ? 'Flat View' : 'Threaded View'"
+          :severity="threaded ? 'primary' : 'secondary'"
+          outlined
+          @click="toggleThreaded"
+        />
+        <Button
+          icon="pi pi-refresh"
+          label="Refresh"
+          :loading="loading"
+          severity="secondary"
+          @click="loadPackets"
+        />
+      </div>
     </div>
 
     <Message v-if="error" severity="error" :closable="false">
@@ -25,7 +34,7 @@
 
     <Card class="border border-slate-200/80 shadow-sm">
       <template #content>
-        <div class="mb-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto]">
+        <div class="mb-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto_auto]">
           <InputText
             v-model="searchInput"
             placeholder="Search packet type, IDs, status, or raw payload..."
@@ -41,6 +50,14 @@
             <option value="error">Error</option>
             <option value="received">Received</option>
           </select>
+          <select
+            v-model="directionFilter"
+            class="h-[42px] rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
+          >
+            <option value="">All directions</option>
+            <option value="incoming">Incoming</option>
+            <option value="outgoing">Outgoing</option>
+          </select>
           <div class="flex gap-2">
             <Button label="Apply" icon="pi pi-search" @click="applyFilters" />
             <Button label="Clear" severity="secondary" outlined @click="clearFilters" />
@@ -48,9 +65,9 @@
         </div>
 
         <DataTable
-          :value="packets"
+          :value="displayPackets"
           dataKey="id"
-          stripedRows
+          :stripedRows="!threaded"
           size="small"
           responsiveLayout="scroll"
           tableStyle="min-width: 78rem"
@@ -61,17 +78,37 @@
           :rowsPerPageOptions="[25, 50, 100, 200]"
           :first="firstRow"
           :loading="loading"
-          :sortField="sortBy"
-          :sortOrder="primeSortOrder"
+          :sortField="threaded ? null : sortBy"
+          :sortOrder="threaded ? null : primeSortOrder"
           @page="onPage"
           @sort="onSort"
         >
-          <Column field="received_at" header="Received" sortable>
+          <Column v-if="threaded" header="Thread" style="width: 3rem">
+            <template #body="{ data }">
+              <div
+                v-if="data._threadInfo"
+                class="flex items-center gap-1"
+              >
+                <span
+                  class="inline-block h-full w-1 rounded"
+                  :style="{ backgroundColor: data._threadInfo.color, minHeight: '24px' }"
+                ></span>
+                <span
+                  v-if="data._threadInfo.isFirst"
+                  class="text-xs font-semibold"
+                  :style="{ color: data._threadInfo.color }"
+                >
+                  {{ data._threadInfo.size }} pkt{{ data._threadInfo.size > 1 ? 's' : '' }}
+                </span>
+              </div>
+            </template>
+          </Column>
+          <Column field="received_at" header="Received" :sortable="!threaded">
             <template #body="{ data }">
               {{ formatDate(data.received_at) }}
             </template>
           </Column>
-          <Column field="processing_status" header="Status" sortable>
+          <Column field="processing_status" header="Status" :sortable="!threaded">
             <template #body="{ data }">
               <Tag
                 :value="data.processing_status"
@@ -80,10 +117,30 @@
               />
             </template>
           </Column>
-          <Column field="packet_type" header="Type" sortable />
-          <Column field="packet_rec_id" header="Packet Rec ID" sortable />
-          <Column field="trans_rec_id" header="Trans Rec ID" sortable />
-          <Column field="transaction_id" header="Transaction ID" sortable>
+          <Column field="outgoing_flag" header="Direction">
+            <template #body="{ data }">
+              <Tag
+                :value="data.outgoing_flag ? 'Outgoing' : 'Incoming'"
+                :severity="data.outgoing_flag ? 'warning' : 'info'"
+                rounded
+              />
+            </template>
+          </Column>
+          <Column field="packet_type" header="Type" :sortable="!threaded" />
+          <Column field="packet_rec_id" header="Packet Rec ID" :sortable="!threaded" />
+          <Column field="trans_rec_id" header="Trans Rec ID" :sortable="!threaded">
+            <template #body="{ data }">
+              <Button
+                v-if="data.trans_rec_id"
+                :label="String(data.trans_rec_id)"
+                text
+                size="small"
+                @click="filterByTransRecId(data.trans_rec_id)"
+              />
+              <span v-else>—</span>
+            </template>
+          </Column>
+          <Column field="transaction_id" header="Transaction ID" :sortable="!threaded">
             <template #body="{ data }">
               <Button
                 v-if="data.transaction_id"
@@ -95,7 +152,7 @@
               <span v-else>—</span>
             </template>
           </Column>
-          <Column field="processed_at" header="Processed At" sortable>
+          <Column field="processed_at" header="Processed At" :sortable="!threaded">
             <template #body="{ data }">
               {{ formatDate(data.processed_at) }}
             </template>
@@ -159,7 +216,10 @@
         <div class="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
           <p class="m-0"><strong>Type:</strong> {{ selectedPacket.packet_type || 'unknown' }}</p>
           <p class="m-0"><strong>Status:</strong> {{ selectedPacket.processing_status }}</p>
+          <p class="m-0"><strong>Direction:</strong> {{ selectedPacket.outgoing_flag ? 'Outgoing' : 'Incoming' }}</p>
           <p class="m-0"><strong>Packet Rec ID:</strong> {{ selectedPacket.packet_rec_id ?? '—' }}</p>
+          <p class="m-0"><strong>Trans Rec ID:</strong> {{ selectedPacket.trans_rec_id ?? '—' }}</p>
+          <p class="m-0"><strong>Transaction ID:</strong> {{ selectedPacket.transaction_id ?? '—' }}</p>
           <p class="m-0"><strong>Received:</strong> {{ formatDate(selectedPacket.received_at) }}</p>
         </div>
         <div class="rounded-lg border border-slate-200 bg-slate-950 p-3">
@@ -210,9 +270,69 @@ const searchInput = ref('')
 const searchValue = ref('')
 const statusFilter = ref('')
 const statusValue = ref('')
+const directionFilter = ref('')
+const directionValue = ref('')
+const threaded = ref(false)
 
 const firstRow = computed(() => (page.value - 1) * pageSize.value)
 const primeSortOrder = computed(() => (sortOrder.value === 'asc' ? 1 : -1))
+
+// Thread colors for visual grouping (alternating palette)
+const THREAD_COLORS = [
+  '#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b',
+  '#ef4444', '#ec4899', '#6366f1', '#14b8a6', '#f97316',
+]
+
+/**
+ * Augment packet list with threading metadata when in threaded mode.
+ * Each packet gets a _threadInfo with: color, isFirst, size.
+ */
+const displayPackets = computed(() => {
+  const items = packets.value
+  if (!threaded.value || !items.length) return items
+
+  // Build thread groups by trans_rec_id
+  const threadGroups = new Map()
+  for (const pkt of items) {
+    const key = pkt.trans_rec_id
+    if (key === null || key === undefined) continue
+    if (!threadGroups.has(key)) {
+      threadGroups.set(key, [])
+    }
+    threadGroups.get(key).push(pkt.id)
+  }
+
+  // Assign colors to threads (round-robin)
+  const threadColorMap = new Map()
+  let colorIdx = 0
+  for (const [key, ids] of threadGroups) {
+    if (ids.length > 1) {
+      threadColorMap.set(key, THREAD_COLORS[colorIdx % THREAD_COLORS.length])
+      colorIdx++
+    }
+  }
+
+  // Track which group IDs we have already marked as "first"
+  const seenFirst = new Set()
+
+  return items.map((pkt) => {
+    const key = pkt.trans_rec_id
+    const group = (key !== null && key !== undefined) ? threadGroups.get(key) : null
+    if (!group || group.length <= 1) return pkt
+
+    const isFirst = !seenFirst.has(key)
+    if (isFirst) seenFirst.add(key)
+
+    return {
+      ...pkt,
+      _threadInfo: {
+        color: threadColorMap.get(key) || '#94a3b8',
+        isFirst,
+        size: group.length,
+      },
+    }
+  })
+})
 
 function formatDate(value) {
   if (!value) return '—'
@@ -260,11 +380,30 @@ function openTransaction(transactionId) {
   })
 }
 
+function filterByTransRecId(transRecId) {
+  if (!transRecId) return
+  searchInput.value = String(transRecId)
+  applyFilters()
+}
+
 function openManualInput(packet) {
   if (!packet?.id) return
   router.push({
     name: 'manual-packet-input',
     query: { packetId: packet.id },
+  })
+}
+
+function toggleThreaded() {
+  threaded.value = !threaded.value
+  page.value = 1
+  router.replace({
+    query: {
+      q: searchValue.value || undefined,
+      status: statusValue.value || undefined,
+      direction: directionValue.value || undefined,
+      threaded: threaded.value ? 'true' : undefined,
+    },
   })
 }
 
@@ -295,6 +434,8 @@ async function loadPackets() {
       sortOrder: sortOrder.value,
       q: searchValue.value,
       status: statusValue.value,
+      direction: directionValue.value,
+      threaded: threaded.value,
     })
     packets.value = result.items || []
     totalRecords.value = result.total || 0
@@ -310,10 +451,15 @@ async function loadPackets() {
 function syncFiltersFromRoute() {
   const routeQuery = typeof route.query.q === 'string' ? route.query.q : ''
   const routeStatus = typeof route.query.status === 'string' ? route.query.status : ''
+  const routeDirection = typeof route.query.direction === 'string' ? route.query.direction : ''
+  const routeThreaded = route.query.threaded === 'true'
   searchInput.value = routeQuery
   searchValue.value = routeQuery
   statusFilter.value = routeStatus
   statusValue.value = routeStatus
+  directionFilter.value = routeDirection
+  directionValue.value = routeDirection
+  threaded.value = routeThreaded
   page.value = 1
 }
 
@@ -324,6 +470,7 @@ function onPage(event) {
 }
 
 function onSort(event) {
+  if (threaded.value) return
   sortBy.value = event.sortField || 'received_at'
   sortOrder.value = event.sortOrder === 1 ? 'asc' : 'desc'
   page.value = 1
@@ -333,19 +480,28 @@ function onSort(event) {
 function applyFilters() {
   searchValue.value = searchInput.value.trim()
   statusValue.value = statusFilter.value
+  directionValue.value = directionFilter.value
   page.value = 1
-  router.replace({ query: { q: searchValue.value || undefined, status: statusValue.value || undefined } })
-  loadPackets()
+  router.replace({
+    query: {
+      q: searchValue.value || undefined,
+      status: statusValue.value || undefined,
+      direction: directionValue.value || undefined,
+      threaded: threaded.value ? 'true' : undefined,
+    },
+  })
 }
 
 function clearFilters() {
   searchInput.value = ''
   statusFilter.value = ''
+  directionFilter.value = ''
   searchValue.value = ''
   statusValue.value = ''
+  directionValue.value = ''
+  threaded.value = false
   page.value = 1
   router.replace({ query: {} })
-  loadPackets()
 }
 
 onMounted(async () => {
@@ -354,7 +510,7 @@ onMounted(async () => {
 })
 
 watch(
-  () => [route.query.q, route.query.status],
+  () => [route.query.q, route.query.status, route.query.direction, route.query.threaded],
   async () => {
     syncFiltersFromRoute()
     await loadPackets()

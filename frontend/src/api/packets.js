@@ -16,6 +16,8 @@ export function fetchPacketLogs(params = {}) {
     sortOrder = 'desc',
     q = '',
     status = '',
+    direction = '',
+    threaded = false,
   } = params
 
   return apiClient
@@ -27,6 +29,8 @@ export function fetchPacketLogs(params = {}) {
         sort_order: sortOrder,
         q: q || undefined,
         status: status || undefined,
+        direction: direction || undefined,
+        threaded: threaded || undefined,
       },
     })
     .then((res) => res.data)

@@ -2462,10 +2462,11 @@ class AIMEService:
                 project=project,
                 reason=f"packet:{bound_packet.type}",
             )
-        self._emit_project_user_packet_alert(
-            db,
-            packet_record=packet_record,
-            processed_ok=True,
-            extra_payload=extra_alert_payload,
-        )
+        if created:
+            self._emit_project_user_packet_alert(
+                db,
+                packet_record=packet_record,
+                processed_ok=True,
+                extra_payload=extra_alert_payload,
+            )
         return IngestResult(handled=True, packet_type=bound_packet.type, project=project)
