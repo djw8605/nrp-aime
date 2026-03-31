@@ -82,7 +82,6 @@
           :sortOrder="threaded ? null : primeSortOrder"
           @page="onPage"
           @sort="onSort"
-          :rowClass="threadRowClass"
         >
           <Column v-if="threaded" header="Thread" style="width: 3rem">
             <template #body="{ data }">
@@ -335,11 +334,6 @@ const displayPackets = computed(() => {
   })
 })
 
-function threadRowClass(data) {
-  if (!threaded.value || !data._threadInfo) return ''
-  return 'threaded-row'
-}
-
 function formatDate(value) {
   if (!value) return '—'
   try {
@@ -400,10 +394,18 @@ function openManualInput(packet) {
   })
 }
 
-function toggleThreaded() {
+async function toggleThreaded() {
   threaded.value = !threaded.value
   page.value = 1
-  loadPackets()
+  router.replace({
+    query: {
+      q: searchValue.value || undefined,
+      status: statusValue.value || undefined,
+      direction: directionValue.value || undefined,
+      threaded: threaded.value ? 'true' : undefined,
+    },
+  })
+  await loadPackets()
 }
 
 async function handleReingest(packetId) {

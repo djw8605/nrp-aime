@@ -36,7 +36,7 @@ class AIMEPacketProcessingTests(unittest.TestCase):
         self.kubernetes = TrackingKubernetesService()
         self.provisioning = TrackingProjectProvisioningService()
         self.alert_patch = patch("app.services.aime.service.AlertService.send")
-        self.alert_patch.start()
+        self.mock_alert = self.alert_patch.start()
         self.service = AIMEService(
             site_name="NRP",
             authentik_service=self.authentik,
@@ -294,22 +294,20 @@ class AIMEPacketProcessingTests(unittest.TestCase):
 
     def test_duplicate_request_account_create_does_not_re_emit_alert(self) -> None:
         """Re-ingesting the same packet should not fire another user alert."""
-        self.alert_patch.stop()
-        with patch("app.services.aime.service.AlertService.send") as mock_alert:
-            self.service.ingest_packet(self.db, request_account_create_packet())
-            first_call_count = mock_alert.call_count
+        self.mock_alert.reset_mock()
+        self.service.ingest_packet(self.db, request_account_create_packet())
+        first_call_count = self.mock_alert.call_count
 
-            # Re-ingest the same packet (same packet_rec_id)
-            self.service.ingest_packet(self.db, request_account_create_packet())
-            second_call_count = mock_alert.call_count
+        # Re-ingest the same packet (same packet_rec_id)
+        self.service.ingest_packet(self.db, request_account_create_packet())
+        second_call_count = self.mock_alert.call_count
 
-            self.assertGreater(first_call_count, 0, "First ingest should emit an alert")
-            self.assertEqual(
-                first_call_count,
-                second_call_count,
-                "Re-ingesting a duplicate packet should not emit another alert",
-            )
-        self.alert_patch.start()
+        self.assertGreater(first_call_count, 0, "First ingest should emit an alert")
+        self.assertEqual(
+            first_call_count,
+            second_call_count,
+            "Re-ingesting a duplicate packet should not emit another alert",
+        )
 
 
 if __name__ == "__main__":

@@ -190,6 +190,11 @@ def list_packet_logs(
             query = query.filter(
                 or_(AMIEPacket.outgoing_flag.is_(False), AMIEPacket.outgoing_flag.is_(None))
             )
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid value for 'direction'. Supported values are 'incoming' and 'outgoing'.",
+            )
 
     search_term = (q or "").strip()
     if search_term:
@@ -210,11 +215,13 @@ def list_packet_logs(
     if threaded:
         # Newest transactions first (trans_rec_id DESC), but within each
         # transaction show packets in chronological order (created_at ASC)
-        # so the conversation flow reads top-to-bottom.
+        # so the conversation flow reads top-to-bottom. Use AMIEPacket.id
+        # as a final tie-breaker to ensure stable pagination ordering.
         rows = (
             query.order_by(
                 AMIEPacket.trans_rec_id.desc().nullslast(),
                 AMIEPacket.created_at.asc(),
+                AMIEPacket.id.asc(),
             )
             .offset((page - 1) * page_size)
             .limit(page_size)
