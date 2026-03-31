@@ -394,7 +394,7 @@ function openManualInput(packet) {
   })
 }
 
-async function toggleThreaded() {
+function toggleThreaded() {
   threaded.value = !threaded.value
   page.value = 1
   router.replace({
@@ -405,7 +405,6 @@ async function toggleThreaded() {
       threaded: threaded.value ? 'true' : undefined,
     },
   })
-  await loadPackets()
 }
 
 async function handleReingest(packetId) {
@@ -491,7 +490,6 @@ function applyFilters() {
       threaded: threaded.value ? 'true' : undefined,
     },
   })
-  loadPackets()
 }
 
 function clearFilters() {
@@ -504,7 +502,6 @@ function clearFilters() {
   threaded.value = false
   page.value = 1
   router.replace({ query: {} })
-  loadPackets()
 }
 
 onMounted(async () => {
