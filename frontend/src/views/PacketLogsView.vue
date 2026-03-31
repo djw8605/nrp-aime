@@ -41,6 +41,14 @@
             <option value="error">Error</option>
             <option value="received">Received</option>
           </select>
+          <select
+            v-model="directionFilter"
+            class="h-[42px] rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700"
+          >
+            <option value="">All directions</option>
+            <option value="incoming">Incoming</option>
+            <option value="outgoing">Outgoing</option>
+          </select>
           <div class="flex gap-2">
             <Button label="Apply" icon="pi pi-search" @click="applyFilters" />
             <Button label="Clear" severity="secondary" outlined @click="clearFilters" />
@@ -76,6 +84,15 @@
               <Tag
                 :value="data.processing_status"
                 :severity="statusSeverity(data.processing_status)"
+                rounded
+              />
+            </template>
+          </Column>
+          <Column field="outgoing_flag" header="Direction">
+            <template #body="{ data }">
+              <Tag
+                :value="data.outgoing_flag ? 'Outgoing' : 'Incoming'"
+                :severity="data.outgoing_flag ? 'warning' : 'info'"
                 rounded
               />
             </template>
@@ -159,6 +176,7 @@
         <div class="grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
           <p class="m-0"><strong>Type:</strong> {{ selectedPacket.packet_type || 'unknown' }}</p>
           <p class="m-0"><strong>Status:</strong> {{ selectedPacket.processing_status }}</p>
+          <p class="m-0"><strong>Direction:</strong> {{ selectedPacket.outgoing_flag ? 'Outgoing' : 'Incoming' }}</p>
           <p class="m-0"><strong>Packet Rec ID:</strong> {{ selectedPacket.packet_rec_id ?? '—' }}</p>
           <p class="m-0"><strong>Received:</strong> {{ formatDate(selectedPacket.received_at) }}</p>
         </div>
@@ -210,6 +228,8 @@ const searchInput = ref('')
 const searchValue = ref('')
 const statusFilter = ref('')
 const statusValue = ref('')
+const directionFilter = ref('')
+const directionValue = ref('')
 
 const firstRow = computed(() => (page.value - 1) * pageSize.value)
 const primeSortOrder = computed(() => (sortOrder.value === 'asc' ? 1 : -1))
@@ -295,6 +315,7 @@ async function loadPackets() {
       sortOrder: sortOrder.value,
       q: searchValue.value,
       status: statusValue.value,
+      direction: directionValue.value,
     })
     packets.value = result.items || []
     totalRecords.value = result.total || 0
@@ -310,10 +331,13 @@ async function loadPackets() {
 function syncFiltersFromRoute() {
   const routeQuery = typeof route.query.q === 'string' ? route.query.q : ''
   const routeStatus = typeof route.query.status === 'string' ? route.query.status : ''
+  const routeDirection = typeof route.query.direction === 'string' ? route.query.direction : ''
   searchInput.value = routeQuery
   searchValue.value = routeQuery
   statusFilter.value = routeStatus
   statusValue.value = routeStatus
+  directionFilter.value = routeDirection
+  directionValue.value = routeDirection
   page.value = 1
 }
 
@@ -333,16 +357,25 @@ function onSort(event) {
 function applyFilters() {
   searchValue.value = searchInput.value.trim()
   statusValue.value = statusFilter.value
+  directionValue.value = directionFilter.value
   page.value = 1
-  router.replace({ query: { q: searchValue.value || undefined, status: statusValue.value || undefined } })
+  router.replace({
+    query: {
+      q: searchValue.value || undefined,
+      status: statusValue.value || undefined,
+      direction: directionValue.value || undefined,
+    },
+  })
   loadPackets()
 }
 
 function clearFilters() {
   searchInput.value = ''
   statusFilter.value = ''
+  directionFilter.value = ''
   searchValue.value = ''
   statusValue.value = ''
+  directionValue.value = ''
   page.value = 1
   router.replace({ query: {} })
   loadPackets()
@@ -354,7 +387,7 @@ onMounted(async () => {
 })
 
 watch(
-  () => [route.query.q, route.query.status],
+  () => [route.query.q, route.query.status, route.query.direction],
   async () => {
     syncFiltersFromRoute()
     await loadPackets()

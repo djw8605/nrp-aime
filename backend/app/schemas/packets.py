@@ -15,6 +15,7 @@ class PacketLogRead(BaseModel):
     trans_rec_id: int | None
     transaction_id: int | None
     packet_type: str
+    outgoing_flag: bool | None
     processing_status: str
     processed: bool
     processing_error: str | None

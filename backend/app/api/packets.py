@@ -50,6 +50,7 @@ def _to_read_model(packet: AMIEPacket) -> PacketLogRead:
         trans_rec_id=packet.trans_rec_id,
         transaction_id=packet.transaction_id,
         packet_type=packet.packet_type,
+        outgoing_flag=packet.outgoing_flag,
         processing_status=status,
         processed=status == AMIEPacket.PROCESSING_STATUS_PROCESSED,
         processing_error=packet.processing_error,
@@ -164,6 +165,10 @@ def list_packet_logs(
     sort_order: SortOrder = Query(default="desc"),
     q: str | None = Query(default=None, description="Search string"),
     status: str | None = Query(default=None, description="Filter by processing status"),
+    direction: str | None = Query(
+        default=None,
+        description="Filter by direction: 'incoming', 'outgoing', or omit for all",
+    ),
 ) -> PacketLogPage:
     """Return packet logs with paging, sorting, and search."""
     query = db.query(AMIEPacket)
@@ -172,6 +177,15 @@ def list_packet_logs(
         query = query.filter(
             func.lower(AMIEPacket.processing_status) == status.strip().lower()
         )
+
+    if direction:
+        direction_lower = direction.strip().lower()
+        if direction_lower == "outgoing":
+            query = query.filter(AMIEPacket.outgoing_flag.is_(True))
+        elif direction_lower == "incoming":
+            query = query.filter(
+                or_(AMIEPacket.outgoing_flag.is_(False), AMIEPacket.outgoing_flag.is_(None))
+            )
 
     search_term = (q or "").strip()
     if search_term:
