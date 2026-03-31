@@ -292,6 +292,25 @@ class AIMEPacketProcessingTests(unittest.TestCase):
         self.assertEqual(lifecycle_packet.detail_code, "7")
         self.assertEqual(lifecycle_packet.message, "Project create complete")
 
+    def test_duplicate_request_account_create_does_not_re_emit_alert(self) -> None:
+        """Re-ingesting the same packet should not fire another user alert."""
+        self.alert_patch.stop()
+        with patch("app.services.aime.service.AlertService.send") as mock_alert:
+            self.service.ingest_packet(self.db, request_account_create_packet())
+            first_call_count = mock_alert.call_count
+
+            # Re-ingest the same packet (same packet_rec_id)
+            self.service.ingest_packet(self.db, request_account_create_packet())
+            second_call_count = mock_alert.call_count
+
+            self.assertGreater(first_call_count, 0, "First ingest should emit an alert")
+            self.assertEqual(
+                first_call_count,
+                second_call_count,
+                "Re-ingesting a duplicate packet should not emit another alert",
+            )
+        self.alert_patch.start()
+
 
 if __name__ == "__main__":
     unittest.main()
