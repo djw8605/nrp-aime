@@ -755,8 +755,14 @@ def send_account_email(
             continue
 
         try:
+            _already_invited = {
+                ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT,
+                ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+                ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+                ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+            }
             for membership in relevant_memberships:
-                if membership.account_state == ProjectUser.ACCOUNT_STATE_RECEIVED:
+                if membership.account_state not in _already_invited:
                     lifecycle.mark_email_sent(membership)
             invites.create_invite(
                 db,
