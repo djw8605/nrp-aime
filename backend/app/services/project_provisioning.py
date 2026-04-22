@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.project import Project
 from app.services.alerts import AlertService
 from app.services.kubernetes.service import KubernetesProvisioningService
@@ -50,6 +51,12 @@ class ProjectProvisioningService:
     @staticmethod
     def _failed_alert_key(project: Project) -> str:
         return f"project_provision_failed:{project.id}"
+
+    @staticmethod
+    def _project_frontend_url(project: Project) -> str:
+        base = str(settings.frontend_base_url or "").rstrip("/")
+        path = f"/projects/{project.id}"
+        return f"{base}{path}" if base else path
 
     def mark_received(self, db: Session, *, project: Project, reason: str) -> bool:
         """Mark project as received and pending manual provisioning.
@@ -131,6 +138,7 @@ class ProjectProvisioningService:
             payload={
                 "allocation_id": project.aime_allocation_id,
                 "project_name": project.name,
+                "project_page": self._project_frontend_url(project),
                 "pi_name": pi_name,
                 "pi_email": project.pi_email,
                 "institution": project.pi_organization,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from html import escape
 import logging
 import smtplib
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,21 @@ class AlertService:
         return [entry.strip() for entry in value.split(",") if entry.strip()]
 
     @staticmethod
+    def _render_html_value(value: Any) -> str:
+        text = str(value)
+        escaped_text = escape(text, quote=True).replace("\n", "<br>")
+        if isinstance(value, str):
+            url = value.strip()
+            if url.startswith(("http://", "https://")):
+                escaped_url = escape(url, quote=True)
+                return (
+                    f'<a href="{escaped_url}" '
+                    'style="color:#2563eb;text-decoration:underline;">'
+                    f"{escaped_text}</a>"
+                )
+        return escaped_text
+
+    @staticmethod
     def _build_html_email(
         *,
         alert_key: str,
@@ -53,13 +69,15 @@ class AlertService:
         if payload:
             for key, value in payload.items():
                 if value is not None and value != "":
-                    label = key.replace("_", " ").title()
+                    label = escape(key.replace("_", " ").title(), quote=True)
+                    rendered_value = AlertService._render_html_value(value)
                     detail_rows += (
                         f"<tr>"
                         f'<td style="padding:8px 12px;font-weight:600;color:#374151;'
                         f'width:38%;border-bottom:1px solid #f3f4f6;vertical-align:top;">{label}</td>'
                         f'<td style="padding:8px 12px;color:#111827;'
-                        f'border-bottom:1px solid #f3f4f6;word-break:break-word;">{value}</td>'
+                        f'border-bottom:1px solid #f3f4f6;word-break:break-word;">'
+                        f"{rendered_value}</td>"
                         f"</tr>"
                     )
 
@@ -77,6 +95,12 @@ class AlertService:
                 "</div>"
             )
 
+        severity_text = escape(severity.upper(), quote=True)
+        category_text = escape(category, quote=True)
+        title_text = escape(title, quote=True)
+        message_text = escape(message, quote=True).replace("\n", "<br>")
+        alert_key_text = escape(alert_key, quote=True)
+
         return (
             "<!DOCTYPE html>"
             '<html lang="en">'
@@ -92,14 +116,15 @@ class AlertService:
             f'<p style="margin:0 0 6px;font-size:11px;font-weight:700;'
             f"text-transform:uppercase;letter-spacing:0.1em;"
             f'color:rgba(255,255,255,0.75);">'
-            f"{severity.upper()} &bull; {category}"
+            f"{severity_text} &bull; {category_text}"
             f"</p>"
             f'<h1 style="margin:0;font-size:22px;font-weight:700;color:#ffffff;'
-            f'line-height:1.3;">{title}</h1>'
+            f'line-height:1.3;">{title_text}</h1>'
             f"</div>"
             '<div style="background:#ffffff;padding:24px 28px;'
             'border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;">'
-            f'<p style="margin:0;font-size:15px;color:#374151;line-height:1.7;">{message}</p>'
+            f'<p style="margin:0;font-size:15px;color:#374151;line-height:1.7;">'
+            f"{message_text}</p>"
             f"{details_section}"
             "</div>"
             '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-top:none;'
@@ -107,7 +132,7 @@ class AlertService:
             '<p style="margin:0;font-size:12px;color:#9ca3af;">'
             f"Alert Key:&nbsp;"
             f'<code style="background:#e5e7eb;padding:2px 6px;border-radius:3px;'
-            f'font-size:11px;color:#374151;">{alert_key}</code>'
+            f'font-size:11px;color:#374151;">{alert_key_text}</code>'
             "</p>"
             "</div>"
             "</div>"
