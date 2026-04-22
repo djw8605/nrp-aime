@@ -858,6 +858,26 @@ function accountStageReached(membership, targetState) {
   return current >= target
 }
 
+function buildInviteStepActions(membership, label = 'Send User Invite') {
+  const inviteSent = accountStageReached(membership, 'email_invite_sent') || Boolean(membership.email_sent_at)
+  const accountReady = accountStageReached(membership, 'user_completed_oauth') || Boolean(membership.account_made_at)
+
+  if (inviteSent || accountReady) {
+    return []
+  }
+
+  return [
+    {
+      key: `invite-${membership.project_user_id}`,
+      label,
+      icon: 'pi pi-send',
+      loading: sendingInvite.value,
+      disabled: sendingInvite.value || !person.value?.email,
+      onClick: sendPersonInvite,
+    },
+  ]
+}
+
 function buildAccountCreateLifecycleSteps(membership) {
   const inviteSent = accountStageReached(membership, 'email_invite_sent') || Boolean(membership.email_sent_at)
   const accountReady = accountStageReached(membership, 'user_completed_oauth') || Boolean(membership.account_made_at)
@@ -880,7 +900,10 @@ function buildAccountCreateLifecycleSteps(membership) {
       : {
           label: 'Send account invite to user',
           status: 'waiting',
-          actionRequired: 'Admin must click "Send User Invite" to dispatch the invite email.',
+          actionRequired: person.value?.email
+            ? 'Send the invite email so the user can start account setup.'
+            : 'Add an email address for this person, then send the invite email.',
+          actions: buildInviteStepActions(membership),
         }
 
   let step3
@@ -953,10 +976,18 @@ function buildProjectCreatePiLifecycleSteps(membership) {
         }
       : {
           label: 'Send PI invite to user',
-          status: accountReady ? 'completed' : 'pending',
+          status: accountReady ? 'completed' : 'waiting',
           description: accountReady
             ? 'PI login was already available locally.'
-            : 'Invite is only needed if the PI does not yet have a local login.',
+            : null,
+          actionRequired: accountReady
+            ? null
+            : person.value?.email
+              ? 'Send the PI invite so they can create a local login.'
+              : 'Add an email address for this person, then send the PI invite.',
+          actions: accountReady
+            ? []
+            : buildInviteStepActions(membership, 'Send PI Invite'),
         }
 
   let step3

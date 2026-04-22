@@ -60,6 +60,20 @@
           <i class="pi pi-info-circle mt-0.5 shrink-0 text-xs text-amber-600"></i>
           <p class="m-0 text-xs font-medium text-amber-800">{{ step.actionRequired }}</p>
         </div>
+        <div v-if="step.actions?.length" class="mt-2 flex flex-wrap items-center gap-2">
+          <Button
+            v-for="action in step.actions"
+            :key="action.key || action.label"
+            :icon="action.icon"
+            :label="action.label"
+            :severity="action.severity || 'contrast'"
+            :outlined="Boolean(action.outlined)"
+            size="small"
+            :loading="Boolean(action.loading)"
+            :disabled="Boolean(action.disabled)"
+            @click="action.onClick?.()"
+          />
+        </div>
         <router-link
           v-if="step.link"
           :to="step.link.to"
@@ -74,6 +88,7 @@
 </template>
 
 <script setup>
+import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 
 defineProps({
