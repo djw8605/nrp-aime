@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     portal_rpc_token: str = ""
     portal_rpc_namespace: str = "access"
     portal_rpc_timeout_seconds: float = 15.0
+    portal_rpc_create_namespace_timeout_seconds: float = 60.0
 
     # Portal authentication
     auth_dev_bypass: bool = False

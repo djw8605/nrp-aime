@@ -186,7 +186,8 @@ npm run dev
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Base URL used for Authentik callback URL generation |
 | `PORTAL_RPC_URL` | `https://portal.nrp.ai/rpc` | Portal JSON-RPC endpoint |
 | `PORTAL_RPC_NAMESPACE` | `access` | Parent namespace used when calling `admin.CreateNamespace` (configurable) |
-| `PORTAL_RPC_TIMEOUT_SECONDS` | `15` | HTTP timeout for portal RPC calls |
+| `PORTAL_RPC_TIMEOUT_SECONDS` | `15` | HTTP timeout for general portal RPC calls |
+| `PORTAL_RPC_CREATE_NAMESPACE_TIMEOUT_SECONDS` | `60` | Longer HTTP timeout for `admin.CreateNamespace` and its follow-up existence check |
 | `PORTAL_RPC_TOKEN` | `` | Shared token sent as `X-Portal-RPC-Token` for portal RPC auth |
 | `AUTH_DEV_BYPASS` | `false` | Bypass admin portal authentication (dev-only) |
 | `AUTH_STATE_TTL_MINUTES` | `30` | Signed state TTL for admin auth callback flow |
