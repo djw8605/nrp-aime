@@ -71,7 +71,11 @@ class KubernetesProvisioningService:
         }
 
     def _call_portal_rpc(
-        self, *, method: str, params: dict[str, Any]
+        self,
+        *,
+        method: str,
+        params: dict[str, Any],
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         if not self._portal_token_configured():
             return {
@@ -88,13 +92,18 @@ class KubernetesProvisioningService:
             "params": params,
             "id": request_id,
         }
+        request_timeout = (
+            settings.portal_rpc_timeout_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
 
         try:
             response = httpx.post(
                 settings.portal_rpc_url,
                 json=payload,
                 headers=self._rpc_headers(),
-                timeout=settings.portal_rpc_timeout_seconds,
+                timeout=request_timeout,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Portal RPC request failed method=%s", method)
@@ -276,22 +285,52 @@ class KubernetesProvisioningService:
     def ensure_project_namespace(self, *, project: Project) -> dict[str, Any]:
         """Create namespace via portal RPC and return status."""
         namespace = self.namespace_for_project(project=project)
+        create_timeout_seconds = settings.portal_rpc_create_namespace_timeout_seconds
         params = {
             "Namespace": settings.portal_rpc_namespace,
             "NewNamespace": namespace,
             "GroupFeatures": ["is_k8s_namespace"],
         }
-        rpc = self._call_portal_rpc(method="admin.CreateNamespace", params=params)
+        rpc = self._call_portal_rpc(
+            method="admin.CreateNamespace",
+            params=params,
+            timeout_seconds=create_timeout_seconds,
+        )
         if not rpc.get("ok", False):
+            existence_check = self.namespace_exists(
+                namespace=namespace,
+                timeout_seconds=create_timeout_seconds,
+            )
+            if existence_check.get("ok") and existence_check.get("exists"):
+                logger.warning(
+                    "Portal namespace create returned error but namespace exists "
+                    "project_id=%s namespace=%s rpc=%s existence_check=%s",
+                    project.id,
+                    namespace,
+                    rpc,
+                    existence_check,
+                )
+                return {
+                    "ok": True,
+                    "status": "verified_after_error",
+                    "namespace": namespace,
+                    "authentik_group_name": namespace,
+                    "create_error": rpc,
+                    "existence_check": existence_check,
+                }
+
             logger.warning(
-                "Portal namespace provisioning failed project_id=%s namespace=%s rpc=%s",
+                "Portal namespace provisioning failed project_id=%s namespace=%s "
+                "rpc=%s existence_check=%s",
                 project.id,
                 namespace,
                 rpc,
+                existence_check,
             )
             return {
                 **rpc,
                 "namespace": namespace,
+                "existence_check": existence_check,
             }
 
         logger.info(
@@ -347,9 +386,17 @@ class KubernetesProvisioningService:
             "error": rpc,
         }
 
-    def list_all_namespaces(self) -> dict[str, Any]:
+    def list_all_namespaces(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         """List namespaces via portal RPC for reconciliation."""
-        rpc = self._call_portal_rpc(method="admin.ListAllNamespaces", params={})
+        rpc = self._call_portal_rpc(
+            method="admin.ListAllNamespaces",
+            params={},
+            timeout_seconds=timeout_seconds,
+        )
         if not rpc.get("ok", False):
             return rpc
 
@@ -370,6 +417,31 @@ class KubernetesProvisioningService:
             "status": "rpc",
             "namespaces": namespaces,
             "rpc_result": rpc.get("result"),
+        }
+
+    def namespace_exists(
+        self,
+        *,
+        namespace: str,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Check whether a namespace is visible in the portal."""
+        list_result = self.list_all_namespaces(timeout_seconds=timeout_seconds)
+        if not list_result.get("ok", False):
+            return {
+                "ok": False,
+                "status": list_result.get("status", "rpc_error"),
+                "namespace": namespace,
+                "error": list_result,
+            }
+
+        exists = namespace in set(list_result.get("namespaces", []))
+        return {
+            "ok": True,
+            "status": "rpc",
+            "namespace": namespace,
+            "exists": exists,
+            "rpc_result": list_result.get("rpc_result"),
         }
 
     def get_namespace_users(self, *, namespace: str) -> dict[str, Any]:
