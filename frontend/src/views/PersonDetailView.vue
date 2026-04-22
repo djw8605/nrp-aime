@@ -840,7 +840,29 @@ const userLifecycleStepsByMembership = computed(() =>
   })),
 )
 
+const ACCOUNT_STAGE_RANK = {
+  received: 1,
+  not_sent_email_invite: 1,
+  just_received_packet: 1,
+  email_invite_sent: 2,
+  sent_email: 2,
+  user_completed_oauth: 3,
+  account_made: 3,
+  aime_notified: 4,
+  covered_by_project_notification: 4,
+}
+
+function accountStageReached(membership, targetState) {
+  const current = ACCOUNT_STAGE_RANK[String(membership?.account_state || '').trim().toLowerCase()] || 0
+  const target = ACCOUNT_STAGE_RANK[targetState] || 0
+  return current >= target
+}
+
 function buildAccountCreateLifecycleSteps(membership) {
+  const inviteSent = accountStageReached(membership, 'email_invite_sent') || Boolean(membership.email_sent_at)
+  const accountReady = accountStageReached(membership, 'user_completed_oauth') || Boolean(membership.account_made_at)
+  const aimeNotified = accountStageReached(membership, 'aime_notified') || Boolean(membership.aime_confirmation_sent_at)
+
   const step1 = {
     label: 'Received request account create',
     status: 'completed',
@@ -849,7 +871,7 @@ function buildAccountCreateLifecycleSteps(membership) {
   }
 
   const step2 =
-    membership.email_sent_at || membership.account_made_at
+    inviteSent || accountReady
       ? {
           label: 'Send account invite to user',
           status: 'completed',
@@ -862,13 +884,13 @@ function buildAccountCreateLifecycleSteps(membership) {
         }
 
   let step3
-  if (membership.account_made_at) {
+  if (accountReady) {
     step3 = {
       label: 'User creates account',
       status: 'completed',
       timestamp: membership.account_made_at,
     }
-  } else if (membership.email_sent_at || membership.account_made_at) {
+  } else if (inviteSent) {
     step3 = {
       label: 'User creates account',
       status: 'active',
@@ -879,13 +901,13 @@ function buildAccountCreateLifecycleSteps(membership) {
   }
 
   let step4
-  if (membership.aime_confirmation_sent_at) {
+  if (aimeNotified) {
     step4 = {
       label: 'Notify account create to AIME',
       status: 'completed',
       timestamp: membership.aime_confirmation_sent_at,
     }
-  } else if (membership.account_made_at) {
+  } else if (accountReady) {
     step4 = {
       label: 'Notify account create to AIME',
       status: 'active',
@@ -897,8 +919,8 @@ function buildAccountCreateLifecycleSteps(membership) {
 
   const step5 = {
     label: 'Received data account create',
-    status: membership.aime_confirmation_sent_at ? 'active' : 'pending',
-    description: membership.aime_confirmation_sent_at
+    status: aimeNotified ? 'active' : 'pending',
+    description: aimeNotified
       ? 'Waiting for AIME to acknowledge account creation.'
       : null,
   }
@@ -909,6 +931,12 @@ function buildAccountCreateLifecycleSteps(membership) {
 }
 
 function buildProjectCreatePiLifecycleSteps(membership) {
+  const inviteSent = accountStageReached(membership, 'email_invite_sent') || Boolean(membership.email_sent_at)
+  const accountReady = accountStageReached(membership, 'user_completed_oauth') || Boolean(membership.account_made_at)
+  const projectNotified =
+    accountStageReached(membership, 'covered_by_project_notification')
+    || Boolean(membership.aime_confirmation_sent_at)
+
   const step1 = {
     label: 'Received request project create',
     status: 'completed',
@@ -917,7 +945,7 @@ function buildProjectCreatePiLifecycleSteps(membership) {
   }
 
   const step2 =
-    membership.email_sent_at
+    inviteSent
       ? {
           label: 'Send PI invite to user',
           status: 'completed',
@@ -925,20 +953,20 @@ function buildProjectCreatePiLifecycleSteps(membership) {
         }
       : {
           label: 'Send PI invite to user',
-          status: membership.account_made_at ? 'completed' : 'pending',
-          description: membership.account_made_at
+          status: accountReady ? 'completed' : 'pending',
+          description: accountReady
             ? 'PI login was already available locally.'
             : 'Invite is only needed if the PI does not yet have a local login.',
         }
 
   let step3
-  if (membership.account_made_at) {
+  if (accountReady) {
     step3 = {
       label: 'PI account becomes available locally',
       status: 'completed',
       timestamp: membership.account_made_at,
     }
-  } else if (membership.email_sent_at) {
+  } else if (inviteSent) {
     step3 = {
       label: 'PI account becomes available locally',
       status: 'active',
@@ -952,13 +980,13 @@ function buildProjectCreatePiLifecycleSteps(membership) {
   }
 
   let step4
-  if (membership.aime_confirmation_sent_at) {
+  if (projectNotified) {
     step4 = {
       label: 'Notify project create to AIME (covers PI account)',
       status: 'completed',
       timestamp: membership.aime_confirmation_sent_at,
     }
-  } else if (membership.account_made_at) {
+  } else if (accountReady) {
     step4 = {
       label: 'Notify project create to AIME (covers PI account)',
       status: 'active',
@@ -973,8 +1001,8 @@ function buildProjectCreatePiLifecycleSteps(membership) {
 
   const step5 = {
     label: 'Received data project create',
-    status: membership.aime_confirmation_sent_at ? 'active' : 'pending',
-    description: membership.aime_confirmation_sent_at
+    status: projectNotified ? 'active' : 'pending',
+    description: projectNotified
       ? 'Waiting for AIME to acknowledge project creation.'
       : null,
   }
