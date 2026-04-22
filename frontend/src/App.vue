@@ -6,11 +6,15 @@
     >
       <template #start>
         <router-link :to="{ name: 'projects' }" class="flex items-center gap-3 text-slate-800 no-underline">
-          <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-600 text-white">
-            <i class="pi pi-server text-sm"></i>
+          <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-sky-100 bg-white p-1 shadow-sm">
+            <img
+              src="/branding/nrp-access-integration-icon-512.png"
+              alt="NRP and ACCESS integration icon"
+              class="h-full w-full object-contain"
+            />
           </span>
           <div class="leading-tight">
-            <p class="m-0 text-xs uppercase tracking-wide text-slate-500">National Research Platform</p>
+            <p class="m-0 text-xs uppercase tracking-wide text-slate-500">National Research Platform / ACCESS</p>
             <p class="m-0 text-base font-semibold">AIME Allocation Manager</p>
           </div>
         </router-link>
