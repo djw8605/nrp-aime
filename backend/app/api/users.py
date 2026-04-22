@@ -570,8 +570,13 @@ def create_user_invite(
         )
 
     lifecycle = AccountLifecycleService()
+    pre_invite_states = {
+        ProjectUser.ACCOUNT_STATE_RECEIVED,
+        ProjectUser.ACCOUNT_STATE_NOT_SENT_EMAIL_INVITE,
+        ProjectUser.ACCOUNT_STATE_JUST_RECEIVED_PACKET_LEGACY,
+    }
     for membership in active_memberships:
-        if membership.account_state == ProjectUser.ACCOUNT_STATE_RECEIVED:
+        if membership.account_state in pre_invite_states:
             lifecycle.mark_email_sent(membership)
 
     invite_service = InviteService()

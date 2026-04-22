@@ -208,7 +208,8 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Backend base URL used to construct callback URL |
 | `PORTAL_RPC_URL` | `https://portal.nrp.ai/rpc` | Portal JSON-RPC endpoint |
 | `PORTAL_RPC_NAMESPACE` | `access` | Parent namespace argument for `admin.CreateNamespace` (configurable) |
-| `PORTAL_RPC_TIMEOUT_SECONDS` | `15` | Timeout for portal RPC HTTP calls |
+| `PORTAL_RPC_TIMEOUT_SECONDS` | `15` | Timeout for general portal RPC HTTP calls |
+| `PORTAL_RPC_CREATE_NAMESPACE_TIMEOUT_SECONDS` | `60` | Longer timeout for `admin.CreateNamespace` and its follow-up existence check |
 | `PORTAL_RPC_TOKEN` | `` | Shared token for `X-Portal-RPC-Token` header |
 | `AUTH_DEV_BYPASS` | `false` | Bypass admin portal authentication (dev-only) |
 | `AUTH_STATE_TTL_MINUTES` | `30` | Signed state max age for admin callback flow |

@@ -928,6 +928,10 @@ const projectLifecycleSteps = computed(() => {
   // Step 3: PI creates account
   // The PI's account creation does NOT require a separate notify_account_create response to
   // AIME — it is covered by the notify_project_create packet sent in step 4.
+  const piInviteSent =
+    accountStageReached(piMembership, 'email_invite_sent') || Boolean(piMembership?.email_sent_at)
+  const piAccountReady =
+    accountStageReached(piMembership, 'user_completed_oauth') || Boolean(piMembership?.account_made_at)
   let step3
   if (!piMembership) {
     // PI membership not yet linked to a user record (e.g. still being ingested)
@@ -952,7 +956,7 @@ const projectLifecycleSteps = computed(() => {
           ]
         : [],
     }
-  } else if (piMembership.account_made_at) {
+  } else if (piAccountReady) {
     step3 = {
       label: 'PI creates account',
       status: 'completed',
@@ -963,7 +967,7 @@ const projectLifecycleSteps = computed(() => {
         label: `View PI user page — ${piMembership.name}`,
       },
     }
-  } else if (piMembership.email_sent_at) {
+  } else if (piInviteSent) {
     step3 = {
       label: 'PI creates account',
       status: 'active',
@@ -990,8 +994,6 @@ const projectLifecycleSteps = computed(() => {
       },
     }
   }
-
-  const piAccountReady = Boolean(piMembership?.account_made_at)
 
   // Step 4: Notify project create back to AIME server
   // Requires both: namespace provisioned AND PI account created.
@@ -1042,6 +1044,24 @@ const projectLifecycleSteps = computed(() => {
 
   return [step1, step2, step3, step4, step5, step6]
 })
+
+const ACCOUNT_STAGE_RANK = {
+  received: 1,
+  not_sent_email_invite: 1,
+  just_received_packet: 1,
+  email_invite_sent: 2,
+  sent_email: 2,
+  user_completed_oauth: 3,
+  account_made: 3,
+  aime_notified: 4,
+  covered_by_project_notification: 4,
+}
+
+function accountStageReached(membership, targetState) {
+  const current = ACCOUNT_STAGE_RANK[String(membership?.account_state || '').trim().toLowerCase()] || 0
+  const target = ACCOUNT_STAGE_RANK[targetState] || 0
+  return current >= target
+}
 
 function createProjectForm(projectData = null) {
   const tags = Array.isArray(projectData?.tags) ? projectData.tags : []
