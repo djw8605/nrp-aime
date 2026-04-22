@@ -26,6 +26,16 @@
         @close="projectMessage = null"
       >
         {{ projectMessage.text }}
+        <template v-if="projectMessage.url">
+          <a
+            :href="projectMessage.url"
+            target="_blank"
+            class="ml-1 text-sky-700 underline"
+            rel="noreferrer"
+          >
+            Invite link
+          </a>
+        </template>
       </Message>
 
       <Card v-if="editingProject" class="border border-slate-200 shadow-sm">
@@ -318,7 +328,7 @@
         <ProjectDetail :project="project" />
       </div>
 
-      <section class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <section ref="addMemberSection" class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="m-0 text-lg font-semibold text-slate-800">Project Provisioning Lifecycle</h2>
@@ -726,7 +736,7 @@ import InputText from 'primevue/inputtext'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Textarea from 'primevue/textarea'
-import { fetchUsers } from '../api/users'
+import { fetchUsers, sendUserInvite } from '../api/users'
 import {
   applyDebugTag,
   fromDateTimeLocalInput,
@@ -759,6 +769,7 @@ import UserList from '../components/UserList.vue'
 const props = defineProps({ id: { type: String, required: true } })
 const router = useRouter()
 
+const addMemberSection = ref(null)
 const project = ref(null)
 const projectForm = ref(createProjectForm())
 const users = ref([])
@@ -769,6 +780,7 @@ const loading = ref(false)
 const usersLoading = ref(false)
 const usageLoading = ref(false)
 const projectPacketsLoading = ref(false)
+const sendingPiInvite = ref(false)
 const provisioningActionLoading = ref(false)
 const debugProvisionLoading = ref(false)
 const savingProject = ref(false)
@@ -824,6 +836,36 @@ const availablePeople = computed(() =>
   ),
 )
 
+function buildProvisioningStepActions() {
+  return [
+    {
+      key: 'provision-project',
+      label: provisionButtonLabel.value,
+      icon: 'pi pi-cloud-upload',
+      loading: provisioningActionLoading.value,
+      disabled: !canProvision.value,
+      onClick: onProvisionInfrastructure,
+    },
+  ]
+}
+
+function buildPiInviteStepActions(piMembership, label = 'Send PI Invite') {
+  if (!piMembership || piMembership.account_made_at || piMembership.email_sent_at) {
+    return []
+  }
+
+  return [
+    {
+      key: `pi-invite-${piMembership.project_user_id}`,
+      label,
+      icon: 'pi pi-send',
+      loading: sendingPiInvite.value,
+      disabled: sendingPiInvite.value || !piMembership.email,
+      onClick: () => sendPiInvite(piMembership),
+    },
+  ]
+}
+
 const projectLifecycleSteps = computed(() => {
   const p = project.value
   if (!p) return []
@@ -853,7 +895,8 @@ const projectLifecycleSteps = computed(() => {
     step2 = {
       label: 'Create namespace in NRP',
       status: 'waiting',
-      actionRequired: 'Admin must click the "Create Namespace + Authentik Group" button above.',
+      actionRequired: 'Create the Kubernetes namespace and Authentik group to continue provisioning.',
+      actions: buildProvisioningStepActions(),
     }
   } else if (isCurrent('provisioning')) {
     step2 = {
@@ -868,6 +911,8 @@ const projectLifecycleSteps = computed(() => {
       status: 'error',
       timestamp: p.provisioning_started_at,
       description: p.provisioning_last_error || 'Provisioning failed.',
+      actionRequired: 'Resolve the provisioning issue, then retry this step.',
+      actions: buildProvisioningStepActions(),
     }
   } else if (provisioningDone) {
     step2 = {
@@ -892,8 +937,20 @@ const projectLifecycleSteps = computed(() => {
       description: 'PI has not yet been linked as a project member.',
       actionRequired:
         ps !== 'received'
-          ? 'Add the PI as a project member and send them an invite from their user page.'
+          ? 'Add the PI as a project member so account setup can begin.'
           : null,
+      actions: ps !== 'received'
+        ? [
+            {
+              key: 'add-pi-membership',
+              label: 'Add PI to Project',
+              icon: 'pi pi-user-plus',
+              severity: 'secondary',
+              outlined: true,
+              onClick: scrollToAddMemberSection,
+            },
+          ]
+        : [],
     }
   } else if (piMembership.account_made_at) {
     step3 = {
@@ -923,7 +980,10 @@ const projectLifecycleSteps = computed(() => {
     step3 = {
       label: 'PI creates account',
       status: 'waiting',
-      actionRequired: `Send an invite email to ${piLabel} from their user page so they can create a local account.`,
+      actionRequired: piMembership.email
+        ? `Send the invite email to ${piLabel} so they can create a local account.`
+        : `Add an email address for ${piLabel}, then send the invite email.`,
+      actions: buildPiInviteStepActions(piMembership),
       link: {
         to: { name: 'person-detail', params: { id: piMembership.id } },
         label: `View PI user page — ${piLabel}`,
@@ -1150,6 +1210,10 @@ async function loadProjectPackets() {
   }
 }
 
+function scrollToAddMemberSection() {
+  addMemberSection.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 async function saveProject() {
   if (!normalizeTextValue(projectForm.value.name)) {
     projectMessage.value = { severity: 'error', text: 'Project name is required.' }
@@ -1329,6 +1393,36 @@ async function onProvisionInfrastructure() {
   } finally {
     provisioningActionLoading.value = false
     await loadProject()
+  }
+}
+
+async function sendPiInvite(piMembership) {
+  if (!piMembership?.id) return
+  sendingPiInvite.value = true
+  projectMessage.value = null
+  try {
+    const result = await sendUserInvite(piMembership.id, {
+      expires_in_hours: 72,
+      invited_by: 'admin:project-lifecycle',
+      send_email: true,
+      metadata: {
+        trigger: 'project-lifecycle',
+        project_id: project.value?.id || null,
+      },
+    })
+    projectMessage.value = {
+      severity: 'success',
+      text: `Invite sent for ${piMembership.name || piMembership.email || 'the PI'}.`,
+      url: result?.invite_url || null,
+    }
+  } catch (err) {
+    projectMessage.value = {
+      severity: 'error',
+      text: toErrorMessage(err, 'Failed to send the PI invite.'),
+    }
+  } finally {
+    sendingPiInvite.value = false
+    await loadUsers()
   }
 }
 

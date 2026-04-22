@@ -840,6 +840,23 @@ const userLifecycleStepsByMembership = computed(() =>
   })),
 )
 
+function buildInviteStepActions(membership, label = 'Send User Invite') {
+  if (membership.email_sent_at || membership.account_made_at) {
+    return []
+  }
+
+  return [
+    {
+      key: `invite-${membership.project_user_id}`,
+      label,
+      icon: 'pi pi-send',
+      loading: sendingInvite.value,
+      disabled: sendingInvite.value || !person.value?.email,
+      onClick: sendPersonInvite,
+    },
+  ]
+}
+
 function buildAccountCreateLifecycleSteps(membership) {
   const step1 = {
     label: 'Received request account create',
@@ -858,7 +875,10 @@ function buildAccountCreateLifecycleSteps(membership) {
       : {
           label: 'Send account invite to user',
           status: 'waiting',
-          actionRequired: 'Admin must click "Send User Invite" to dispatch the invite email.',
+          actionRequired: person.value?.email
+            ? 'Send the invite email so the user can start account setup.'
+            : 'Add an email address for this person, then send the invite email.',
+          actions: buildInviteStepActions(membership),
         }
 
   let step3
@@ -925,10 +945,18 @@ function buildProjectCreatePiLifecycleSteps(membership) {
         }
       : {
           label: 'Send PI invite to user',
-          status: membership.account_made_at ? 'completed' : 'pending',
+          status: membership.account_made_at ? 'completed' : 'waiting',
           description: membership.account_made_at
             ? 'PI login was already available locally.'
-            : 'Invite is only needed if the PI does not yet have a local login.',
+            : null,
+          actionRequired: membership.account_made_at
+            ? null
+            : person.value?.email
+              ? 'Send the PI invite so they can create a local login.'
+              : 'Add an email address for this person, then send the PI invite.',
+          actions: membership.account_made_at
+            ? []
+            : buildInviteStepActions(membership, 'Send PI Invite'),
         }
 
   let step3
