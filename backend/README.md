@@ -172,6 +172,7 @@ Once running, visit http://localhost:8000/docs for interactive API docs.
 | `AMIE_USAGE_INTERVAL_MINUTES` | `1440` | Usage export interval and usage record bucket size (default: once daily) |
 | `AMIE_USAGE_GPU_CHARGE_FACTOR` | `1.0` | Multiplier applied to GPU usage when computing charge |
 | `AMIE_USAGE_DEFAULT_USERNAME` | `nrp-system` | Fallback username for usage records when no login is mapped |
+| `AMIE_USAGE_ALERT_EMAIL_ENABLED` | `true` | Send email for usage-worker stale/failure alerts; logs/webhooks/slack remain active when disabled |
 | `AMIE_ACCOUNT_CONFIRMATION_ENABLED` | `true` | Enable sending `notify_account_create` confirmations to AIME |
 | `AMIE_PACKET_REPROCESS_MAX_RETRIES` | `5` | Max packet re-ingest attempts before lockout |
 | `AMIE_PACKET_REPROCESS_LOCKOUT_MINUTES` | `30` | Lockout duration once retry limit is reached |

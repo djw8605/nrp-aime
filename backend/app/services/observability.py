@@ -377,6 +377,10 @@ class ObservabilityService:
             if lag is None:
                 continue
             if lag > settings.alert_worker_stale_seconds:
+                email_enabled = not (
+                    status["worker_name"] == "usage-worker"
+                    and not settings.amie_usage_alert_email_enabled
+                )
                 sent.append(
                     AlertService.send(
                         db,
@@ -386,6 +390,7 @@ class ObservabilityService:
                         title=f"Worker stale: {status['worker_name']}",
                         message=f"Worker heartbeat lag is {lag}s",
                         payload=status,
+                        email_enabled=email_enabled,
                     )
                 )
             else:

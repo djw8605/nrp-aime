@@ -181,6 +181,7 @@ npm run dev
 | `AMIE_USAGE_INTERVAL_MINUTES` | `1440` | Usage export interval and record bucket size (once daily) |
 | `AMIE_USAGE_GPU_CHARGE_FACTOR` | `1.0` | Multiplier applied to GPU usage when computing charge |
 | `AMIE_USAGE_DEFAULT_USERNAME` | `nrp-system` | Fallback username for usage records when no login is mapped |
+| `AMIE_USAGE_ALERT_EMAIL_ENABLED` | `true` | Send email for usage-worker stale/failure alerts; logs/webhooks/slack remain active when disabled |
 | `APP_SECRET_KEY` | `dev-change-me` | Secret used for signed invite state and token hashing pepper |
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Base URL used for invite accept/success/error redirects |
 | `BACKEND_BASE_URL` | `http://localhost:8000` | Base URL used for Authentik callback URL generation |

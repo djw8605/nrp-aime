@@ -60,6 +60,9 @@ spec:
                 name: nrp-aime-config
             - secretRef:
                 name: nrp-aime-secrets
+          env:
+            - name: AMIE_USAGE_ALERT_EMAIL_ENABLED
+              value: "false"
           resources:
             requests:
               cpu: 50m

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     amie_usage_interval_minutes: int = 1440
     amie_usage_gpu_charge_factor: float = 1.0
     amie_usage_default_username: str = "nrp-system"
+    amie_usage_alert_email_enabled: bool = True
     amie_account_confirmation_enabled: bool = True
     amie_packet_reprocess_max_retries: int = 5
     amie_packet_reprocess_lockout_minutes: int = 30

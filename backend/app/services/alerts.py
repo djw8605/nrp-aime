@@ -216,6 +216,7 @@ class AlertService:
         title: str,
         message: str,
         payload: dict[str, Any] | None = None,
+        email_enabled: bool = True,
         force: bool = False,
     ) -> dict[str, Any]:
         """Send alert to configured hooks with DB-backed throttling."""
@@ -281,19 +282,20 @@ class AlertService:
                 errors.append(f"slack:{exc}")
                 logger.exception("Failed to send slack alert")
 
-        try:
-            if cls._send_email_alert(
-                alert_key=alert_key,
-                category=category,
-                severity=severity,
-                title=title,
-                message=message,
-                payload=payload,
-            ):
-                sent_channels.append("email")
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"email:{exc}")
-            logger.exception("Failed to send email alert")
+        if email_enabled:
+            try:
+                if cls._send_email_alert(
+                    alert_key=alert_key,
+                    category=category,
+                    severity=severity,
+                    title=title,
+                    message=message,
+                    payload=payload,
+                ):
+                    sent_channels.append("email")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"email:{exc}")
+                logger.exception("Failed to send email alert")
 
         if not sent_channels:
             logger.warning(
