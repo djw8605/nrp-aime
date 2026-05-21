@@ -25,6 +25,45 @@ def test_build_html_email_renders_project_page_url_as_clickable_link():
     assert f">{project_url}</a>" in html
 
 
+def test_parse_recipients_accepts_comma_separated_email_list():
+    recipients = AlertService._parse_recipients(
+        "ops@example.org, admin@example.org, , alerts@example.org "
+    )
+
+    assert recipients == [
+        "ops@example.org",
+        "admin@example.org",
+        "alerts@example.org",
+    ]
+
+
+def test_send_email_alert_uses_all_configured_recipients():
+    with (
+        patch(
+            "app.services.alerts.settings.alert_email_to",
+            "ops@example.org,admin@example.org, alerts@example.org",
+        ),
+        patch("app.services.alerts.settings.alert_email_from", "alerts@example.org"),
+        patch("app.services.alerts.settings.alert_smtp_host", "smtp.example.org"),
+        patch("app.services.alerts.settings.alert_smtp_username", ""),
+        patch("app.services.alerts.smtplib.SMTP") as mock_smtp,
+    ):
+        sent = AlertService._send_email_alert(
+            alert_key="project_provision_required:1234",
+            category="project_provisioning",
+            severity="warn",
+            title="New project request received",
+            message="Project received.",
+        )
+
+    smtp = mock_smtp.return_value.__enter__.return_value
+    email_message = smtp.send_message.call_args.args[0]
+    assert sent is True
+    assert email_message["To"] == (
+        "ops@example.org, admin@example.org, alerts@example.org"
+    )
+
+
 def test_emit_required_alert_includes_project_page_link(db, make_project):
     project = make_project(
         db,
