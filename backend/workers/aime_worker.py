@@ -169,6 +169,14 @@ def sync_project_notifications(lifecycle_svc: AccountLifecycleService) -> dict[s
         return lifecycle_svc.reconcile_pending_project_notifications(db)
 
 
+def sync_lifecycle_notifications(
+    lifecycle_svc: AccountLifecycleService,
+) -> dict[str, int]:
+    """Sync pending notify_(project|account)_(in|re)activate replies to AIME."""
+    with SessionLocal() as db:
+        return lifecycle_svc.reconcile_pending_lifecycle_notifications(db)
+
+
 def run_worker(poll_interval: int = 60) -> None:
     """Poll AMIE for new packets indefinitely.
 
@@ -333,6 +341,21 @@ def run_worker(poll_interval: int = 60) -> None:
                     deferred=proj_result.get("deferred"),
                 )
 
+                _log_amie_interaction(
+                    "reconcile_pending_lifecycle_notifications.start",
+                    at=now_iso,
+                )
+                lifecycle_result = sync_lifecycle_notifications(lifecycle_svc)
+                _log_amie_interaction(
+                    "reconcile_pending_lifecycle_notifications.finish",
+                    at=now_iso,
+                    checked=lifecycle_result.get("checked"),
+                    notifications_sent=lifecycle_result.get("notifications_sent"),
+                    already_sent=lifecycle_result.get("already_sent"),
+                    failures=lifecycle_result.get("failures"),
+                    deferred=lifecycle_result.get("deferred"),
+                )
+
                 _update_worker_status(
                     is_active=True,
                     current_state="idle",
@@ -347,6 +370,7 @@ def run_worker(poll_interval: int = 60) -> None:
                         "last_successful_account_confirmation_sync_at": now_iso,
                         "account_confirmation_sync": sync_result,
                         "project_notification_sync": proj_result,
+                        "lifecycle_notification_sync": lifecycle_result,
                     },
                     mark_success=True,
                 )

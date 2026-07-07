@@ -721,6 +721,237 @@ class AccountLifecycleService:
             "deferred": deferred,
         }
 
+    # Incoming request packet type -> outgoing notify_* reply spec. Each
+    # ``request_*_(in|re)activate`` packet requires a matching ``notify_*``
+    # reply so the AMIE transaction can complete.
+    LIFECYCLE_NOTIFICATION_SPECS: dict[str, dict[str, str]] = {
+        "request_project_inactivate": {
+            "reply_type": "notify_project_inactivate",
+            "scope": "project",
+        },
+        "request_project_reactivate": {
+            "reply_type": "notify_project_reactivate",
+            "scope": "project",
+        },
+        "request_account_inactivate": {
+            "reply_type": "notify_account_inactivate",
+            "scope": "account",
+        },
+        "request_account_reactivate": {
+            "reply_type": "notify_account_reactivate",
+            "scope": "account",
+        },
+    }
+
+    @staticmethod
+    def _amie_packet_site_name(packet: AMIEPacket) -> str:
+        return str(
+            packet.remote_site_name
+            or packet.originating_site_name
+            or packet.local_site_name
+            or settings.amie_site_name
+            or "NRP"
+        )
+
+    def reconcile_pending_lifecycle_notifications(
+        self, db: Session
+    ) -> dict[str, int]:
+        """Send notify_(project|account)_(in|re)activate replies to AIME.
+
+        Finds every incoming ``request_*_(in|re)activate`` packet that has been
+        processed but does not yet have a successfully sent (or in-flight)
+        ``notify_*`` reply, then sends the protocol-required reply packet so the
+        AMIE transaction can complete.
+
+        Idempotency is keyed on the source request packet's ``packet_rec_id``
+        plus the reply ``event_type``. Because only incoming ``request_*``
+        packets are scanned, re-ingesting our own outgoing ``notify_*`` echo
+        (which the worker also polls) never triggers a duplicate reply.
+        """
+        request_packets = (
+            db.query(AMIEPacket)
+            .filter(
+                AMIEPacket.packet_type.in_(list(self.LIFECYCLE_NOTIFICATION_SPECS)),
+                AMIEPacket.processing_status == AMIEPacket.PROCESSING_STATUS_PROCESSED,
+                or_(
+                    AMIEPacket.outgoing_flag.is_(False),
+                    AMIEPacket.outgoing_flag.is_(None),
+                ),
+            )
+            .order_by(AMIEPacket.packet_rec_id.asc())
+            .all()
+        )
+
+        checked = 0
+        notifications_sent = 0
+        already_sent = 0
+        failures = 0
+        deferred = 0
+
+        can_send = bool(
+            settings.amie_account_confirmation_enabled and settings.amie_api_key
+        )
+
+        for packet in request_packets:
+            checked += 1
+            spec = self.LIFECYCLE_NOTIFICATION_SPECS[packet.packet_type]
+            reply_type = spec["reply_type"]
+            scope = spec["scope"]
+            site_name = self._amie_packet_site_name(packet)
+            source_packet_rec_id = packet.packet_rec_id
+
+            existing = (
+                db.query(OutboundPacketLog)
+                .filter(
+                    OutboundPacketLog.event_type == reply_type,
+                    OutboundPacketLog.source_packet_rec_id == source_packet_rec_id,
+                    OutboundPacketLog.status.in_(
+                        [OutboundPacketLog.STATUS_SENT, OutboundPacketLog.STATUS_PENDING]
+                    ),
+                )
+                .first()
+            )
+            if existing is not None:
+                already_sent += 1
+                _log_amie_interaction(
+                    "lifecycle_notification.already_sent",
+                    reply_type=reply_type,
+                    site_name=site_name,
+                    source_packet_rec_id=source_packet_rec_id,
+                    outbound_status=existing.status,
+                )
+                continue
+
+            if not can_send:
+                _log_amie_interaction(
+                    "lifecycle_notification.deferred_no_api_key",
+                    reply_type=reply_type,
+                    site_name=site_name,
+                    source_packet_rec_id=source_packet_rec_id,
+                )
+                continue
+
+            outbound = None
+            try:
+                with AMIEClient(
+                    site_name=site_name,
+                    api_key=settings.amie_api_key,
+                    amie_url=settings.amie_url,
+                ) as amie_client:
+                    _log_amie_interaction(
+                        "lifecycle_notification.get_packet.start",
+                        reply_type=reply_type,
+                        site_name=site_name,
+                        source_packet_rec_id=source_packet_rec_id,
+                    )
+                    source_packet = amie_client.get_packet(
+                        packet_rec_id=source_packet_rec_id
+                    )
+                    _log_amie_interaction(
+                        "lifecycle_notification.get_packet.finish",
+                        reply_type=reply_type,
+                        site_name=site_name,
+                        source_packet_rec_id=source_packet_rec_id,
+                    )
+
+                    project_id = self._source_packet_project_id(source_packet)
+                    resource = self._source_packet_resource(source_packet)
+                    person_id = self._clean_scalar(
+                        self._source_packet_field(source_packet, "PersonID")
+                    )
+                    comment = self._clean_scalar(
+                        self._source_packet_field(source_packet, "Comment")
+                    )
+
+                    missing: list[str] = []
+                    if not project_id:
+                        missing.append("project_id")
+                    if not resource:
+                        missing.append("resource")
+                    if scope == "account" and not person_id:
+                        missing.append("person_id")
+                    if missing:
+                        deferred += 1
+                        _log_amie_interaction(
+                            "lifecycle_notification.deferred_required_fields_missing",
+                            reply_type=reply_type,
+                            site_name=site_name,
+                            source_packet_rec_id=source_packet_rec_id,
+                            missing=",".join(missing),
+                        )
+                        continue
+
+                    reply = source_packet.reply_packet(packet_type=reply_type)
+                    reply.ProjectID = project_id
+                    reply.ResourceList = [resource]
+                    # Only account-scoped notify_* packets carry PersonID/Comment;
+                    # project-scoped replies allow neither per the AMIE spec.
+                    if scope == "account":
+                        reply.PersonID = person_id
+                        if comment:
+                            reply.Comment = comment
+
+                    outbound = OutboundPacketService.start_or_resume(
+                        db,
+                        event_type=reply_type,
+                        source_packet_rec_id=source_packet_rec_id,
+                        source_trans_rec_id=packet.trans_rec_id,
+                        source_transaction_id=packet.transaction_id,
+                        payload={
+                            "packet_type": reply_type,
+                            "project_id": project_id,
+                            "resource": resource,
+                            "person_id": person_id,
+                        },
+                        worker_name="aime-worker",
+                    )
+
+                    _log_amie_interaction(
+                        "lifecycle_notification.send_packet.start",
+                        reply_type=reply_type,
+                        site_name=site_name,
+                        source_packet_rec_id=source_packet_rec_id,
+                    )
+                    send_result = amie_client.send_packet(reply)
+                    outbound_packet_rec_id = getattr(send_result, "packet_rec_id", None)
+                    _log_amie_interaction(
+                        "lifecycle_notification.send_packet.finish",
+                        reply_type=reply_type,
+                        site_name=site_name,
+                        source_packet_rec_id=source_packet_rec_id,
+                        outbound_packet_rec_id=outbound_packet_rec_id,
+                    )
+                    OutboundPacketService.mark_sent(db, outbound, send_result=send_result)
+                    notifications_sent += 1
+                    db.commit()
+                    logger.info(
+                        "Sent %s for source_packet_rec_id=%s",
+                        reply_type,
+                        source_packet_rec_id,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                failures += 1
+                logger.exception(
+                    "Failed to send %s for source_packet_rec_id=%s",
+                    reply_type,
+                    source_packet_rec_id,
+                )
+                OutboundPacketService.safe_mark_failed(
+                    db,
+                    row=outbound,
+                    event_type=reply_type,
+                    error_message=str(exc),
+                )
+
+        return {
+            "checked": checked,
+            "notifications_sent": notifications_sent,
+            "already_sent": already_sent,
+            "failures": failures,
+            "deferred": deferred,
+        }
+
     def reconcile_pending_project_notifications(
         self, db: Session
     ) -> dict[str, int]:
