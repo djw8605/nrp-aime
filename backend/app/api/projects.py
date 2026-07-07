@@ -906,7 +906,7 @@ def debug_provision_project(
 
     # Check if PI still needs to onboard.
     if project.lifecycle_state == Project.LIFECYCLE_STATE_PROVISIONED:
-        if ProjectProvisioningService._has_pending_pi_account(project):
+        if ProjectProvisioningService.has_pending_pi_account(project):
             project.set_lifecycle_state(Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT)
 
     db.commit()

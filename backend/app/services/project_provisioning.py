@@ -39,10 +39,19 @@ class ProjectProvisioningService:
             ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
         )
         for pu in project.project_users:
+            # Deactivated memberships (e.g. a transferred-out PI) must not
+            # hold the project hostage.
+            if not pu.is_active:
+                continue
             if str(pu.role or "").strip().lower() == "pi":
                 if pu.account_state not in completed_states:
                     return True
         return False
+
+    @classmethod
+    def has_pending_pi_account(cls, project: Project) -> bool:
+        """Public check for a PI member still awaiting onboarding."""
+        return cls._has_pending_pi_account(project)
 
     @staticmethod
     def _required_alert_key(project: Project) -> str:
@@ -115,7 +124,7 @@ class ProjectProvisioningService:
         if project.lifecycle_state == Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT:
             # Go back to provisioned so the normal notification reconciler
             # picks this project up and sends notify_project_create.
-            project.lifecycle_state = Project.LIFECYCLE_STATE_PROVISIONED
+            project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
 
     def emit_required_alert(self, db: Session, *, project: Project, reason: str) -> None:
         """Send admin alert for newly received project provisioning action."""

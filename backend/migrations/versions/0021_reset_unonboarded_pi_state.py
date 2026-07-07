@@ -35,6 +35,23 @@ def upgrade() -> None:
           AND (remote_site_login IS NULL OR remote_site_login = '')
         """
     )
+    # Migration 0020 backfilled legacy 'account_made' rows to
+    # 'user_completed_oauth' without stamping account_made_at.  The
+    # application always stamps account_made_at when it sets
+    # user_completed_oauth, so rows in that state with no completion
+    # timestamp and no remote login can only be 0020 residue of the same
+    # mis-seeding bug.
+    op.execute(
+        """
+        UPDATE project_users
+        SET account_state = 'received',
+            account_state_updated_at = CURRENT_TIMESTAMP
+        WHERE account_state = 'user_completed_oauth'
+          AND lower(role) = 'pi'
+          AND account_made_at IS NULL
+          AND (remote_site_login IS NULL OR remote_site_login = '')
+        """
+    )
 
 
 def downgrade() -> None:

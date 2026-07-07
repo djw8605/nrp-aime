@@ -809,26 +809,10 @@ class AccountLifecycleService:
                 )
                 continue
 
-            # The PI's account must exist before notify_project_create can be
-            # sent.  Reflect a still-onboarding PI in the lifecycle state so
-            # the wait is visible instead of silently deferring every cycle,
-            # and resume automatically once the PI finishes onboarding.
-            if ProjectProvisioningService._has_pending_pi_account(project):
-                ProjectProvisioningService.mark_waiting_pi_account(project)
-                db.commit()
-                deferred += 1
-                _log_amie_interaction(
-                    "project_notification.deferred_pi_account_pending",
-                    project_id=project.id,
-                    site_name=site_name,
-                    source_packet_rec_id=project.source_packet_rec_id,
-                )
-                continue
-            ProjectProvisioningService.mark_pi_account_ready(project)
-
             # notify_project_create is only a valid reply to a
             # request_project_create packet; never aim it at another packet
-            # type (e.g. a placeholder project sourced from an account packet).
+            # type (e.g. a placeholder project sourced from an account
+            # packet), and never gate such a project on PI onboarding.
             if (
                 source_packet_record is not None
                 and source_packet_record.packet_type != "request_project_create"
@@ -841,8 +825,27 @@ class AccountLifecycleService:
                     source_packet_rec_id=project.source_packet_rec_id,
                     source_packet_type=source_packet_record.packet_type,
                 )
-                db.commit()
                 continue
+
+            # The PI's account must exist before notify_project_create can be
+            # sent.  Reflect a still-onboarding PI in the lifecycle state so
+            # the wait is visible instead of silently deferring every cycle,
+            # and resume automatically once the PI finishes onboarding.
+            if ProjectProvisioningService.has_pending_pi_account(project):
+                ProjectProvisioningService.mark_waiting_pi_account(project)
+                db.commit()
+                deferred += 1
+                _log_amie_interaction(
+                    "project_notification.deferred_pi_account_pending",
+                    project_id=project.id,
+                    site_name=site_name,
+                    source_packet_rec_id=project.source_packet_rec_id,
+                )
+                continue
+            # Commit the waiting -> provisioned flip immediately so a later
+            # send failure (or a disabled sender) cannot roll it back.
+            ProjectProvisioningService.mark_pi_account_ready(project)
+            db.commit()
 
             if not can_send:
                 _log_amie_interaction(
