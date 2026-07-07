@@ -179,6 +179,22 @@ def data_project_create_packet(packet_rec_id: int = 3001, **body_overrides: Any)
     }
 
 
+def data_account_create_packet(packet_rec_id: int = 3101, **body_overrides: Any) -> dict[str, Any]:
+    """Build a ``data_account_create`` packet."""
+    body = {
+        "DnList": ["/C=US/O=Example/CN=Taylor Member"],
+        "GlobalID": "GLOBAL-2001",
+        "PersonID": "USER-2001",
+        "ProjectID": "PROJECT-001",
+    }
+    body.update(body_overrides)
+    return {
+        "type": "data_account_create",
+        "header": packet_header(packet_rec_id),
+        "body": body,
+    }
+
+
 def request_account_inactivate_packet(
     packet_rec_id: int = 4001,
     **body_overrides: Any,
