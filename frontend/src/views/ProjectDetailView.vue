@@ -866,6 +866,16 @@ function buildPiInviteStepActions(piMembership, label = 'Send PI Invite') {
   ]
 }
 
+// Timestamp of the notify_project_create packet sent to AIME. Comes from the
+// project packet log (newest-first) — provisioning_alerted_at is the admin-alert
+// timestamp and is cleared when provisioning succeeds, so it cannot be used here.
+const notifyProjectCreateSentAt = computed(() => {
+  const packet = projectPackets.value.find(
+    (pkt) => String(pkt?.packet_type || '').trim().toLowerCase() === 'notify_project_create',
+  )
+  return packet?.received_at || null
+})
+
 const projectLifecycleSteps = computed(() => {
   const p = project.value
   if (!p) return []
@@ -1015,7 +1025,7 @@ const projectLifecycleSteps = computed(() => {
     step4 = {
       label: 'Notify project create to AIME server',
       status: 'completed',
-      timestamp: p.provisioning_alerted_at,
+      timestamp: notifyProjectCreateSentAt.value,
       description: 'Project create notification sent to AIME.',
     }
   } else {
