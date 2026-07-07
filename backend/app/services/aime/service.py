@@ -329,6 +329,19 @@ class AIMEService:
         logger.info("Created placeholder user for PersonID=%s", person_id)
         return user
 
+    @staticmethod
+    def _advance_account_state(project_user: ProjectUser, state: str) -> None:
+        """Advance an account state forward only.
+
+        Data packets echo information the site already confirmed, so they must
+        never move a membership backwards (e.g. ``aime_notified`` or
+        ``covered_by_project_notification`` back to ``user_completed_oauth``).
+        """
+        current_rank = ProjectUser.ACCOUNT_STATE_RANK.get(project_user.account_state, 0)
+        target_rank = ProjectUser.ACCOUNT_STATE_RANK.get(state, 0)
+        if target_rank >= current_rank:
+            project_user.set_account_state(state)
+
     def _refresh_user_active_from_accounts(self, db: Session, user: User) -> None:
         has_active_account = (
             db.query(ProjectUser.id)
@@ -993,7 +1006,9 @@ class AIMEService:
             )
             for pu in project_users:
                 pu.is_active = True
-                pu.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
+                self._advance_account_state(
+                    pu, ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH
+                )
                 if pu.account_made_at is None:
                     pu.account_made_at = datetime.now(UTC)
                 result = self.authentik_service.ensure_user_in_project(
@@ -1077,7 +1092,9 @@ class AIMEService:
             if project_users:
                 for pu in project_users:
                     pu.is_active = True
-                    pu.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
+                    self._advance_account_state(
+                        pu, ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH
+                    )
                     if pu.account_made_at is None:
                         pu.account_made_at = datetime.now(UTC)
                     result = self.authentik_service.ensure_user_in_project(

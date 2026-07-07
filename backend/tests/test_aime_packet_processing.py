@@ -19,6 +19,8 @@ from tests.support import (
     TrackingKubernetesService,
     TrackingProjectProvisioningService,
     create_test_session,
+    data_account_create_packet,
+    data_project_create_packet,
     inform_transaction_complete_packet,
     request_account_create_packet,
     request_account_inactivate_packet,
@@ -214,6 +216,70 @@ class AIMEPacketProcessingTests(unittest.TestCase):
         self.assertTrue(membership.is_active)
         self.assertEqual(new_user_packet.user_person_id, "USER-2001")
         self.assertEqual(new_user_packet.project_id, "PROJECT-001")
+
+    def test_data_account_create_does_not_downgrade_terminal_account_state(self) -> None:
+        self.service.ingest_packet(self.db, request_account_create_packet())
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        user = self.db.query(User).filter_by(person_id="USER-2001").one()
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, user_id=user.id)
+            .one()
+        )
+        membership.set_account_state(ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED)
+        self.db.commit()
+
+        result = self.service.ingest_packet(self.db, data_account_create_packet())
+
+        self.assertTrue(result.handled)
+        self.db.refresh(membership)
+        self.assertEqual(
+            membership.account_state,
+            ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+        )
+
+    def test_data_account_create_advances_pre_oauth_account_state(self) -> None:
+        self.service.ingest_packet(self.db, request_account_create_packet())
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        user = self.db.query(User).filter_by(person_id="USER-2001").one()
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, user_id=user.id)
+            .one()
+        )
+        membership.set_account_state(ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT)
+        self.db.commit()
+
+        result = self.service.ingest_packet(self.db, data_account_create_packet())
+
+        self.assertTrue(result.handled)
+        self.db.refresh(membership)
+        self.assertEqual(
+            membership.account_state,
+            ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+        )
+
+    def test_data_project_create_does_not_downgrade_covered_pi(self) -> None:
+        self.service.ingest_packet(self.db, request_project_create_packet())
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, role="pi")
+            .one()
+        )
+        membership.set_account_state(
+            ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT
+        )
+        self.db.commit()
+
+        result = self.service.ingest_packet(self.db, data_project_create_packet())
+
+        self.assertTrue(result.handled)
+        self.db.refresh(membership)
+        self.assertEqual(
+            membership.account_state,
+            ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+        )
 
     def test_request_account_inactivate_deactivates_membership_and_retains_user_record(self) -> None:
         project = self._make_project(active=True)

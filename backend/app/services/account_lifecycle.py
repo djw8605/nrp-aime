@@ -1115,3 +1115,257 @@ class AccountLifecycleService:
             "failures": failures,
             "deferred": deferred,
         }
+
+    # Incoming data packets that the site must close with an
+    # inform_transaction_complete reply.
+    _TRANSACTION_DATA_PACKET_TYPES = (
+        "data_project_create",
+        "data_account_create",
+    )
+
+    def _activate_project_for_completed_transaction(
+        self,
+        db: Session,
+        packet: AMIEPacket,
+        *,
+        site_name: str,
+    ) -> None:
+        """Advance a project to ``active`` once its create transaction closed.
+
+        The data_project_create packet is AMIE's final word in the
+        project-create transaction; after the site replies with
+        inform_transaction_complete the project is live on both sides.
+        """
+        if packet.packet_type != "data_project_create":
+            return
+
+        project = None
+        if packet.trans_rec_id is not None:
+            project = (
+                db.query(Project)
+                .filter(Project.source_trans_rec_id == packet.trans_rec_id)
+                .first()
+            )
+        if project is None:
+            raw_body = (packet.raw_packet or {}).get("body", {})
+            project_id = str(raw_body.get("ProjectID") or "").strip() or None
+            if project_id:
+                # Site-scoped lookup: prefer the packet's site, fall back to
+                # legacy rows with no site, but never cross into another
+                # site's project of the same ProjectID.
+                query = db.query(Project).filter(
+                    Project.site_project_id == project_id
+                )
+                project = query.filter(
+                    Project.source_site_name == site_name
+                ).first()
+                if project is None:
+                    project = query.filter(
+                        or_(
+                            Project.source_site_name.is_(None),
+                            Project.source_site_name == "",
+                        )
+                    ).first()
+        if project is None:
+            _log_amie_interaction(
+                "transaction_completion.project_not_found",
+                packet_rec_id=packet.packet_rec_id,
+                trans_rec_id=packet.trans_rec_id,
+            )
+            return
+
+        # Only advance from aime_notified; never reactivate an inactivated
+        # project from a replayed data packet.
+        if project.lifecycle_state == Project.LIFECYCLE_STATE_AIME_NOTIFIED:
+            project.set_lifecycle_state(Project.LIFECYCLE_STATE_ACTIVE)
+            _log_amie_interaction(
+                "transaction_completion.project_activated",
+                project_id=project.id,
+                trans_rec_id=packet.trans_rec_id,
+            )
+
+    def reconcile_pending_transaction_completions(self, db: Session) -> dict[str, int]:
+        """Reply inform_transaction_complete to processed AMIE data packets.
+
+        AMIE answers the site's notify_project_create / notify_account_create
+        with a data packet and then waits for the site to close the
+        transaction with an inform_transaction_complete reply.  Find every
+        processed incoming data packet that has no successful outbound
+        completion record and send that reply; when a project-create
+        transaction completes, advance the project from ``aime_notified``
+        to ``active``.
+        """
+        # Self-heal pass: activate projects whose completion already went out
+        # but whose activation was not recorded (e.g. interrupted worker).
+        # Bounded by the handful of projects sitting in aime_notified.
+        activated = 0
+        stuck_projects = (
+            db.query(Project)
+            .filter(
+                Project.lifecycle_state == Project.LIFECYCLE_STATE_AIME_NOTIFIED,
+                Project.source_trans_rec_id.isnot(None),
+            )
+            .all()
+        )
+        for project in stuck_projects:
+            completion_sent = (
+                db.query(OutboundPacketLog.id)
+                .filter(
+                    OutboundPacketLog.event_type == "inform_transaction_complete",
+                    OutboundPacketLog.source_trans_rec_id == project.source_trans_rec_id,
+                    OutboundPacketLog.status == OutboundPacketLog.STATUS_SENT,
+                )
+                .first()
+            )
+            if completion_sent is not None:
+                project.set_lifecycle_state(Project.LIFECYCLE_STATE_ACTIVE)
+                activated += 1
+                _log_amie_interaction(
+                    "transaction_completion.project_activated",
+                    project_id=project.id,
+                    trans_rec_id=project.source_trans_rec_id,
+                )
+        if activated:
+            db.commit()
+
+        # Only load data packets that still lack a successful completion
+        # reply; completed transactions never re-enter the scan.
+        completed_packet_rec_ids = (
+            db.query(OutboundPacketLog.source_packet_rec_id)
+            .filter(
+                OutboundPacketLog.event_type == "inform_transaction_complete",
+                OutboundPacketLog.status == OutboundPacketLog.STATUS_SENT,
+                OutboundPacketLog.source_packet_rec_id.isnot(None),
+            )
+        )
+        data_packets = (
+            db.query(AMIEPacket)
+            .filter(
+                AMIEPacket.packet_type.in_(self._TRANSACTION_DATA_PACKET_TYPES),
+                AMIEPacket.processing_status == AMIEPacket.PROCESSING_STATUS_PROCESSED,
+                or_(
+                    AMIEPacket.outgoing_flag.is_(False),
+                    AMIEPacket.outgoing_flag.is_(None),
+                ),
+                AMIEPacket.packet_rec_id.notin_(completed_packet_rec_ids),
+            )
+            .all()
+        )
+
+        checked = 0
+        completions_sent = 0
+        failures = 0
+        deferred = 0
+
+        can_send = bool(
+            settings.amie_account_confirmation_enabled and settings.amie_api_key
+        )
+
+        for packet in data_packets:
+            checked += 1
+            site_name = str(
+                packet.remote_site_name
+                or packet.originating_site_name
+                or packet.local_site_name
+                or settings.amie_site_name
+                or "NRP"
+            )
+
+            if not can_send:
+                deferred += 1
+                _log_amie_interaction(
+                    "transaction_completion.deferred_sending_disabled",
+                    packet_rec_id=packet.packet_rec_id,
+                    site_name=site_name,
+                    confirmation_enabled=settings.amie_account_confirmation_enabled,
+                    api_key_configured=bool(settings.amie_api_key),
+                )
+                continue
+
+            # Create (or resume) the outbound row and commit it before the
+            # send so failure accounting survives the rollback in the except
+            # branch and retry counts accumulate on a single row.
+            outbound = OutboundPacketService.start_or_resume(
+                db,
+                event_type="inform_transaction_complete",
+                source_packet_rec_id=packet.packet_rec_id,
+                source_trans_rec_id=packet.trans_rec_id,
+                source_transaction_id=packet.transaction_id,
+                payload={
+                    "packet_type": "inform_transaction_complete",
+                    "source_packet_type": packet.packet_type,
+                    "status_code": "Success",
+                },
+                worker_name="aime-worker",
+            )
+            if OutboundPacketService.is_locked(outbound):
+                deferred += 1
+                _log_amie_interaction(
+                    "transaction_completion.deferred_locked",
+                    packet_rec_id=packet.packet_rec_id,
+                    site_name=site_name,
+                    locked_until=outbound.locked_until,
+                )
+                db.commit()
+                continue
+            db.commit()
+
+            try:
+                with AMIEClient(
+                    site_name=site_name,
+                    api_key=settings.amie_api_key,
+                    amie_url=settings.amie_url,
+                ) as amie_client:
+                    _log_amie_interaction(
+                        "transaction_completion.get_packet.start",
+                        packet_rec_id=packet.packet_rec_id,
+                        site_name=site_name,
+                        source_packet_type=packet.packet_type,
+                    )
+                    source_packet = amie_client.get_packet(
+                        packet_rec_id=packet.packet_rec_id
+                    )
+                    itc = source_packet.reply_packet(
+                        packet_type="inform_transaction_complete"
+                    )
+                    itc.StatusCode = "Success"
+                    itc.DetailCode = 1
+                    itc.Message = f"{packet.packet_type} processed"
+
+                    send_result = amie_client.send_packet(itc)
+                    OutboundPacketService.mark_sent(db, outbound, send_result=send_result)
+                    _log_amie_interaction(
+                        "transaction_completion.sent",
+                        packet_rec_id=packet.packet_rec_id,
+                        site_name=site_name,
+                        source_packet_type=packet.packet_type,
+                        outbound_packet_rec_id=getattr(
+                            send_result, "packet_rec_id", None
+                        ),
+                    )
+                    self._activate_project_for_completed_transaction(
+                        db, packet, site_name=site_name
+                    )
+                    completions_sent += 1
+                    db.commit()
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                failures += 1
+                logger.exception(
+                    "Failed to send inform_transaction_complete for packet_rec_id=%s",
+                    packet.packet_rec_id,
+                )
+                OutboundPacketService.safe_mark_failed(
+                    db,
+                    row=outbound,
+                    event_type="inform_transaction_complete",
+                    error_message=str(exc),
+                )
+
+        return {
+            "checked": checked,
+            "completions_sent": completions_sent,
+            "activated": activated,
+            "failures": failures,
+            "deferred": deferred,
+        }

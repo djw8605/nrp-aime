@@ -30,6 +30,8 @@ from tests.support import (
     TrackingKubernetesService,
     TrackingProjectProvisioningService,
     create_test_session,
+    data_account_create_packet,
+    data_project_create_packet,
     request_account_create_packet,
     request_project_create_packet,
 )
@@ -312,6 +314,154 @@ class AccountLifecycleTests(unittest.TestCase):
         self.assertEqual(sent_packet.ResourceList, ["cluster.example.org"])
         self.assertEqual(sent_packet.UserRemoteSiteLogin, "member-login")
         self.assertEqual(sent_packet.UserPersonID, "USER-2001")
+
+    def _ingest_project_create_with_data_reply(self) -> Project:
+        """Ingest an RPC + its data_project_create reply in one transaction."""
+        rpc = request_project_create_packet()
+        self.service.ingest_packet(self.db, rpc)
+
+        dpc = data_project_create_packet()
+        dpc["header"]["trans_rec_id"] = rpc["header"]["trans_rec_id"]
+        self.service.ingest_packet(self.db, dpc)
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_AIME_NOTIFIED)
+        self.db.commit()
+
+        FakeAMIEClient.source_packets[3001] = FakeSourcePacket(
+            "data_project_create",
+            dpc["body"],
+        )
+        return project
+
+    def test_reconcile_transaction_completions_sends_itc_and_activates_project(self) -> None:
+        project = self._ingest_project_create_with_data_reply()
+
+        lifecycle = AccountLifecycleService()
+        result = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.db.refresh(project)
+        self.assertEqual(result["completions_sent"], 1)
+        self.assertEqual(result["failures"], 0)
+
+        sent_packet = FakeAMIEClient.sent_packets[0]
+        self.assertEqual(sent_packet.packet_type, "inform_transaction_complete")
+        self.assertEqual(sent_packet.StatusCode, "Success")
+
+        outbound = (
+            self.db.query(OutboundPacketLog)
+            .filter_by(
+                event_type="inform_transaction_complete",
+                source_packet_rec_id=3001,
+            )
+            .one()
+        )
+        self.assertEqual(outbound.status, OutboundPacketLog.STATUS_SENT)
+        self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
+
+    def test_reconcile_transaction_completions_is_idempotent(self) -> None:
+        project = self._ingest_project_create_with_data_reply()
+
+        lifecycle = AccountLifecycleService()
+        first = lifecycle.reconcile_pending_transaction_completions(self.db)
+        second = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.db.refresh(project)
+        self.assertEqual(first["completions_sent"], 1)
+        self.assertEqual(second["completions_sent"], 0)
+        # Completed packets are excluded from the scan entirely.
+        self.assertEqual(second["checked"], 0)
+        self.assertEqual(len(FakeAMIEClient.sent_packets), 1)
+        self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
+
+    def test_reconcile_transaction_completions_self_heals_missed_activation(self) -> None:
+        project = self._ingest_project_create_with_data_reply()
+
+        lifecycle = AccountLifecycleService()
+        lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        # Simulate an activation that was lost after the completion was sent.
+        self.db.refresh(project)
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_AIME_NOTIFIED)
+        self.db.commit()
+
+        result = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.db.refresh(project)
+        self.assertEqual(result["activated"], 1)
+        self.assertEqual(result["completions_sent"], 0)
+        self.assertEqual(len(FakeAMIEClient.sent_packets), 1)
+        self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
+
+    def test_reconcile_transaction_completions_tracks_failures_and_recovers(self) -> None:
+        project = self._ingest_project_create_with_data_reply()
+
+        FakeAMIEClient.send_failures = 1
+        lifecycle = AccountLifecycleService()
+        failed = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.assertEqual(failed["failures"], 1)
+        self.assertEqual(failed["completions_sent"], 0)
+        outbound = (
+            self.db.query(OutboundPacketLog)
+            .filter_by(
+                event_type="inform_transaction_complete",
+                source_packet_rec_id=3001,
+            )
+            .one()
+        )
+        # The failure must be persisted with retry accounting on one row.
+        self.assertEqual(outbound.status, OutboundPacketLog.STATUS_RETRYING)
+        self.assertEqual(outbound.retry_count, 1)
+        self.db.refresh(project)
+        self.assertEqual(
+            project.lifecycle_state,
+            Project.LIFECYCLE_STATE_AIME_NOTIFIED,
+        )
+
+        # Next cycle resumes the same row and succeeds.
+        recovered = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.assertEqual(recovered["completions_sent"], 1)
+        self.db.refresh(outbound)
+        self.db.refresh(project)
+        self.assertEqual(outbound.status, OutboundPacketLog.STATUS_SENT)
+        self.assertEqual(
+            self.db.query(OutboundPacketLog)
+            .filter_by(event_type="inform_transaction_complete")
+            .count(),
+            1,
+        )
+        self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
+
+    def test_reconcile_transaction_completions_replies_to_data_account_create(self) -> None:
+        rac = request_account_create_packet()
+        self.service.ingest_packet(self.db, rac)
+
+        dac = data_account_create_packet()
+        dac["header"]["trans_rec_id"] = rac["header"]["trans_rec_id"]
+        self.service.ingest_packet(self.db, dac)
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        lifecycle_before = project.lifecycle_state
+
+        FakeAMIEClient.source_packets[3101] = FakeSourcePacket(
+            "data_account_create",
+            dac["body"],
+        )
+
+        lifecycle = AccountLifecycleService()
+        result = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.db.refresh(project)
+        self.assertEqual(result["completions_sent"], 1)
+        self.assertEqual(result["failures"], 0)
+
+        sent_packet = FakeAMIEClient.sent_packets[0]
+        self.assertEqual(sent_packet.packet_type, "inform_transaction_complete")
+        self.assertEqual(sent_packet.StatusCode, "Success")
+        # Account-transaction completion must not touch the project lifecycle.
+        self.assertEqual(project.lifecycle_state, lifecycle_before)
 
 
 if __name__ == "__main__":

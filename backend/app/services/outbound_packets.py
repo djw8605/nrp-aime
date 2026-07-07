@@ -45,6 +45,11 @@ class OutboundPacketService:
         worker_name: str | None = None,
     ) -> OutboundPacketLog:
         """Create or return an existing active outbound send row."""
+        active_statuses = [
+            OutboundPacketLog.STATUS_PENDING,
+            OutboundPacketLog.STATUS_RETRYING,
+            OutboundPacketLog.STATUS_LOCKED,
+        ]
         existing = None
         if project_user_id is not None:
             existing = (
@@ -52,13 +57,20 @@ class OutboundPacketService:
                 .filter(
                     OutboundPacketLog.project_user_id == project_user_id,
                     OutboundPacketLog.event_type == event_type,
-                    OutboundPacketLog.status.in_(
-                        [
-                            OutboundPacketLog.STATUS_PENDING,
-                            OutboundPacketLog.STATUS_RETRYING,
-                            OutboundPacketLog.STATUS_LOCKED,
-                        ]
-                    ),
+                    OutboundPacketLog.status.in_(active_statuses),
+                )
+                .order_by(OutboundPacketLog.created_at.desc())
+                .first()
+            )
+        elif source_packet_rec_id is not None:
+            # Packet-level sends (no project_user) resume by source packet so
+            # retry counts and lockouts accumulate on a single row.
+            existing = (
+                db.query(OutboundPacketLog)
+                .filter(
+                    OutboundPacketLog.source_packet_rec_id == source_packet_rec_id,
+                    OutboundPacketLog.event_type == event_type,
+                    OutboundPacketLog.status.in_(active_statuses),
                 )
                 .order_by(OutboundPacketLog.created_at.desc())
                 .first()

@@ -179,6 +179,22 @@ def data_project_create_packet(packet_rec_id: int = 3001, **body_overrides: Any)
     }
 
 
+def data_account_create_packet(packet_rec_id: int = 3101, **body_overrides: Any) -> dict[str, Any]:
+    """Build a ``data_account_create`` packet."""
+    body = {
+        "DnList": ["/C=US/O=Example/CN=Taylor Member"],
+        "GlobalID": "GLOBAL-2001",
+        "PersonID": "USER-2001",
+        "ProjectID": "PROJECT-001",
+    }
+    body.update(body_overrides)
+    return {
+        "type": "data_account_create",
+        "header": packet_header(packet_rec_id),
+        "body": body,
+    }
+
+
 def request_account_inactivate_packet(
     packet_rec_id: int = 4001,
     **body_overrides: Any,
@@ -301,6 +317,8 @@ class FakeAMIEClient:
     instances: list["FakeAMIEClient"] = []
     sent_packets: list[FakeReplyPacket] = []
     source_packets: dict[int, FakeSourcePacket] = {}
+    # Number of upcoming send_packet calls that should raise.
+    send_failures: int = 0
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.args = args
@@ -319,6 +337,7 @@ class FakeAMIEClient:
         cls.instances = []
         cls.sent_packets = []
         cls.source_packets = {}
+        cls.send_failures = 0
 
     def get_packet(self, *, packet_rec_id: int) -> Any:
         if packet_rec_id in type(self).source_packets:
@@ -333,6 +352,9 @@ class FakeAMIEClient:
         raise AssertionError(f"Unexpected packet_rec_id requested: {packet_rec_id}")
 
     def send_packet(self, packet: FakeReplyPacket) -> FakeSendResult:
+        if type(self).send_failures > 0:
+            type(self).send_failures -= 1
+            raise RuntimeError("simulated AMIE send failure")
         type(self).sent_packets.append(packet)
         outbound_packet_rec_id = 90000 + len(type(self).sent_packets)
         self.last_outbound_packet_rec_id = outbound_packet_rec_id
