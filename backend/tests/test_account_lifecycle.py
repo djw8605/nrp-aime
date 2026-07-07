@@ -81,6 +81,8 @@ class AccountLifecycleTests(unittest.TestCase):
         )
         membership.remote_site_login = "pi-login"
         membership.user.remote_site_login = "pi-login"
+        AccountLifecycleService.mark_email_sent(membership)
+        AccountLifecycleService.mark_account_made(membership)
         project.lifecycle_state = Project.LIFECYCLE_STATE_PROVISIONED
         self.db.commit()
 
@@ -116,6 +118,148 @@ class AccountLifecycleTests(unittest.TestCase):
         self.assertEqual(
             sent_packet.SitePersonId,
             [{"PersonID": "pi-local", "Site": "X-PORTAL"}],
+        )
+
+    def test_reconcile_project_notifications_waits_for_pi_onboarding(self) -> None:
+        source_packet = request_project_create_packet()
+        self.service.ingest_packet(self.db, source_packet)
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        project.lifecycle_state = Project.LIFECYCLE_STATE_PROVISIONED
+        self.db.commit()
+
+        lifecycle = AccountLifecycleService()
+        result = lifecycle.reconcile_pending_project_notifications(self.db)
+
+        self.db.refresh(project)
+        self.assertEqual(result["notifications_sent"], 0)
+        self.assertEqual(result["deferred"], 1)
+        self.assertEqual(FakeAMIEClient.sent_packets, [])
+        self.assertEqual(
+            project.lifecycle_state,
+            Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
+        )
+
+    def test_reconcile_project_notifications_resumes_after_pi_onboarding(self) -> None:
+        source_packet = request_project_create_packet()
+        self.service.ingest_packet(self.db, source_packet)
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, role="pi", resource="cluster.example.org")
+            .one()
+        )
+        membership.remote_site_login = "pi-login"
+        membership.user.remote_site_login = "pi-login"
+        AccountLifecycleService.mark_email_sent(membership)
+        AccountLifecycleService.mark_account_made(membership)
+        project.lifecycle_state = Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT
+        self.db.commit()
+
+        FakeAMIEClient.source_packets[1001] = FakeSourcePacket(
+            "request_project_create",
+            source_packet["body"],
+        )
+
+        lifecycle = AccountLifecycleService()
+        result = lifecycle.reconcile_pending_project_notifications(self.db)
+
+        self.db.refresh(project)
+        self.assertEqual(result["notifications_sent"], 1)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(
+            project.lifecycle_state,
+            Project.LIFECYCLE_STATE_AIME_NOTIFIED,
+        )
+
+    def test_reconcile_project_notifications_skips_non_project_create_source(self) -> None:
+        # A project created as a placeholder from request_account_create must
+        # never get a notify_project_create reply aimed at the account packet,
+        # and must not be flipped into waiting_pi_account either — even when
+        # the account packet carried a pi role.
+        self.service.ingest_packet(
+            self.db, request_account_create_packet(RoleList=["pi"])
+        )
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
+        self.db.commit()
+
+        lifecycle = AccountLifecycleService()
+        result = lifecycle.reconcile_pending_project_notifications(self.db)
+
+        self.db.refresh(project)
+        self.assertEqual(result["notifications_sent"], 0)
+        self.assertEqual(result["deferred"], 1)
+        self.assertEqual(FakeAMIEClient.sent_packets, [])
+        self.assertEqual(
+            project.lifecycle_state,
+            Project.LIFECYCLE_STATE_PROVISIONED,
+        )
+
+    def test_reconcile_project_notifications_persists_pi_ready_flip_when_sending_disabled(self) -> None:
+        source_packet = request_project_create_packet()
+        self.service.ingest_packet(self.db, source_packet)
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, role="pi", resource="cluster.example.org")
+            .one()
+        )
+        membership.remote_site_login = "pi-login"
+        membership.user.remote_site_login = "pi-login"
+        AccountLifecycleService.mark_email_sent(membership)
+        AccountLifecycleService.mark_account_made(membership)
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT)
+        self.db.commit()
+
+        lifecycle = AccountLifecycleService()
+        with patch.object(
+            account_lifecycle.settings, "amie_account_confirmation_enabled", False
+        ):
+            result = lifecycle.reconcile_pending_project_notifications(self.db)
+
+        # Discard anything left uncommitted: the flip must already be durable.
+        self.db.rollback()
+        self.db.expire_all()
+        self.assertEqual(result["notifications_sent"], 0)
+        self.assertEqual(FakeAMIEClient.sent_packets, [])
+        self.assertEqual(
+            project.lifecycle_state,
+            Project.LIFECYCLE_STATE_PROVISIONED,
+        )
+
+    def test_reconcile_project_notifications_ignores_inactive_pi_membership(self) -> None:
+        source_packet = request_project_create_packet()
+        self.service.ingest_packet(self.db, source_packet)
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, role="pi", resource="cluster.example.org")
+            .one()
+        )
+        membership.is_active = False
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
+        self.db.commit()
+
+        FakeAMIEClient.source_packets[1001] = FakeSourcePacket(
+            "request_project_create",
+            source_packet["body"],
+        )
+
+        lifecycle = AccountLifecycleService()
+        result = lifecycle.reconcile_pending_project_notifications(self.db)
+
+        # A deactivated PI membership must not push the project into
+        # waiting_pi_account.
+        self.db.refresh(project)
+        self.assertEqual(result["notifications_sent"], 0)
+        self.assertNotEqual(
+            project.lifecycle_state,
+            Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
         )
 
     def test_reconcile_pending_confirmations_sends_notify_account_create(self) -> None:

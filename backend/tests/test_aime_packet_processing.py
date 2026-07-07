@@ -140,7 +140,7 @@ class AIMEPacketProcessingTests(unittest.TestCase):
         self.assertTrue(pi_membership.is_active)
         self.assertEqual(
             pi_membership.account_state,
-            ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+            ProjectUser.ACCOUNT_STATE_RECEIVED,
         )
         self.assertEqual(pi_membership.source_packet_rec_id, 1001)
         self.assertFalse(other_membership.is_active)
@@ -148,6 +148,52 @@ class AIMEPacketProcessingTests(unittest.TestCase):
             self.db.query(AMIEAllocationPacket).count(),
             1,
         )
+
+    def test_request_project_create_seeds_pi_membership_awaiting_onboarding(self) -> None:
+        result = self.service.ingest_packet(self.db, request_project_create_packet())
+
+        self.assertTrue(result.handled)
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, role="pi")
+            .one()
+        )
+
+        self.assertEqual(membership.account_state, ProjectUser.ACCOUNT_STATE_RECEIVED)
+        self.assertIsNone(membership.account_made_at)
+        self.assertEqual(project.source_packet_rec_id, 1001)
+
+    def test_request_project_create_does_not_downgrade_onboarded_pi(self) -> None:
+        self.service.ingest_packet(self.db, request_project_create_packet())
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, role="pi")
+            .one()
+        )
+        membership.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
+        self.db.commit()
+
+        # Re-delivery of the same packet must not reset onboarding progress.
+        self.service.ingest_packet(self.db, request_project_create_packet())
+
+        self.db.refresh(membership)
+        self.assertEqual(
+            membership.account_state,
+            ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+        )
+
+    def test_request_account_create_preserves_project_source_packet_linkage(self) -> None:
+        self.service.ingest_packet(self.db, request_project_create_packet())
+        self.service.ingest_packet(self.db, request_account_create_packet())
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+
+        # The notify_project_create reply is keyed off the project's source
+        # packet; a later request_account_create must not clobber it.
+        self.assertEqual(project.source_packet_rec_id, 1001)
+        self.assertEqual(project.source_trans_rec_id, 2001)
 
     def test_request_account_create_creates_pending_membership_and_new_user_packet(self) -> None:
         result = self.service.ingest_packet(self.db, request_account_create_packet())
