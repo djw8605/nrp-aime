@@ -1083,6 +1083,8 @@ class AccountLifecycleService:
         self,
         db: Session,
         packet: AMIEPacket,
+        *,
+        site_name: str,
     ) -> None:
         """Advance a project to ``active`` once its create transaction closed.
 
@@ -1104,11 +1106,22 @@ class AccountLifecycleService:
             raw_body = (packet.raw_packet or {}).get("body", {})
             project_id = str(raw_body.get("ProjectID") or "").strip() or None
             if project_id:
-                project = (
-                    db.query(Project)
-                    .filter(Project.site_project_id == project_id)
-                    .first()
+                # Site-scoped lookup: prefer the packet's site, fall back to
+                # legacy rows with no site, but never cross into another
+                # site's project of the same ProjectID.
+                query = db.query(Project).filter(
+                    Project.site_project_id == project_id
                 )
+                project = query.filter(
+                    Project.source_site_name == site_name
+                ).first()
+                if project is None:
+                    project = query.filter(
+                        or_(
+                            Project.source_site_name.is_(None),
+                            Project.source_site_name == "",
+                        )
+                    ).first()
         if project is None:
             _log_amie_interaction(
                 "transaction_completion.project_not_found",
@@ -1171,27 +1184,23 @@ class AccountLifecycleService:
                 or "NRP"
             )
 
-            existing = (
+            already = (
                 db.query(OutboundPacketLog)
                 .filter(
                     OutboundPacketLog.event_type == "inform_transaction_complete",
                     OutboundPacketLog.source_packet_rec_id == packet.packet_rec_id,
-                    OutboundPacketLog.status.in_(
-                        [
-                            OutboundPacketLog.STATUS_SENT,
-                            OutboundPacketLog.STATUS_PENDING,
-                        ]
-                    ),
+                    OutboundPacketLog.status == OutboundPacketLog.STATUS_SENT,
                 )
                 .first()
             )
-            if existing is not None:
+            if already is not None:
                 already_sent += 1
-                if existing.status == OutboundPacketLog.STATUS_SENT:
-                    # Self-heal projects whose completion was sent but whose
-                    # activation did not get recorded.
-                    self._activate_project_for_completed_transaction(db, packet)
-                    db.commit()
+                # Self-heal projects whose completion was sent but whose
+                # activation did not get recorded.
+                self._activate_project_for_completed_transaction(
+                    db, packet, site_name=site_name
+                )
+                db.commit()
                 continue
 
             if not can_send:
@@ -1203,7 +1212,34 @@ class AccountLifecycleService:
                 )
                 continue
 
-            outbound = None
+            # Create (or resume) the outbound row and commit it before the
+            # send so failure accounting survives the rollback in the except
+            # branch and retry counts accumulate on a single row.
+            outbound = OutboundPacketService.start_or_resume(
+                db,
+                event_type="inform_transaction_complete",
+                source_packet_rec_id=packet.packet_rec_id,
+                source_trans_rec_id=packet.trans_rec_id,
+                source_transaction_id=packet.transaction_id,
+                payload={
+                    "packet_type": "inform_transaction_complete",
+                    "source_packet_type": packet.packet_type,
+                    "status_code": "Success",
+                },
+                worker_name="aime-worker",
+            )
+            if OutboundPacketService.is_locked(outbound):
+                deferred += 1
+                _log_amie_interaction(
+                    "transaction_completion.deferred_locked",
+                    packet_rec_id=packet.packet_rec_id,
+                    site_name=site_name,
+                    locked_until=outbound.locked_until,
+                )
+                db.commit()
+                continue
+            db.commit()
+
             try:
                 with AMIEClient(
                     site_name=site_name,
@@ -1226,20 +1262,6 @@ class AccountLifecycleService:
                     itc.DetailCode = 1
                     itc.Message = f"{packet.packet_type} processed"
 
-                    outbound = OutboundPacketService.start_or_resume(
-                        db,
-                        event_type="inform_transaction_complete",
-                        source_packet_rec_id=packet.packet_rec_id,
-                        source_trans_rec_id=packet.trans_rec_id,
-                        source_transaction_id=packet.transaction_id,
-                        payload={
-                            "packet_type": "inform_transaction_complete",
-                            "source_packet_type": packet.packet_type,
-                            "status_code": "Success",
-                        },
-                        worker_name="aime-worker",
-                    )
-
                     send_result = amie_client.send_packet(itc)
                     OutboundPacketService.mark_sent(db, outbound, send_result=send_result)
                     _log_amie_interaction(
@@ -1251,7 +1273,9 @@ class AccountLifecycleService:
                             send_result, "packet_rec_id", None
                         ),
                     )
-                    self._activate_project_for_completed_transaction(db, packet)
+                    self._activate_project_for_completed_transaction(
+                        db, packet, site_name=site_name
+                    )
                     completions_sent += 1
                     db.commit()
             except Exception as exc:  # noqa: BLE001

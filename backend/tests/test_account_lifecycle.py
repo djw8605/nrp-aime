@@ -229,6 +229,47 @@ class AccountLifecycleTests(unittest.TestCase):
         self.assertEqual(len(FakeAMIEClient.sent_packets), 1)
         self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
 
+    def test_reconcile_transaction_completions_tracks_failures_and_recovers(self) -> None:
+        project = self._ingest_project_create_with_data_reply()
+
+        FakeAMIEClient.send_failures = 1
+        lifecycle = AccountLifecycleService()
+        failed = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.assertEqual(failed["failures"], 1)
+        self.assertEqual(failed["completions_sent"], 0)
+        outbound = (
+            self.db.query(OutboundPacketLog)
+            .filter_by(
+                event_type="inform_transaction_complete",
+                source_packet_rec_id=3001,
+            )
+            .one()
+        )
+        # The failure must be persisted with retry accounting on one row.
+        self.assertEqual(outbound.status, OutboundPacketLog.STATUS_RETRYING)
+        self.assertEqual(outbound.retry_count, 1)
+        self.db.refresh(project)
+        self.assertEqual(
+            project.lifecycle_state,
+            Project.LIFECYCLE_STATE_AIME_NOTIFIED,
+        )
+
+        # Next cycle resumes the same row and succeeds.
+        recovered = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.assertEqual(recovered["completions_sent"], 1)
+        self.db.refresh(outbound)
+        self.db.refresh(project)
+        self.assertEqual(outbound.status, OutboundPacketLog.STATUS_SENT)
+        self.assertEqual(
+            self.db.query(OutboundPacketLog)
+            .filter_by(event_type="inform_transaction_complete")
+            .count(),
+            1,
+        )
+        self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
+
     def test_reconcile_transaction_completions_replies_to_data_account_create(self) -> None:
         rac = request_account_create_packet()
         self.service.ingest_packet(self.db, rac)
