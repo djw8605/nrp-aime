@@ -195,6 +195,46 @@ def data_account_create_packet(packet_rec_id: int = 3101, **body_overrides: Any)
     }
 
 
+def request_project_inactivate_packet(
+    packet_rec_id: int = 8001,
+    **body_overrides: Any,
+) -> dict[str, Any]:
+    """Build a ``request_project_inactivate`` packet."""
+    body = {
+        "AllocatedResource": "cluster.example.org",
+        "Comment": "suspend project",
+        "GrantNumber": "TG-TEST123",
+        "ProjectID": "PROJECT-001",
+        "ResourceList": ["cluster.example.org"],
+    }
+    body.update(body_overrides)
+    return {
+        "type": "request_project_inactivate",
+        "header": packet_header(packet_rec_id),
+        "body": body,
+    }
+
+
+def request_project_reactivate_packet(
+    packet_rec_id: int = 9001,
+    **body_overrides: Any,
+) -> dict[str, Any]:
+    """Build a ``request_project_reactivate`` packet."""
+    body = {
+        "AllocatedResource": "cluster.example.org",
+        "Comment": "resume project",
+        "GrantNumber": "TG-TEST123",
+        "ProjectID": "PROJECT-001",
+        "ResourceList": ["cluster.example.org"],
+    }
+    body.update(body_overrides)
+    return {
+        "type": "request_project_reactivate",
+        "header": packet_header(packet_rec_id),
+        "body": body,
+    }
+
+
 def request_account_inactivate_packet(
     packet_rec_id: int = 4001,
     **body_overrides: Any,
