@@ -1151,6 +1151,49 @@ class AccountLifecycleService:
         transaction completes, advance the project from ``aime_notified``
         to ``active``.
         """
+        # Self-heal pass: activate projects whose completion already went out
+        # but whose activation was not recorded (e.g. interrupted worker).
+        # Bounded by the handful of projects sitting in aime_notified.
+        activated = 0
+        stuck_projects = (
+            db.query(Project)
+            .filter(
+                Project.lifecycle_state == Project.LIFECYCLE_STATE_AIME_NOTIFIED,
+                Project.source_trans_rec_id.isnot(None),
+            )
+            .all()
+        )
+        for project in stuck_projects:
+            completion_sent = (
+                db.query(OutboundPacketLog.id)
+                .filter(
+                    OutboundPacketLog.event_type == "inform_transaction_complete",
+                    OutboundPacketLog.source_trans_rec_id == project.source_trans_rec_id,
+                    OutboundPacketLog.status == OutboundPacketLog.STATUS_SENT,
+                )
+                .first()
+            )
+            if completion_sent is not None:
+                project.set_lifecycle_state(Project.LIFECYCLE_STATE_ACTIVE)
+                activated += 1
+                _log_amie_interaction(
+                    "transaction_completion.project_activated",
+                    project_id=project.id,
+                    trans_rec_id=project.source_trans_rec_id,
+                )
+        if activated:
+            db.commit()
+
+        # Only load data packets that still lack a successful completion
+        # reply; completed transactions never re-enter the scan.
+        completed_packet_rec_ids = (
+            db.query(OutboundPacketLog.source_packet_rec_id)
+            .filter(
+                OutboundPacketLog.event_type == "inform_transaction_complete",
+                OutboundPacketLog.status == OutboundPacketLog.STATUS_SENT,
+                OutboundPacketLog.source_packet_rec_id.isnot(None),
+            )
+        )
         data_packets = (
             db.query(AMIEPacket)
             .filter(
@@ -1160,13 +1203,13 @@ class AccountLifecycleService:
                     AMIEPacket.outgoing_flag.is_(False),
                     AMIEPacket.outgoing_flag.is_(None),
                 ),
+                AMIEPacket.packet_rec_id.notin_(completed_packet_rec_ids),
             )
             .all()
         )
 
         checked = 0
         completions_sent = 0
-        already_sent = 0
         failures = 0
         deferred = 0
 
@@ -1184,31 +1227,14 @@ class AccountLifecycleService:
                 or "NRP"
             )
 
-            already = (
-                db.query(OutboundPacketLog)
-                .filter(
-                    OutboundPacketLog.event_type == "inform_transaction_complete",
-                    OutboundPacketLog.source_packet_rec_id == packet.packet_rec_id,
-                    OutboundPacketLog.status == OutboundPacketLog.STATUS_SENT,
-                )
-                .first()
-            )
-            if already is not None:
-                already_sent += 1
-                # Self-heal projects whose completion was sent but whose
-                # activation did not get recorded.
-                self._activate_project_for_completed_transaction(
-                    db, packet, site_name=site_name
-                )
-                db.commit()
-                continue
-
             if not can_send:
                 deferred += 1
                 _log_amie_interaction(
-                    "transaction_completion.deferred_no_api_key",
+                    "transaction_completion.deferred_sending_disabled",
                     packet_rec_id=packet.packet_rec_id,
                     site_name=site_name,
+                    confirmation_enabled=settings.amie_account_confirmation_enabled,
+                    api_key_configured=bool(settings.amie_api_key),
                 )
                 continue
 
@@ -1295,7 +1321,7 @@ class AccountLifecycleService:
         return {
             "checked": checked,
             "completions_sent": completions_sent,
-            "already_sent": already_sent,
+            "activated": activated,
             "failures": failures,
             "deferred": deferred,
         }

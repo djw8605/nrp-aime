@@ -181,7 +181,7 @@ class AccountLifecycleTests(unittest.TestCase):
         self.service.ingest_packet(self.db, dpc)
 
         project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
-        project.lifecycle_state = Project.LIFECYCLE_STATE_AIME_NOTIFIED
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_AIME_NOTIFIED)
         self.db.commit()
 
         FakeAMIEClient.source_packets[3001] = FakeSourcePacket(
@@ -225,7 +225,27 @@ class AccountLifecycleTests(unittest.TestCase):
         self.db.refresh(project)
         self.assertEqual(first["completions_sent"], 1)
         self.assertEqual(second["completions_sent"], 0)
-        self.assertEqual(second["already_sent"], 1)
+        # Completed packets are excluded from the scan entirely.
+        self.assertEqual(second["checked"], 0)
+        self.assertEqual(len(FakeAMIEClient.sent_packets), 1)
+        self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
+
+    def test_reconcile_transaction_completions_self_heals_missed_activation(self) -> None:
+        project = self._ingest_project_create_with_data_reply()
+
+        lifecycle = AccountLifecycleService()
+        lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        # Simulate an activation that was lost after the completion was sent.
+        self.db.refresh(project)
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_AIME_NOTIFIED)
+        self.db.commit()
+
+        result = lifecycle.reconcile_pending_transaction_completions(self.db)
+
+        self.db.refresh(project)
+        self.assertEqual(result["activated"], 1)
+        self.assertEqual(result["completions_sent"], 0)
         self.assertEqual(len(FakeAMIEClient.sent_packets), 1)
         self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
 

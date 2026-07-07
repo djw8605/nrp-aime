@@ -349,7 +349,7 @@ def run_worker(poll_interval: int = 60) -> None:
                     at=now_iso,
                     checked=completion_result.get("checked"),
                     completions_sent=completion_result.get("completions_sent"),
-                    already_sent=completion_result.get("already_sent"),
+                    activated=completion_result.get("activated"),
                     failures=completion_result.get("failures"),
                     deferred=completion_result.get("deferred"),
                 )
