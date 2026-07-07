@@ -20,6 +20,7 @@ from app.models.project_invite import ProjectInvite
 from app.models.project_invite_event import ProjectInviteEvent
 from app.models.project_user import ProjectUser
 from app.services.outbound_packets import OutboundPacketService
+from app.services.project_provisioning import ProjectProvisioningService
 
 logger = logging.getLogger(__name__)
 
@@ -734,7 +735,12 @@ class AccountLifecycleService:
             db.query(Project)
             .filter(
                 Project.is_active.is_(True),
-                Project.lifecycle_state == Project.LIFECYCLE_STATE_PROVISIONED,
+                Project.lifecycle_state.in_(
+                    [
+                        Project.LIFECYCLE_STATE_PROVISIONED,
+                        Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
+                    ]
+                ),
                 Project.source_packet_rec_id.isnot(None),
             )
             .all()
@@ -801,6 +807,41 @@ class AccountLifecycleService:
                     source_packet_rec_id=project.source_packet_rec_id,
                     outbound_status=existing.status,
                 )
+                continue
+
+            # The PI's account must exist before notify_project_create can be
+            # sent.  Reflect a still-onboarding PI in the lifecycle state so
+            # the wait is visible instead of silently deferring every cycle,
+            # and resume automatically once the PI finishes onboarding.
+            if ProjectProvisioningService._has_pending_pi_account(project):
+                ProjectProvisioningService.mark_waiting_pi_account(project)
+                db.commit()
+                deferred += 1
+                _log_amie_interaction(
+                    "project_notification.deferred_pi_account_pending",
+                    project_id=project.id,
+                    site_name=site_name,
+                    source_packet_rec_id=project.source_packet_rec_id,
+                )
+                continue
+            ProjectProvisioningService.mark_pi_account_ready(project)
+
+            # notify_project_create is only a valid reply to a
+            # request_project_create packet; never aim it at another packet
+            # type (e.g. a placeholder project sourced from an account packet).
+            if (
+                source_packet_record is not None
+                and source_packet_record.packet_type != "request_project_create"
+            ):
+                deferred += 1
+                _log_amie_interaction(
+                    "project_notification.skipped_non_project_create_source",
+                    project_id=project.id,
+                    site_name=site_name,
+                    source_packet_rec_id=project.source_packet_rec_id,
+                    source_packet_type=source_packet_record.packet_type,
+                )
+                db.commit()
                 continue
 
             if not can_send:

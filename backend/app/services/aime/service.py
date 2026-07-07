@@ -2333,7 +2333,10 @@ class AIMEService:
                     bound_packet.body.ServiceUnitsRemaining
                 ),
                 is_active=True,
-                account_state=ProjectUser.ACCOUNT_STATE_ACCOUNT_MADE,
+                # The PI has not onboarded yet at this point; the project must
+                # wait in waiting_pi_account until their invite/OAuth completes
+                # before notify_project_create can be sent.
+                account_state=ProjectUser.ACCOUNT_STATE_RECEIVED,
                 source_packet_rec_id=packet_record.packet_rec_id,
                 source_trans_rec_id=packet_record.trans_rec_id,
                 source_transaction_id=packet_record.transaction_id,
@@ -2350,9 +2353,13 @@ class AIMEService:
                 project=project,
                 packet_type=bound_packet.type,
             )
-            project.source_packet_rec_id = packet_record.packet_rec_id
-            project.source_trans_rec_id = packet_record.trans_rec_id
-            project.source_transaction_id = packet_record.transaction_id
+            # The project-level source packet drives the notify_project_create
+            # reply, so only adopt the account packet as source for placeholder
+            # projects that have no request_project_create linkage yet.
+            if project.source_packet_rec_id is None:
+                project.source_packet_rec_id = packet_record.packet_rec_id
+                project.source_trans_rec_id = packet_record.trans_rec_id
+                project.source_transaction_id = packet_record.transaction_id
             if created:
                 self._record_new_user_packet(db, packet_record.id, bound_packet.body)
             user = self._get_or_create_user_from_account(
