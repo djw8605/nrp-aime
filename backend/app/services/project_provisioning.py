@@ -77,6 +77,9 @@ class ProjectProvisioningService:
         already_provisioned = (
             project.lifecycle_state in (
                 Project.LIFECYCLE_STATE_PROVISIONED,
+                # A project awaiting PI onboarding has already had its
+                # namespace/group provisioned; it must not re-alert.
+                Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
                 Project.LIFECYCLE_STATE_AIME_NOTIFIED,
                 Project.LIFECYCLE_STATE_ACTIVE,
             )
@@ -229,7 +232,11 @@ class ProjectProvisioningService:
                 project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
                 project.provisioning_completed_at = datetime.now(UTC)
                 project.provisioning_last_error = None
-                project.provisioning_alerted_at = None
+                # Keep provisioning_alerted_at set: the "received" alert has
+                # already been raised for this request, and clearing it would
+                # let a later re-ingested AMIE packet re-emit a duplicate
+                # "New project request received" alert for an already
+                # provisioned project.
                 AlertService.resolve(db, alert_key=self._required_alert_key(project))
                 AlertService.resolve(db, alert_key=self._failed_alert_key(project))
 
