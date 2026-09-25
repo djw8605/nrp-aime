@@ -14,6 +14,15 @@ from app.database import Base
 from app.models.project import Project
 from app.models.project_user import ProjectUser
 from app.models.user import User
+from app.services.alerts import AlertService
+
+
+@pytest.fixture(autouse=True)
+def _reset_in_process_alert_throttle():
+    """Keep AlertService's in-process throttle from leaking between tests."""
+    AlertService._process_last_sent.clear()
+    yield
+    AlertService._process_last_sent.clear()
 
 
 @pytest.fixture()

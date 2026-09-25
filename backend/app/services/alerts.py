@@ -10,16 +10,21 @@ from email.message import EmailMessage
 from typing import Any
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.alert_notification import AlertNotification
+from app.services.database_health import is_database_write_unavailable
 
 logger = logging.getLogger(__name__)
 
 
 class AlertService:
     """Dispatch and throttle operational alerts."""
+
+    # alert_key -> last send time in this process; backs up the DB throttle.
+    _process_last_sent: dict[str, datetime] = {}
 
     @staticmethod
     def _post_json(url: str, payload: dict[str, Any]) -> None:
@@ -198,12 +203,41 @@ class AlertService:
             smtp.send_message(email_message)
         return True
 
-    @staticmethod
-    def _can_send(row: AlertNotification | None) -> bool:
-        if row is None or row.last_sent_at is None:
+    @classmethod
+    def _can_send(
+        cls, row: AlertNotification | None, alert_key: str, now: datetime
+    ) -> bool:
+        # The in-process record keeps throttling working when the DB row
+        # cannot be written (e.g. Postgres demoted to a read-only standby).
+        candidates = [cls._process_last_sent.get(alert_key)]
+        if row is not None:
+            candidates.append(row.last_sent_at)
+        sent_times = [
+            ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+            for ts in candidates
+            if ts is not None
+        ]
+        if not sent_times:
             return True
         min_interval = timedelta(minutes=max(1, settings.alert_min_interval_minutes))
-        return datetime.now(UTC) - row.last_sent_at >= min_interval
+        return now - max(sent_times) >= min_interval
+
+    @staticmethod
+    def _commit_alert_state(db: Session, *, alert_key: str) -> bool:
+        """Commit alert bookkeeping; return False if the DB is not writable."""
+        try:
+            db.commit()
+        except SQLAlchemyError as exc:
+            if not is_database_write_unavailable(exc):
+                raise
+            db.rollback()
+            logger.error(
+                "Could not persist alert state for %s (database not writable): %s",
+                alert_key,
+                exc,
+            )
+            return False
+        return True
 
     @classmethod
     def send(
@@ -220,24 +254,18 @@ class AlertService:
         force: bool = False,
     ) -> dict[str, Any]:
         """Send alert to configured hooks with DB-backed throttling."""
+        now = datetime.now(UTC)
         row = (
             db.query(AlertNotification)
             .filter(AlertNotification.alert_key == alert_key)
             .first()
         )
+        throttled = not force and not cls._can_send(row, alert_key, now)
         if row is None:
-            row = AlertNotification(
-                alert_key=alert_key,
-                category=category,
-                severity=severity,
-                title=title,
-                message=message,
-                payload=payload or {},
-                send_count=0,
-                is_active=True,
-            )
+            if throttled:
+                return {"sent": False, "reason": "throttled"}
+            row = AlertNotification(alert_key=alert_key, send_count=0)
             db.add(row)
-            db.flush()
 
         row.category = category
         row.severity = severity
@@ -247,9 +275,16 @@ class AlertService:
         row.is_active = True
         row.resolved_at = None
 
-        if not force and not cls._can_send(row):
-            db.commit()
+        if throttled:
+            cls._commit_alert_state(db, alert_key=alert_key)
             return {"sent": False, "reason": "throttled"}
+
+        # Record the send before dispatching, so a failed write can never
+        # disable throttling and turn every evaluation into a new email.
+        row.send_count = (row.send_count or 0) + 1
+        row.last_sent_at = now
+        persisted = cls._commit_alert_state(db, alert_key=alert_key)
+        cls._process_last_sent[alert_key] = now
 
         alert_payload = {
             "alert_key": alert_key,
@@ -308,10 +343,12 @@ class AlertService:
             )
             sent_channels.append("log")
 
-        row.send_count += 1
-        row.last_sent_at = datetime.now(UTC)
-        db.commit()
-        return {"sent": True, "channels": sent_channels, "errors": errors}
+        return {
+            "sent": True,
+            "channels": sent_channels,
+            "errors": errors,
+            "persisted": persisted,
+        }
 
     @staticmethod
     def resolve(db: Session, *, alert_key: str) -> None:
@@ -325,4 +362,4 @@ class AlertService:
             return
         row.is_active = False
         row.resolved_at = datetime.now(UTC)
-        db.commit()
+        AlertService._commit_alert_state(db, alert_key=alert_key)

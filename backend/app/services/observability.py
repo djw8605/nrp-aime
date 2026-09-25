@@ -17,6 +17,7 @@ from app.models.project_user import ProjectUser
 from app.models.user import User
 from app.models.worker_status import WorkerStatus
 from app.services.alerts import AlertService
+from app.services.database_health import database_is_read_only
 
 
 class ObservabilityService:
@@ -365,6 +366,15 @@ class ObservabilityService:
             ],
         }
 
+    @staticmethod
+    def _worker_stale_threshold_seconds(worker_name: str) -> int:
+        """Return the heartbeat lag after which a worker counts as stale."""
+        threshold = settings.alert_worker_stale_seconds
+        if worker_name == "usage-worker":
+            # The usage worker only heartbeats once per export cycle.
+            threshold = max(threshold, 2 * settings.amie_usage_interval_minutes * 60)
+        return threshold
+
     @classmethod
     def evaluate_alerts(cls, db: Session) -> dict[str, Any]:
         """Evaluate alert conditions and dispatch hooks."""
@@ -372,11 +382,41 @@ class ObservabilityService:
         sent: list[dict[str, Any]] = []
 
         statuses = cls.worker_statuses(db)
-        for status in statuses:
+        read_only = database_is_read_only(db)
+        if read_only:
+            # Heartbeats cannot be written, so every worker looks stale; send
+            # one alert about the real cause instead of misleading stale ones.
+            sent.append(
+                AlertService.send(
+                    db,
+                    alert_key="database_read_only",
+                    category="database",
+                    severity="error",
+                    title="Database is read-only",
+                    message=(
+                        "The application database is not accepting writes "
+                        "(Postgres is in recovery or read-only). Worker heartbeats "
+                        "and packet processing cannot be saved; worker-stale alerts "
+                        "are suppressed until writes recover. Check the Postgres/"
+                        "Patroni cluster and the Kubernetes API it uses for leader "
+                        "election."
+                    ),
+                    payload={
+                        f"{s['worker_name']}_heartbeat_lag_seconds": s.get(
+                            "heartbeat_lag_seconds"
+                        )
+                        for s in statuses
+                    },
+                )
+            )
+        else:
+            AlertService.resolve(db, alert_key="database_read_only")
+
+        for status in [] if read_only else statuses:
             lag = status.get("heartbeat_lag_seconds")
             if lag is None:
                 continue
-            if lag > settings.alert_worker_stale_seconds:
+            if lag > cls._worker_stale_threshold_seconds(status["worker_name"]):
                 email_enabled = not (
                     status["worker_name"] == "usage-worker"
                     and not settings.amie_usage_alert_email_enabled
