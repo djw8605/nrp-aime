@@ -1,6 +1,6 @@
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
-sqlalchemy>=2.0.0
+sqlalchemy>=2.0.0,<2.1  # 2.1 defaults postgresql:// to psycopg (v3), which is not installed
 alembic>=1.13.0
 psycopg2-binary>=2.9.9
 pydantic[email]>=2.0.0
