@@ -660,6 +660,13 @@
         </section>
       </div>
 
+      <Card v-if="project?.gpu_accounting" class="mt-6 border border-slate-200 shadow-sm">
+        <template #title>GPU usage records (ACCESS)</template>
+        <template #content>
+          <GpuUsageRecordsTable :project-id="String(project.id)" />
+        </template>
+      </Card>
+
       <!-- Danger Zone -->
       <section class="mt-6 rounded-2xl border-2 border-red-300 bg-red-50 p-5">
         <h2 class="m-0 mb-1 flex items-center gap-2 text-lg font-semibold text-red-700">
@@ -762,6 +769,7 @@ import {
 } from '../api/projects'
 import PacketReferenceTable from '../components/PacketReferenceTable.vue'
 import ProjectDetail from '../components/ProjectDetail.vue'
+import GpuUsageRecordsTable from '../components/GpuUsageRecordsTable.vue'
 import LifecycleFlow from '../components/LifecycleFlow.vue'
 import UsageDisplay from '../components/UsageDisplay.vue'
 import UserList from '../components/UserList.vue'

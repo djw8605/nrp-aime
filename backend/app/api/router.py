@@ -2,7 +2,17 @@
 
 from fastapi import APIRouter, Depends
 
-from app.api import audit, auth, demo, invites, ops, packets, projects, users
+from app.api import (
+    audit,
+    auth,
+    demo,
+    gpu_usage,
+    invites,
+    ops,
+    packets,
+    projects,
+    users,
+)
 from app.auth import require_portal_auth
 
 api_router = APIRouter()
@@ -44,6 +54,12 @@ api_router.include_router(
     ops.router,
     prefix="/ops",
     tags=["ops"],
+    dependencies=protected,
+)
+api_router.include_router(
+    gpu_usage.router,
+    prefix="/gpu-usage",
+    tags=["gpu-usage"],
     dependencies=protected,
 )
 api_router.include_router(invites.router, tags=["invites"])

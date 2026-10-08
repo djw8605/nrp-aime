@@ -33,6 +33,26 @@ class GpuAccountingSummary(BaseModel):
     last_loaded_at: datetime | None = None
 
 
+class GpuUsageRecordRead(BaseModel):
+    """One daily GPU usage ledger row and its ACCESS reporting status."""
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    project_name: str
+    site_project_id: str | None = None
+    usage_date: date
+    username: str
+    attribution: str
+    gpu_hours: float
+    charge: float
+    status: str
+    last_error: str | None = None
+    attempts: int
+    submitted_at: datetime | None = None
+    loaded_at: datetime | None = None
+    local_record_id: str
+
+
 class ProjectRead(BaseModel):
     """Schema for reading a project."""
 

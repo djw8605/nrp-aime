@@ -201,6 +201,13 @@
     </Card>
 
     <Card class="border border-slate-200/80 shadow-sm">
+      <template #title>GPU usage failures (ACCESS)</template>
+      <template #content>
+        <GpuUsageRecordsTable />
+      </template>
+    </Card>
+
+    <Card class="border border-slate-200/80 shadow-sm">
       <template #title>Outbound Packet Tracking</template>
       <template #content>
         <div v-if="!outboundPackets.length" class="text-sm text-slate-500">
@@ -251,6 +258,7 @@ import Card from 'primevue/card'
 import Menu from 'primevue/menu'
 import Message from 'primevue/message'
 import Tag from 'primevue/tag'
+import GpuUsageRecordsTable from '../components/GpuUsageRecordsTable.vue'
 import {
   refreshAccountingStubs,
   runAudit,
