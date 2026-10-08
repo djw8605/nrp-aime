@@ -547,8 +547,6 @@ class GpuAccountingService:
         # appear after it was sent, so query status per batch from just before it.
         groups: dict[datetime, dict[str, GpuUsageRecord]] = defaultdict(dict)
         for record in pending:
-            if record.status != GpuUsageRecord.STATUS_SUBMITTED:
-                continue
             when = sent_at(record)
             if when < cutoff:
                 continue
