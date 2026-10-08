@@ -53,7 +53,7 @@ class TestMigrationChain:
         revisions = list(scripts.walk_revisions())
         assert len(revisions) > 0, "No migration revisions found"
 
-    def test_head_is_gpu_usage_records(self):
-        """The GPU usage ledger migration is the current head."""
+    def test_head_is_gpu_usage_amie_login(self):
+        """The GPU usage AMIE-login re-key migration is the current head."""
         scripts = ScriptDirectory.from_config(_alembic_config())
-        assert scripts.get_current_head() == "0022_gpu_usage_records"
+        assert scripts.get_current_head() == "0023_gpu_usage_amie_login"
