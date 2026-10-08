@@ -211,7 +211,7 @@ Multi-site: set `AMIE_SITE_NAMES=NRP,ACCESS` (comma-separated). `AMIE_SITE_NAME`
 
 Dev shortcuts: `AUTH_DEV_BYPASS=true`, `AUTHENTIK_STUB_AUTO_ACCOUNT_MADE=true`.
 
-GPU accounting vars: `NRP_ACCOUNTING_API_URL`, `AMIE_GPU_RESOURCE_NAME` (default `pnrp.sdsc.access-ci.org`), `AMIE_USAGE_URL` (default `https://usage.access-ci.org/api/v1`), `AMIE_USAGE_RESTATEMENT_DAYS` (default `7`), `AMIE_USAGE_RECONCILE_LOOKBACK_DAYS` (default `14`), `AMIE_USAGE_SUBMIT_ENABLED` (default `true`; `false` = ledger-only dry run, set in `deployment/config/app.env` for the first deploy).
+GPU accounting vars: `NRP_ACCOUNTING_API_URL`, `AMIE_GPU_RESOURCE_NAME` (default `pnrp.sdsc.access-ci.org`), `AMIE_USAGE_URL` (default `https://usage.access-ci.org/api/v1`), `AMIE_USAGE_RESTATEMENT_DAYS` (default `7`), `AMIE_USAGE_RECONCILE_LOOKBACK_DAYS` (default `14`), `AMIE_USAGE_SUBMIT_ENABLED` (code default `true`; `false` = ledger-only dry run). Production `deployment/config/app.env` sets `true`; `docker-compose.yml` defaults to `false` for local dev.
 
 ---
 
