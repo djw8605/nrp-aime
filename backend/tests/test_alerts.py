@@ -1,11 +1,14 @@
 """Tests for alert rendering and project alert payloads."""
 
+from datetime import date
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy.exc import IntegrityError, InternalError, OperationalError
 
 from app.models.alert_notification import AlertNotification
+from app.models.gpu_usage_record import GpuUsageRecord
 from app.models.project import Project
 from app.services.alerts import AlertService
 from app.services.database_health import (
@@ -14,6 +17,7 @@ from app.services.database_health import (
 )
 from app.services.observability import ObservabilityService
 from app.services.project_provisioning import ProjectProvisioningService
+from tests.gpu_accounting_support import gpu_project
 
 
 def test_build_html_email_renders_project_page_url_as_clickable_link():
@@ -357,3 +361,51 @@ def test_aime_worker_uses_base_stale_threshold(db):
 
 def test_database_is_read_only_is_false_for_sqlite(db):
     assert database_is_read_only(db) is False
+
+
+# ---------------------------------------------------------------------------
+# GPU usage failures are reviewed in the web UI and never alert
+# ---------------------------------------------------------------------------
+
+def test_failed_gpu_usage_records_never_alert(db, make_project):
+    project = gpu_project(db, make_project)
+    for day in range(1, 6):
+        db.add(
+            GpuUsageRecord(
+                project_id=project.id,
+                usage_date=date(2026, 10, day),
+                username="alice",
+                attribution=GpuUsageRecord.ATTRIBUTION_MEMBER,
+                gpu_hours=Decimal("1"),
+                charge=Decimal("1"),
+                local_record_id=f"nrp-gpu-{project.id}-{day}",
+                status=GpuUsageRecord.STATUS_FAILED,
+                last_error="ACCESS rejected the usage record",
+                attempts=3,
+            )
+        )
+    db.commit()
+    # SQLite drops tzinfo, so supply the fresh usage-worker heartbeat directly.
+    fresh_usage_worker = {
+        "worker_name": "usage-worker",
+        "heartbeat_lag_seconds": 5,
+        "current_state": "running",
+    }
+
+    with (
+        patch(
+            "app.services.observability.ObservabilityService.worker_statuses",
+            return_value=[fresh_usage_worker],
+        ),
+        patch("app.services.alerts.AlertService._post_json") as mock_post,
+        patch("app.services.alerts.AlertService._send_email_alert") as mock_email,
+        patch(
+            "app.services.observability.database_is_read_only", return_value=False
+        ),
+    ):
+        result = ObservabilityService.evaluate_alerts(db)
+
+    assert result["results"] == []
+    mock_post.assert_not_called()
+    mock_email.assert_not_called()
+    assert db.query(AlertNotification).count() == 0
