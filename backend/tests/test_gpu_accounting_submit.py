@@ -432,3 +432,48 @@ def test_run_cycle_submits_and_reconciles(db, make_project, make_user, make_proj
     assert usage.status_calls == []
     [record] = db.query(GpuUsageRecord).all()
     assert record.status == GpuUsageRecord.STATUS_SUBMITTED
+
+
+def test_run_cycle_with_submit_disabled_only_syncs(db, make_project, make_user, make_project_user):
+    usage = FakeUsageClient()
+    service = _cycle_service(db, make_project, make_user, make_project_user, usage)
+    service.submit_enabled = False
+
+    counters = service.run_cycle(db)
+
+    assert usage.posts == []
+    assert usage.loaded_calls == []
+    assert usage.status_calls == []
+    assert counters["rows"] == 1
+    assert counters["submitted"] == 0
+    [record] = db.query(GpuUsageRecord).all()
+    assert record.status == GpuUsageRecord.STATUS_PENDING
+
+
+def test_submit_enabled_defaults_to_setting(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "amie_usage_submit_enabled", False)
+    accounting = FakeAccountingClient(date(2026, 10, 7))
+    assert GpuAccountingService(accounting_client=accounting, usage_client=FakeUsageClient()).submit_enabled is False
+    assert (
+        GpuAccountingService(
+            accounting_client=accounting, usage_client=FakeUsageClient(), submit_enabled=True
+        ).submit_enabled
+        is True
+    )
+
+
+def test_submission_disabled_reason():
+    accounting = FakeAccountingClient(date(2026, 10, 7))
+
+    def reason(api_key="key", enabled=True):
+        return GpuAccountingService(
+            accounting_client=accounting,
+            usage_client=FakeUsageClient(api_key=api_key),
+            submit_enabled=enabled,
+        ).submission_disabled_reason()
+
+    assert reason() is None
+    assert "AMIE_API_KEY" in reason(api_key="")
+    assert "AMIE_USAGE_SUBMIT_ENABLED" in reason(enabled=False)

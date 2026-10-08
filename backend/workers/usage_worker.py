@@ -59,18 +59,22 @@ def run_once(service: GpuAccountingService) -> dict[str, int]:
     )
     with SessionLocal() as db:
         result = service.run_cycle(db)
+    disabled_reason = service.submission_disabled_reason()
+    state_payload: dict = dict(result)
+    if disabled_reason is None:
+        status_message = "GPU usage cycle completed"
+        # Export freshness only advances when the cycle actually reported to ACCESS.
+        state_payload["last_successful_usage_export_at"] = datetime.now(UTC).isoformat()
+    else:
+        status_message = (
+            f"GPU usage collected; submission is disabled ({disabled_reason}) "
+            "so nothing was submitted"
+        )
     _update_worker_status(
         is_active=True,
         current_state="idle",
-        status_message=(
-            "GPU usage cycle completed"
-            if settings.amie_api_key
-            else "GPU usage collected; AMIE_API_KEY not configured so nothing was submitted"
-        ),
-        state_payload={
-            **result,
-            "last_successful_usage_export_at": datetime.now(UTC).isoformat(),
-        },
+        status_message=status_message,
+        state_payload=state_payload,
         mark_success=True,
     )
     _evaluate_alerts()
@@ -82,9 +86,11 @@ def run_worker(poll_interval: int | None = None) -> None:
     interval_seconds = poll_interval or (settings.amie_usage_interval_minutes * 60)
     service = GpuAccountingService()
 
-    if not settings.amie_api_key:
+    disabled_reason = service.submission_disabled_reason()
+    if disabled_reason is not None:
         logger.warning(
-            "AMIE_API_KEY is not configured; GPU usage will be collected but not submitted."
+            "GPU usage submission is disabled (%s); usage will be collected but not submitted.",
+            disabled_reason,
         )
 
     logger.info(

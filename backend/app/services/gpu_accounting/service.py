@@ -72,9 +72,13 @@ class GpuAccountingService:
         *,
         accounting_client: NrpAccountingClient | None = None,
         usage_client: AccessUsageApiClient | None = None,
+        submit_enabled: bool | None = None,
     ) -> None:
         self.accounting = accounting_client or NrpAccountingClient()
         self.usage = usage_client or AccessUsageApiClient()
+        self.submit_enabled = (
+            settings.amie_usage_submit_enabled if submit_enabled is None else submit_enabled
+        )
         self.resource = settings.amie_gpu_resource_name
         self.charge_factor = Decimal(str(settings.amie_usage_gpu_charge_factor))
         self.restatement_days = max(0, settings.amie_usage_restatement_days)
@@ -83,6 +87,14 @@ class GpuAccountingService:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def submission_disabled_reason(self) -> str | None:
+        """Why this service will not submit to ACCESS, or None when it will."""
+        if not self.usage.api_key:
+            return "AMIE_API_KEY is not configured"
+        if not self.submit_enabled:
+            return "AMIE_USAGE_SUBMIT_ENABLED is false (dry run)"
+        return None
 
     @staticmethod
     def local_record_id(project: Project, usage_date: date, username: str) -> str:
@@ -521,7 +533,7 @@ class GpuAccountingService:
     # ------------------------------------------------------------------
 
     def run_cycle(self, db: Session) -> dict[str, int]:
-        """Sync the ledger, then submit and reconcile when an API key is set."""
+        """Sync the ledger, then submit and reconcile when submission is enabled."""
         counters = {
             "projects": 0,
             "rows": 0,
@@ -534,10 +546,13 @@ class GpuAccountingService:
         }
         cycle_started_at = datetime.now(UTC)
         counters.update(self.sync_ledger(db))
-        if not self.usage.api_key:
+        reason = self.submission_disabled_reason()
+        if reason is not None:
             logger.warning(
-                "AMIE_API_KEY is not configured; GPU usage ledger updated "
-                "without submitting to ACCESS."
+                "GPU usage submission to ACCESS is disabled (%s); ledger updated "
+                "without submitting or reconciling: %s",
+                reason,
+                counters,
             )
             return counters
         counters.update(self.submit_pending(db))

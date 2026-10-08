@@ -174,6 +174,7 @@ npm run dev
 | `AMIE_PROCESSED_CLIENT_STATE` | `nrp-processed` | Client state set after successful ingestion |
 | `AMIE_USAGE_URL` | `https://usage.access-ci.org/api/v1` | ACCESS Usage API base URL (test: `https://usage.access-ci.org/api/v1_test`) |
 | `AMIE_USAGE_RESTATEMENT_DAYS` | `7` | Days re-fetched each cycle so restated usage is re-submitted |
+| `AMIE_USAGE_SUBMIT_ENABLED` | `true` | Submit GPU usage to (and reconcile with) ACCESS; `false` runs the usage worker ledger-only (dry run). `deployment/config/app.env` and `docker-compose.yml` set `false` |
 | `AMIE_USAGE_RECONCILE_LOOKBACK_DAYS` | `14` | Max look-back of the bulk `/usage/loaded` and `/usage/status` reconcile queries; older unconfirmed rows are checked one by one (up to 200 per cycle) |
 | `AMIE_USAGE_INTERVAL_MINUTES` | `1440` | Usage export interval and record bucket size (once daily) |
 | `AMIE_USAGE_GPU_CHARGE_FACTOR` | `1.0` | Multiplier applied to GPU usage when computing charge |
@@ -229,6 +230,7 @@ See the full backend configuration reference in [backend/README.md](/Users/derek
   2. Attributes each row: a CILogon `created_by` must be a project member (`User.remote_site_login` → `ProjectUser.remote_site_login`), otherwise it is dropped; non-person creators (service accounts) are charged to the PI.
   3. Upserts `gpu_usage_records` (one row per project × day × AMIE username; 1 GPU-hour = 1 SU), catching up from `projects.gpu_usage_synced_through`.
   4. Submits pending/failed rows to the ACCESS Usage API as Compute records (≤ 1000 per POST) through `amieclient.UsageClient` (adapter in `services/aime/usage_api.py`) and reconciles them via `/usage/loaded` and `/usage/status`.
+- **First deployment (dry run):** run the usage worker with `AMIE_USAGE_SUBMIT_ENABLED=false` (the shipped `app.env` default). The worker builds `gpu_usage_records` without POSTing anything. Inspect the ledger and the worker status counters (`rows`, `dropped` non-member rows, and PI-pending rows with `last_error = "PI has no site login yet"`) to confirm CILogon ID matching, and verify on the ACCESS test instance (`AMIE_USAGE_URL=https://usage.access-ci.org/api/v1_test`) what charge precision `/usage/loaded` echoes. Then set `AMIE_USAGE_SUBMIT_ENABLED=true`; the next cycle submits the full backlog.
 - `amieclient` is installed `--no-deps` from the pinned fork `djw8605/amieclient@1700828` (upstream PR xsede/amieclient#35) until upstream publishes a release with those fixes.
 - The projects API exposes `gpu_accounting` (GPU hours used, SU loaded/submitted/pending/failed) per GPU project.
 - The **Prometheus service** (`services/prometheus/service.py`) is used only for live GPU/CPU display in the project-detail API response — it is not part of the AMIE usage export pipeline.

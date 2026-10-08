@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # Bulk /usage/loaded and /usage/status reconcile windows reach back at most
     # this many days; older submitted rows are checked one by one instead.
     amie_usage_reconcile_lookback_days: int = 14
+    # False runs the GPU usage worker ledger-only (dry run): nothing is POSTed
+    # to or reconciled with ACCESS even when AMIE_API_KEY is set.
+    amie_usage_submit_enabled: bool = True
     amie_usage_alert_email_enabled: bool = True
     amie_account_confirmation_enabled: bool = True
     amie_packet_reprocess_max_retries: int = 5
