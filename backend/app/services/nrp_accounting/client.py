@@ -121,7 +121,7 @@ class NrpAccountingClient:
     @staticmethod
     def _parse_row(row: Any) -> GpuUsageRow:
         try:
-            return GpuUsageRow(
+            parsed = GpuUsageRow(
                 namespace=str(row["namespace"]),
                 created_by=str(row.get("created_by") or ""),
                 date=date.fromisoformat(str(row["date"])),
@@ -129,3 +129,6 @@ class NrpAccountingClient:
             )
         except (KeyError, TypeError, AttributeError, ValueError, ArithmeticError) as exc:
             raise NrpAccountingApiError(f"Malformed usage row: {row!r}") from exc
+        if not parsed.gpu_hours.is_finite() or parsed.gpu_hours < 0:
+            raise NrpAccountingApiError(f"Invalid GPU usage in row: {row!r}")
+        return parsed

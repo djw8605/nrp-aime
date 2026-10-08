@@ -9,6 +9,7 @@ import pytest
 
 from app.models.gpu_usage_record import GpuUsageRecord
 from app.services.gpu_accounting.service import PI_LOGIN_MISSING, GpuAccountingService
+from app.services.nrp_accounting.client import NrpAccountingApiError
 from tests.gpu_accounting_support import (
     FakeAccountingClient,
     FakeUsageClient,
@@ -304,3 +305,98 @@ def test_shared_namespace_later_start_owns_its_dates(db, make_project, make_user
     assert [r.usage_date for r in _records_for(db, project_b)] == [date(2026, 10, 12)]
     # 2026-10-05 belongs to A but is outside A's fetch range (10-13..): skipped, not given to B.
     assert _records_for(db, project_a) == []
+
+
+def test_duplicate_site_project_id_excludes_both_projects(
+    db, make_project, make_user, make_project_user, caplog
+):
+    first = gpu_project(db, make_project, site_project_id="p.dup", kubernetes_namespace="ns-a")
+    second = gpu_project(db, make_project, site_project_id="p.dup", kubernetes_namespace="ns-b")
+    other = gpu_project(db, make_project, site_project_id="p.ok", kubernetes_namespace="ns-ok")
+    alice = make_user(db, remote_site_login=ALICE)
+    for project in (first, second, other):
+        make_project_user(db, project, alice, remote_site_login="alice_nrp")
+    service, accounting = _service([
+        usage_row(ALICE, date(2026, 10, 2), "1", namespace="ns-a"),
+        usage_row(ALICE, date(2026, 10, 2), "2", namespace="ns-b"),
+        usage_row(ALICE, date(2026, 10, 2), "3", namespace="ns-ok"),
+    ])
+
+    with caplog.at_level("ERROR"):
+        counters = service.sync_ledger(db)
+
+    assert _records_for(db, first) == []
+    assert _records_for(db, second) == []
+    assert [r.gpu_hours for r in _records_for(db, other)] == [Decimal("3")]
+    assert first.gpu_usage_synced_through is None
+    assert second.gpu_usage_synced_through is None
+    assert counters["projects"] == 1
+    assert accounting.calls == [(["ns-ok"], date(2026, 10, 1), LATEST)]
+    message = " ".join(r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+    assert "p.dup" in message
+    assert str(first.id) in message and str(second.id) in message
+
+
+def test_shared_namespace_holder_keeps_dates_outside_its_new_window(
+    db, make_project, make_user, make_project_user
+):
+    # project_a reported 10-05 earlier; its start date has since moved to 10-10.
+    project_a = gpu_project(db, make_project, id=HIGH_ID, site_project_id="p.a", start_date=date(2026, 10, 10))
+    project_b = gpu_project(db, make_project, id=LOW_ID, site_project_id="p.b", start_date=date(2026, 10, 1))
+    alice = make_user(db, remote_site_login=ALICE)
+    for project in (project_a, project_b):
+        make_project_user(db, project, alice, remote_site_login="alice_nrp")
+    _add_sent_record(db, project_a, date(2026, 10, 5))
+    db.commit()
+    service, accounting = _service([usage_row(ALICE, date(2026, 10, 5), "2.5")])
+    accounting.latest = date(2026, 10, 20)
+
+    service.sync_ledger(db)
+
+    assert _records_for(db, project_b) == []
+    [record] = _records_for(db, project_a)
+    assert record.usage_date == date(2026, 10, 5)
+    assert record.status == GpuUsageRecord.STATUS_LOADED
+
+
+def test_shared_namespace_holder_keeps_dates_after_its_new_end(
+    db, make_project, make_user, make_project_user
+):
+    # project_a reported 10-12 earlier; its end date has since moved to 10-08.
+    project_a = gpu_project(
+        db, make_project, id=HIGH_ID, site_project_id="p.a", start_date=date(2026, 10, 6), end_date=date(2026, 10, 8)
+    )
+    project_b = gpu_project(db, make_project, id=LOW_ID, site_project_id="p.b", start_date=date(2026, 10, 1))
+    alice = make_user(db, remote_site_login=ALICE)
+    for project in (project_a, project_b):
+        make_project_user(db, project, alice, remote_site_login="alice_nrp")
+    _add_sent_record(db, project_a, date(2026, 10, 12))
+    db.commit()
+    service, accounting = _service([usage_row(ALICE, date(2026, 10, 12), "2.5")])
+    accounting.latest = date(2026, 10, 20)
+
+    service.sync_ledger(db)
+
+    assert _records_for(db, project_b) == []
+    [record] = _records_for(db, project_a)
+    assert record.usage_date == date(2026, 10, 12)
+    assert record.gpu_hours == Decimal("2.5")
+
+
+def test_accounting_api_failure_leaves_ledger_untouched(db, make_project, make_user, make_project_user):
+    project = gpu_project(db, make_project, gpu_usage_synced_through=date(2026, 10, 3))
+    _add_alice(db, make_user, make_project_user, project)
+    _add_sent_record(db, project, date(2026, 10, 2))
+    db.commit()
+    service, accounting = _service([])
+    accounting.gpu_usage_error = NrpAccountingApiError("query_resource_usage failed: 502")
+
+    with pytest.raises(NrpAccountingApiError):
+        service.sync_ledger(db)
+    db.rollback()
+
+    [record] = _records(db)
+    assert record.gpu_hours == Decimal("2.5")
+    assert record.status == GpuUsageRecord.STATUS_LOADED
+    db.refresh(project)
+    assert project.gpu_usage_synced_through == date(2026, 10, 3)

@@ -224,6 +224,43 @@ def test_reconcile_loaded_wins_and_status_failure_is_tolerated(db, make_project)
     assert record.status == GpuUsageRecord.STATUS_LOADED
 
 
+def test_submit_skips_rows_of_projects_no_longer_in_scope(db, make_project):
+    in_scope = gpu_project(db, make_project)
+    debug = gpu_project(db, make_project, site_project_id="p.dbg", kubernetes_namespace="ns-dbg")
+    kept = _record(db, in_scope)
+    skipped = _record(db, debug, local_record_id="nrp-gpu-p.dbg-20261002-x")
+    debug.tags = ["debug"]
+    db.commit()
+    service, usage = _service()
+
+    assert service.submit_pending(db) == {"submitted": 1, "failed": 0}
+    assert [r.local_record_id for r in usage.posts[0]] == [kept.local_record_id]
+    assert skipped.status == GpuUsageRecord.STATUS_PENDING
+    assert skipped.attempts == 0
+
+
+def test_record_that_fails_to_build_is_failed_without_blocking_batch(db, make_project, monkeypatch):
+    project = gpu_project(db, make_project)
+    good = _record(db, project, username="good")
+    bad = _record(db, project, username="bad")
+    service, usage = _service()
+    build = service._compute_record
+
+    def flaky(record):
+        if record.username == "bad":
+            raise ValueError("bad charge")
+        return build(record)
+
+    monkeypatch.setattr(service, "_compute_record", flaky)
+
+    assert service.submit_pending(db) == {"submitted": 1, "failed": 1}
+    assert [r.local_record_id for r in usage.posts[0]] == [good.local_record_id]
+    assert good.status == GpuUsageRecord.STATUS_SUBMITTED
+    assert bad.status == GpuUsageRecord.STATUS_FAILED
+    assert "bad charge" in bad.last_error
+    assert bad.attempts == 1
+
+
 @pytest.mark.parametrize("loaded_charge", [2.5, "2.500000", 2.504, "2.496"])
 def test_reconcile_tolerates_access_charge_precision(db, make_project, loaded_charge):
     project = gpu_project(db, make_project)

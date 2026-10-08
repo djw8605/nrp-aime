@@ -118,3 +118,15 @@ def test_gpu_usage_malformed_row_raises():
 
     with pytest.raises(NrpAccountingApiError):
         _client(handler).gpu_usage(["ns"], date(2026, 10, 1), date(2026, 10, 1))
+
+
+@pytest.mark.parametrize("usage", ["NaN", "Infinity", "-Infinity", -0.5, "-1"])
+def test_gpu_usage_rejects_non_finite_or_negative_usage(usage):
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={"rows": [{"namespace": "ns", "created_by": "u", "date": "2026-10-01", "usage": usage}]},
+        )
+
+    with pytest.raises(NrpAccountingApiError):
+        _client(handler).gpu_usage(["ns"], date(2026, 10, 1), date(2026, 10, 1))

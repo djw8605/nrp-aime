@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import NamedTuple
 
 from amieclient.usage import ComputeUsageRecord, UsageLoadedRecord
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, contains_eager
 
 from app.config import settings
 from app.models.gpu_usage_record import GpuUsageRecord
@@ -136,13 +136,18 @@ class GpuAccountingService:
 
         # Full allocation windows for every exportable project: they decide which
         # project owns a usage row, even when that project has nothing to fetch.
+        exportable = [p for p in db.query(Project).all() if is_exportable_gpu_project(p)]
+        duplicated = self._duplicate_site_project_ids(exportable)
         by_namespace: dict[str, list[_Window]] = defaultdict(list)
-        for project in db.query(Project).all():
-            if not is_exportable_gpu_project(project):
-                continue
+        for project in exportable:
             window = self._window(project, latest)
-            if window is not None:
-                by_namespace[project.kubernetes_namespace].append(window)
+            if window is None:
+                continue
+            if project.id in duplicated:
+                # Still an ownership candidate (its dates must not move to another
+                # project), but nothing is fetched or written for it this cycle.
+                window = window._replace(fetch_start=None)
+            by_namespace[project.kubernetes_namespace].append(window)
 
         windows: dict[uuid.UUID, _Window] = {
             w.project.id: w
@@ -167,8 +172,13 @@ class GpuAccountingService:
         pi_missing_from: dict[uuid.UUID, date] = {}
         for row in rows:
             owner = self._owner_for_row(row, by_namespace, holders)
-            if owner is None or owner.fetch_start is None or row.date < owner.fetch_start:
-                # No owner, or the owner already holds this date in its ledger;
+            if (
+                owner is None
+                or owner.fetch_start is None
+                or not owner.fetch_start <= row.date <= owner.alloc_end
+            ):
+                # No owner, or the date is outside the owner's fetch range (it
+                # already holds the date, or holds it from an older window);
                 # never fall through to another project (would double count).
                 continue
             project = owner.project
@@ -209,6 +219,25 @@ class GpuAccountingService:
         return counters
 
     @staticmethod
+    def _duplicate_site_project_ids(projects: list[Project]) -> set[uuid.UUID]:
+        """Ids of projects sharing a site_project_id (their LocalRecordIDs collide)."""
+        by_site_id: dict[str, list[Project]] = defaultdict(list)
+        for project in projects:
+            by_site_id[project.site_project_id].append(project)
+        duplicated: set[uuid.UUID] = set()
+        for site_project_id, group in by_site_id.items():
+            if len(group) < 2:
+                continue
+            logger.error(
+                "GPU projects %s share site_project_id %r; excluding all of them from "
+                "GPU accounting until this is resolved",
+                ", ".join(sorted(str(p.id) for p in group)),
+                site_project_id,
+            )
+            duplicated.update(p.id for p in group)
+        return duplicated
+
+    @staticmethod
     def _ledger_holders(
         db: Session,
         by_namespace: dict[str, list[_Window]],
@@ -246,15 +275,16 @@ class GpuAccountingService:
     ) -> _Window | None:
         """The single project owning *row*.
 
-        A project that already has ledger rows for the date keeps it; otherwise
-        (and among equals) the latest allocation start wins, then the lowest id.
+        A project that already has ledger rows for the date keeps it, even if the
+        date has since fallen outside its allocation window; otherwise (and among
+        equals) the latest allocation start wins, then the lowest id.
         """
+        held = holders.get((row.namespace, row.date)) or set()
         candidates = [
             w
             for w in by_namespace.get(row.namespace, [])
-            if w.alloc_start <= row.date <= w.alloc_end
+            if w.alloc_start <= row.date <= w.alloc_end or w.project.id in held
         ]
-        held = holders.get((row.namespace, row.date))
         if held:
             holding = [w for w in candidates if w.project.id in held]
             candidates = holding or candidates
@@ -355,6 +385,8 @@ class GpuAccountingService:
         counters = {"submitted": 0, "failed": 0}
         candidates = (
             db.query(GpuUsageRecord)
+            .join(GpuUsageRecord.project)
+            .options(contains_eager(GpuUsageRecord.project))
             .filter(
                 GpuUsageRecord.status.in_(
                     [GpuUsageRecord.STATUS_PENDING, GpuUsageRecord.STATUS_FAILED]
@@ -365,17 +397,35 @@ class GpuAccountingService:
             .all()
         )
         # Zero-charge rows are only sent to overwrite a previously sent charge.
+        # Rows of projects that left GPU export scope stay in place, unsent.
         sendable = [
             record
             for record in candidates
-            if Decimal(record.charge) > 0 or record.submitted_charge is not None
+            if is_exportable_gpu_project(record.project)
+            and (Decimal(record.charge) > 0 or record.submitted_charge is not None)
         ]
 
-        for offset in range(0, len(sendable), MAX_RECORDS_PER_POST):
-            batch = sendable[offset : offset + MAX_RECORDS_PER_POST]
+        ready: list[tuple[GpuUsageRecord, ComputeUsageRecord]] = []
+        for record in sendable:
+            try:
+                ready.append((record, self._compute_record(record)))
+            except Exception as exc:  # noqa: BLE001 - one bad row must not block the rest
+                logger.error(
+                    "Could not build ACCESS usage record %s: %s", record.local_record_id, exc
+                )
+                record.status = GpuUsageRecord.STATUS_FAILED
+                record.last_error = f"Could not build usage record: {exc}"
+                record.attempts = (record.attempts or 0) + 1
+                counters["failed"] += 1
+        if len(ready) < len(sendable):
+            db.commit()
+
+        for offset in range(0, len(ready), MAX_RECORDS_PER_POST):
+            chunk = ready[offset : offset + MAX_RECORDS_PER_POST]
+            batch = [record for record, _ in chunk]
             now = datetime.now(UTC)
             try:
-                failures = self.usage.post_compute([self._compute_record(r) for r in batch])
+                failures = self.usage.post_compute([compute for _, compute in chunk])
             except UsageApiError as exc:
                 logger.error("ACCESS usage POST failed for %d records: %s", len(batch), exc)
                 for record in batch:

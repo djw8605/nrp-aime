@@ -21,12 +21,15 @@ class FakeAccountingClient:
         self.latest = latest
         self.rows = list(rows or [])
         self.calls: list[tuple[list[str], date, date]] = []
+        self.gpu_usage_error: Exception | None = None
 
     def latest_data_date(self) -> date:
         return self.latest
 
     def gpu_usage(self, namespaces, date_from, date_to):
         self.calls.append((sorted(namespaces), date_from, date_to))
+        if self.gpu_usage_error is not None:
+            raise self.gpu_usage_error
         return [
             row
             for row in self.rows
