@@ -1612,11 +1612,12 @@ def test_pi_without_login_is_pending_and_holds_watermark(db, make_project, make_
     assert record.username == ""
     assert record.status == GpuUsageRecord.STATUS_PENDING
     assert record.last_error == PI_LOGIN_MISSING
-    # Next fetch must start at 2026-10-02: synced_through - 7 days <= 2026-10-02.
+    # Watermark is held at min(latest, 2026-10-02 + 7 days) so the next fetch
+    # (watermark - 7 days, clipped to the project start) re-reads 2026-10-02.
     assert project.gpu_usage_synced_through == date(2026, 10, 7)
     service.accounting.latest = date(2026, 10, 20)
     service.sync_ledger(db)
-    assert service.accounting.calls[-1][1] == date(2026, 10, 2)
+    assert service.accounting.calls[-1][1] <= date(2026, 10, 2)
     assert project.gpu_usage_synced_through == date(2026, 10, 9)
 
 
@@ -1995,7 +1996,10 @@ from tests.gpu_accounting_support import (
     FakeAccountingClient,
     FakeUsageClient,
     gpu_project,
+    usage_row,
 )
+
+ALICE = "http://cilogon.org/serverE/users/1001"
 
 
 def _record(db, project, **overrides):
@@ -2200,27 +2204,39 @@ def test_reconcile_loaded_wins_and_status_failure_is_tolerated(db, make_project)
     assert record.status == GpuUsageRecord.STATUS_LOADED
 
 
-def test_run_cycle_without_api_key_only_syncs(db, make_project):
+def _cycle_service(db, make_project, make_user, make_project_user, usage):
+    """Service whose accounting fake reports one member usage row on 2026-10-02."""
     project = gpu_project(db, make_project)
-    _record(db, project)
-    service, usage = _service(FakeUsageClient(api_key=""))
+    alice = make_user(db, remote_site_login=ALICE)
+    make_project_user(db, project, alice, remote_site_login="alice_nrp")
+    accounting = FakeAccountingClient(date(2026, 10, 7), [usage_row(ALICE, date(2026, 10, 2), "2.5")])
+    return GpuAccountingService(accounting_client=accounting, usage_client=usage)
+
+
+def test_run_cycle_without_api_key_only_syncs(db, make_project, make_user, make_project_user):
+    usage = FakeUsageClient(api_key="")
+    service = _cycle_service(db, make_project, make_user, make_project_user, usage)
 
     counters = service.run_cycle(db)
 
     assert usage.posts == []
-    assert counters["submitted"] == 0
     assert counters["projects"] == 1
+    assert counters["rows"] == 1
+    assert counters["submitted"] == 0
+    [record] = db.query(GpuUsageRecord).all()
+    assert record.status == GpuUsageRecord.STATUS_PENDING
 
 
-def test_run_cycle_submits_and_reconciles(db, make_project):
-    project = gpu_project(db, make_project)
-    _record(db, project)
-    service, usage = _service()
+def test_run_cycle_submits_and_reconciles(db, make_project, make_user, make_project_user):
+    usage = FakeUsageClient()
+    service = _cycle_service(db, make_project, make_user, make_project_user, usage)
 
     counters = service.run_cycle(db)
 
     assert counters["submitted"] == 1
     assert len(usage.posts) == 1
+    [record] = db.query(GpuUsageRecord).all()
+    assert record.status == GpuUsageRecord.STATUS_SUBMITTED
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
