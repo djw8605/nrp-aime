@@ -20,6 +20,19 @@ class ProjectCreate(BaseModel):
     kubernetes_namespace: str | None = None
 
 
+class GpuAccountingSummary(BaseModel):
+    """GPU-hour usage (1 GPU-hour = 1 SU) and ACCESS reporting status."""
+
+    gpu_hours_used: float = 0.0
+    su_loaded: float = 0.0
+    su_submitted: float = 0.0
+    su_pending: float = 0.0
+    su_failed: float = 0.0
+    failed_records: int = 0
+    usage_through: date | None = None
+    last_loaded_at: datetime | None = None
+
+
 class ProjectRead(BaseModel):
     """Schema for reading a project."""
 
@@ -60,6 +73,7 @@ class ProjectRead(BaseModel):
     gpu_used_current: float | None = None
     usage_source: str | None = None
     usage_last_collected_at: datetime | None = None
+    gpu_accounting: GpuAccountingSummary | None = None
     is_active: bool
     kubernetes_namespace: str | None
     authentik_group_name: str | None = None
@@ -155,3 +169,5 @@ class ProjectSummary(BaseModel):
     total_gpu_used: float
     projects_with_service_units: int = 0
     total_service_units_allocated: float = 0.0
+    total_gpu_su_used: float = 0.0
+    total_gpu_su_loaded: float = 0.0

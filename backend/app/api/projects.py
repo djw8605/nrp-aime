@@ -22,6 +22,7 @@ from app.models.user import User
 from app.models.project_user import ProjectUser
 from app.schemas.packets import EntityPacketRead
 from app.schemas.project import (
+    GpuAccountingSummary,
     ProjectRead,
     ProjectSummary,
     ProjectUpdate,
@@ -30,6 +31,10 @@ from app.schemas.project import (
 from app.schemas.user import ProjectMemberCreate, ProjectMemberRead
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.accounting.service import AccountingService
+from app.services.gpu_accounting.summary import (
+    gpu_accounting_summaries,
+    gpu_accounting_totals,
+)
 from app.services.invites.service import InviteService
 from app.services.project_provisioning import ProjectProvisioningService
 from app.services.prometheus.service import PrometheusService
@@ -165,6 +170,7 @@ def _to_project_read(
     *,
     project: Project,
     accounting: AccountingService,
+    gpu_summary: GpuAccountingSummary | None = None,
 ) -> ProjectRead:
     cpu_used, gpu_used, usage_source, usage_last_collected_at = accounting.project_current_usage(
         db, project=project
@@ -215,6 +221,7 @@ def _to_project_read(
         gpu_used_current=gpu_used,
         usage_source=usage_source,
         usage_last_collected_at=usage_last_collected_at,
+        gpu_accounting=gpu_summary,
         is_active=project.is_active,
         kubernetes_namespace=project.kubernetes_namespace,
         authentik_group_name=project.authentik_group_name,
@@ -229,6 +236,18 @@ def _to_project_read(
     )
 
 
+def _to_single_project_read(
+    db: Session,
+    *,
+    project: Project,
+    accounting: AccountingService,
+) -> ProjectRead:
+    gpu_summary = gpu_accounting_summaries(db, [project]).get(project.id)
+    return _to_project_read(
+        db, project=project, accounting=accounting, gpu_summary=gpu_summary
+    )
+
+
 @router.get("/", response_model=list[ProjectRead])
 def list_projects(
     include_debug: bool = Query(default=False),
@@ -240,8 +259,14 @@ def list_projects(
     visible_projects = projects if include_debug else [
         project for project in projects if not _has_debug_tag(project.tags)
     ]
+    gpu_summaries = gpu_accounting_summaries(db, visible_projects)
     return [
-        _to_project_read(db, project=project, accounting=accounting)
+        _to_project_read(
+            db,
+            project=project,
+            accounting=accounting,
+            gpu_summary=gpu_summaries.get(project.id),
+        )
         for project in visible_projects
     ]
 
@@ -282,6 +307,8 @@ def get_projects_summary(db: Session = Depends(get_db)) -> ProjectSummary:
         .one()
     )
 
+    gpu_su_used, gpu_su_loaded = gpu_accounting_totals(db)
+
     return ProjectSummary(
         total_projects=proj_stats.total or 0,
         active_projects=proj_stats.active or 0,
@@ -293,6 +320,8 @@ def get_projects_summary(db: Session = Depends(get_db)) -> ProjectSummary:
         total_gpu_used=float(proj_stats.gpu_used or 0),
         projects_with_service_units=int(proj_stats.with_su or 0),
         total_service_units_allocated=float(proj_stats.total_su or 0),
+        total_gpu_su_used=gpu_su_used,
+        total_gpu_su_loaded=gpu_su_loaded,
     )
 
 
@@ -320,7 +349,7 @@ def get_project(project_id: uuid.UUID, db: Session = Depends(get_db)) -> Project
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     accounting = AccountingService()
-    return _to_project_read(db, project=project, accounting=accounting)
+    return _to_single_project_read(db, project=project, accounting=accounting)
 
 
 @router.get("/{project_id}/packets", response_model=list[EntityPacketRead])
@@ -448,7 +477,7 @@ def update_project(
     updates = payload.model_dump(exclude_unset=True)
     if not updates:
         accounting = AccountingService()
-        return _to_project_read(db, project=project, accounting=accounting)
+        return _to_single_project_read(db, project=project, accounting=accounting)
 
     string_fields = (
         "grant_number",
@@ -519,7 +548,7 @@ def update_project(
     db.refresh(project)
 
     accounting = AccountingService()
-    return _to_project_read(db, project=project, accounting=accounting)
+    return _to_single_project_read(db, project=project, accounting=accounting)
 
 
 @router.get("/{project_id}/users", response_model=list[ProjectMemberRead])
