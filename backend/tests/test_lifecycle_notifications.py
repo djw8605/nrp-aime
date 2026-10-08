@@ -29,6 +29,7 @@ from app.models.project import Project
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.aime.service import AIMEService
 from tests.support import (
+    PRODUCTION_INBOUND_HEADER,
     FakeAMIEClient,
     FakeSourcePacket,
     TrackingAuthentikService,
@@ -118,6 +119,37 @@ class LifecycleNotificationTests(unittest.TestCase):
         self.assertEqual(sent.packet_type, "notify_project_inactivate")
         self.assertEqual(sent.ProjectID, "PROJECT-001")
         self.assertEqual(sent.ResourceList, ["cluster.example.org"])
+
+    def test_reconcile_replies_to_production_shaped_request(self) -> None:
+        """Production AMIE marks inbound packets outgoing_flag=1 from TGCDB;
+        they must still get a notify_* reply."""
+        rpc = request_project_create_packet()
+        rpc["header"].update(PRODUCTION_INBOUND_HEADER)
+        self.service.ingest_packet(self.db, rpc)
+        packet = request_project_inactivate_packet()
+        packet["header"].update(PRODUCTION_INBOUND_HEADER)
+        self.service.ingest_packet(self.db, packet)
+        self._register_source(packet)
+
+        result = self.lifecycle.reconcile_pending_lifecycle_notifications(self.db)
+
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["notifications_sent"], 1)
+        self.assertEqual(
+            FakeAMIEClient.sent_packets[-1].packet_type, "notify_project_inactivate"
+        )
+
+    def test_reconcile_skips_request_originated_by_our_site(self) -> None:
+        self._ingest_project()
+        packet = request_project_inactivate_packet()
+        packet["header"]["originating_site_name"] = "NRP"
+        self.service.ingest_packet(self.db, packet)
+        self._register_source(packet)
+
+        result = self.lifecycle.reconcile_pending_lifecycle_notifications(self.db)
+
+        self.assertEqual(result["checked"], 0)
+        self.assertEqual(FakeAMIEClient.sent_packets, [])
 
     def test_reconcile_sends_notify_project_reactivate(self) -> None:
         self._ingest_project()

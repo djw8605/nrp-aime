@@ -24,6 +24,7 @@ from app.models.project_user import ProjectUser
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.aime.service import AIMEService
 from tests.support import (
+    PRODUCTION_INBOUND_HEADER,
     FakeAMIEClient,
     FakeSourcePacket,
     TrackingAuthentikService,
@@ -375,6 +376,39 @@ class AccountLifecycleTests(unittest.TestCase):
             .one()
         )
         self.assertEqual(outbound.status, OutboundPacketLog.STATUS_SENT)
+        self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
+
+    def test_reconcile_transaction_completions_handles_production_headers(self) -> None:
+        """Production AMIE marks inbound packets outgoing_flag=1 from TGCDB;
+        they must still get an inform_transaction_complete reply."""
+        rpc = request_project_create_packet()
+        rpc["header"].update(PRODUCTION_INBOUND_HEADER)
+        self.service.ingest_packet(self.db, rpc)
+
+        dpc = data_project_create_packet()
+        dpc["header"].update(PRODUCTION_INBOUND_HEADER)
+        dpc["header"]["trans_rec_id"] = rpc["header"]["trans_rec_id"]
+        self.service.ingest_packet(self.db, dpc)
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_AIME_NOTIFIED)
+        self.db.commit()
+        FakeAMIEClient.source_packets[3001] = FakeSourcePacket(
+            "data_project_create",
+            dpc["body"],
+        )
+
+        result = AccountLifecycleService().reconcile_pending_transaction_completions(
+            self.db
+        )
+
+        self.db.refresh(project)
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["completions_sent"], 1)
+        self.assertEqual(
+            FakeAMIEClient.sent_packets[0].packet_type,
+            "inform_transaction_complete",
+        )
         self.assertEqual(project.lifecycle_state, Project.LIFECYCLE_STATE_ACTIVE)
 
     def test_reconcile_transaction_completions_is_idempotent(self) -> None:

@@ -35,6 +35,19 @@ def _log_amie_interaction(action: str, **context: object) -> None:
         logger.info("AMIE interaction action=%s", action)
 
 
+def _not_originated_by_us():
+    """SQL clause matching packets that ACCESS/AMIE sent to this site.
+
+    ``outgoing_flag`` cannot be used for this: production AMIE reports packets
+    from the originator's perspective (``local_site_name=TGCDB``,
+    ``outgoing_flag=1``), so every packet addressed to us looks "outgoing".
+    """
+    return or_(
+        AMIEPacket.originating_site_name.is_(None),
+        AMIEPacket.originating_site_name.notin_(configured_amie_site_names()),
+    )
+
+
 class AccountLifecycleService:
     """Handle account state transitions and AIME confirmation packets."""
 
@@ -777,10 +790,7 @@ class AccountLifecycleService:
             .filter(
                 AMIEPacket.packet_type.in_(list(self.LIFECYCLE_NOTIFICATION_SPECS)),
                 AMIEPacket.processing_status == AMIEPacket.PROCESSING_STATUS_PROCESSED,
-                or_(
-                    AMIEPacket.outgoing_flag.is_(False),
-                    AMIEPacket.outgoing_flag.is_(None),
-                ),
+                _not_originated_by_us(),
             )
             .order_by(AMIEPacket.packet_rec_id.asc())
             .all()
@@ -1475,10 +1485,7 @@ class AccountLifecycleService:
             .filter(
                 AMIEPacket.packet_type.in_(self._TRANSACTION_DATA_PACKET_TYPES),
                 AMIEPacket.processing_status == AMIEPacket.PROCESSING_STATUS_PROCESSED,
-                or_(
-                    AMIEPacket.outgoing_flag.is_(False),
-                    AMIEPacket.outgoing_flag.is_(None),
-                ),
+                _not_originated_by_us(),
                 AMIEPacket.packet_rec_id.notin_(completed_packet_rec_ids),
             )
             .all()

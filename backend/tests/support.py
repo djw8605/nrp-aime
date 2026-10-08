@@ -100,6 +100,17 @@ def packet_header(packet_rec_id: int, **overrides: Any) -> dict[str, Any]:
     return header
 
 
+# Header fields production AMIE reports on packets it sends to NRP: they are
+# described from the originator's side, so outgoing_flag is set even though
+# the packet is inbound for us.
+PRODUCTION_INBOUND_HEADER: dict[str, Any] = {
+    "local_site_name": "TGCDB",
+    "remote_site_name": "NRP",
+    "originating_site_name": "TGCDB",
+    "outgoing_flag": 1,
+}
+
+
 def request_project_create_packet(packet_rec_id: int = 1001, **body_overrides: Any) -> dict[str, Any]:
     """Build a doc-shaped ``request_project_create`` packet."""
     body = {
