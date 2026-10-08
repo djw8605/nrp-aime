@@ -139,7 +139,7 @@
       </div>
     </div>
 
-    <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-3 xl:grid-cols-5">
       <Card
         v-for="kpi in kpis"
         :key="kpi.label"
@@ -228,6 +228,8 @@ const pendingActions = ref(null)
 const summary = ref({
   active_projects: 0,
   total_service_units_allocated: 0,
+  total_gpu_su_used: 0,
+  total_gpu_su_loaded: 0,
 })
 const loading = ref(false)
 const error = ref(null)
@@ -293,6 +295,18 @@ const kpis = computed(() => [
     label: 'Active Projects',
     value: formatUsage(summary.value.active_projects),
     icon: 'pi-th-large',
+    iconClass: 'text-emerald-600',
+  },
+  {
+    label: 'GPU SU Used',
+    value: formatUsage(summary.value.total_gpu_su_used),
+    icon: 'pi-microchip',
+    iconClass: 'text-violet-600',
+  },
+  {
+    label: 'GPU SU Loaded at ACCESS',
+    value: formatUsage(summary.value.total_gpu_su_loaded),
+    icon: 'pi-cloud-upload',
     iconClass: 'text-emerald-600',
   },
 ])

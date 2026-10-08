@@ -45,14 +45,11 @@
               </p>
             </div>
           </div>
-          <div class="flex items-center justify-between gap-2 text-xs">
-            <span class="text-slate-500">Usage Source</span>
-            <Tag
-              :value="project.usage_source || 'none'"
-              :severity="project.usage_source === 'usage_snapshot' ? 'info' : 'secondary'"
-              rounded
-            />
-          </div>
+          <GpuAccountingSummary
+            v-if="project.gpu_accounting"
+            :accounting="project.gpu_accounting"
+            :allocated="project.service_units_allocated"
+          />
           <div class="flex items-center justify-between gap-2 text-xs">
             <span class="text-slate-500">Namespace</span>
             <Tag
@@ -90,6 +87,7 @@
 <script setup>
 import Card from 'primevue/card'
 import Tag from 'primevue/tag'
+import GpuAccountingSummary from './GpuAccountingSummary.vue'
 
 defineProps({
   project: {

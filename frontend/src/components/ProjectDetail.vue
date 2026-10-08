@@ -112,6 +112,12 @@
           </div>
         </div>
       </div>
+      <GpuAccountingSummary
+        v-if="project.gpu_accounting"
+        class="mt-4"
+        :accounting="project.gpu_accounting"
+        :allocated="project.service_units_allocated"
+      />
       <p
         v-if="project.provisioning_last_error"
         class="m-0 mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800"
@@ -126,6 +132,7 @@
 import Card from 'primevue/card'
 import Divider from 'primevue/divider'
 import Tag from 'primevue/tag'
+import GpuAccountingSummary from './GpuAccountingSummary.vue'
 
 defineProps({
   project: {
