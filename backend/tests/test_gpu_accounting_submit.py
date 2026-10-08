@@ -10,7 +10,7 @@ from amieclient.usage.response import UsageStatusResource
 
 from app.models.gpu_usage_record import GpuUsageRecord
 from app.services.aime.usage_api import UsageApiError
-from app.services.gpu_accounting.service import GpuAccountingService
+from app.services.gpu_accounting.service import GpuAccountingService, _as_utc
 from tests.gpu_accounting_support import (
     GPU,
     FakeAccountingClient,
@@ -20,6 +20,7 @@ from tests.gpu_accounting_support import (
 )
 
 ALICE = "http://cilogon.org/serverE/users/1001"
+UNCONFIRMED_ERROR = "Not confirmed by ACCESS within 14 days; will re-send"
 
 
 def _record(db, project, **overrides):
@@ -184,7 +185,7 @@ def test_reconcile_marks_loaded_when_charge_matches(db, make_project):
     service, usage = _service()
     usage.loaded_records = [_loaded(record)]
 
-    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0, "unconfirmed": 0}
     assert record.status == GpuUsageRecord.STATUS_LOADED
     assert record.accounting_db_record_id == "134919900"
     assert record.loaded_at is not None
@@ -196,7 +197,7 @@ def test_reconcile_ignores_stale_charge_and_other_resources(db, make_project):
     service, usage = _service()
     usage.loaded_records = [_loaded(record, charge=2.5), _loaded(record, charge=3.0, resource="other")]
 
-    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0, "unconfirmed": 0}
     assert record.status == GpuUsageRecord.STATUS_SUBMITTED
 
 
@@ -208,7 +209,7 @@ def test_reconcile_marks_status_errors_failed(db, make_project):
         _status_error(record, "Allocation could not be found for user alice_nrp")
     ]
 
-    assert service.reconcile(db) == {"loaded": 0, "load_failed": 1}
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 1, "unconfirmed": 0}
     assert record.status == GpuUsageRecord.STATUS_FAILED
     assert "Allocation could not be found" in record.last_error
 
@@ -220,7 +221,7 @@ def test_reconcile_loaded_wins_and_status_failure_is_tolerated(db, make_project)
     usage.loaded_records = [_loaded(record)]
     usage.status_error = UsageApiError("ACCESS usage/status failed: KeyError")
 
-    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0, "unconfirmed": 0}
     assert record.status == GpuUsageRecord.STATUS_LOADED
 
 
@@ -268,7 +269,7 @@ def test_reconcile_tolerates_access_charge_precision(db, make_project, loaded_ch
     service, usage = _service()
     usage.loaded_records = [_loaded(record, charge=loaded_charge)]
 
-    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0, "unconfirmed": 0}
     assert record.status == GpuUsageRecord.STATUS_LOADED
 
 
@@ -278,7 +279,7 @@ def test_reconcile_rejects_charge_outside_tolerance(db, make_project):
     service, usage = _service()
     usage.loaded_records = [_loaded(record, charge=2.6), _loaded(record, charge=2.51)]
 
-    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0, "unconfirmed": 0}
     assert record.status == GpuUsageRecord.STATUS_SUBMITTED
 
 
@@ -317,7 +318,7 @@ def test_reconcile_confirms_stale_row_via_per_record_lookup(db, make_project):
     service, usage = _service()
     usage.loaded_by_id = {stale.local_record_id: _loaded(stale, charge="2.50")}
 
-    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0, "unconfirmed": 0}
     assert stale.status == GpuUsageRecord.STATUS_LOADED
     assert stale.accounting_db_record_id == "134919900"
     assert recent.status == GpuUsageRecord.STATUS_SUBMITTED
@@ -330,8 +331,9 @@ def test_reconcile_stale_lookup_rejects_mismatched_charge(db, make_project):
     service, usage = _service()
     usage.loaded_by_id = {stale.local_record_id: _loaded(stale, charge=1.0)}
 
-    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
-    assert stale.status == GpuUsageRecord.STATUS_SUBMITTED
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0, "unconfirmed": 1}
+    assert stale.status == GpuUsageRecord.STATUS_FAILED
+    assert stale.last_error == UNCONFIRMED_ERROR
 
 
 def test_reconcile_skips_per_record_lookup_when_bulk_confirms(db, make_project):
@@ -340,7 +342,7 @@ def test_reconcile_skips_per_record_lookup_when_bulk_confirms(db, make_project):
     service, usage = _service()
     usage.loaded_records = [_loaded(stale)]
 
-    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0, "unconfirmed": 0}
     assert usage.loaded_record_calls == []
 
 
@@ -367,8 +369,39 @@ def test_reconcile_stale_lookup_error_skips_row(db, make_project):
     service, usage = _service()
     usage.loaded_record_error = UsageApiError("ACCESS usage/loaded failed: down")
 
-    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0, "unconfirmed": 0}
     assert stale.status == GpuUsageRecord.STATUS_SUBMITTED
+
+
+def test_reconcile_stale_row_never_loaded_is_failed_for_resend(db, make_project):
+    project = gpu_project(db, make_project)
+    stale = _submitted(db, project, submitted_at=datetime.now(UTC) - timedelta(days=30))
+    service, usage = _service()
+
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0, "unconfirmed": 1}
+    assert stale.status == GpuUsageRecord.STATUS_FAILED
+    assert stale.last_error == UNCONFIRMED_ERROR
+    assert stale.submitted_charge == Decimal("2.5")  # still marks it as a previously sent charge
+
+
+def test_unconfirmed_stale_row_is_resent_with_same_record_id(db, make_project):
+    project = gpu_project(db, make_project)
+    stale = _submitted(
+        db, project, submitted_at=datetime.now(UTC) - timedelta(days=30), attempts=1
+    )
+    record_id = stale.local_record_id
+    service, usage = _service()
+    service.reconcile(db)
+    assert stale.status == GpuUsageRecord.STATUS_FAILED
+
+    assert service.submit_pending(db) == {"submitted": 1, "failed": 0}
+
+    [[sent]] = usage.posts
+    assert sent.local_record_id == record_id
+    assert stale.status == GpuUsageRecord.STATUS_SUBMITTED
+    assert stale.attempts == 2
+    assert stale.last_error is None
+    assert _as_utc(stale.submitted_at) > datetime.now(UTC) - timedelta(minutes=1)
 
 
 def test_reconcile_does_not_refail_resent_row_from_earlier_error(db, make_project):
@@ -385,7 +418,7 @@ def test_reconcile_does_not_refail_resent_row_from_earlier_error(db, make_projec
 
     usage.status_resources = status
 
-    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0, "unconfirmed": 0}
     assert record.status == GpuUsageRecord.STATUS_SUBMITTED
     [(from_time, _)] = usage.status_calls
     assert from_time == resent_at - timedelta(minutes=5)
@@ -406,7 +439,7 @@ def test_reconcile_status_errors_apply_only_to_their_submission_group(db, make_p
 
     usage.status_resources = status
 
-    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0, "unconfirmed": 0}
     assert first.status == GpuUsageRecord.STATUS_SUBMITTED
     assert len(usage.status_calls) == 2
 
@@ -418,7 +451,7 @@ def test_reconcile_skips_status_for_rows_submitted_this_cycle(db, make_project):
     service, usage = _service()
     usage.status_resources = [_status_error(record, "boom")]
 
-    assert service.reconcile(db, cycle_started_at=cycle_started) == {"loaded": 0, "load_failed": 0}
+    assert service.reconcile(db, cycle_started_at=cycle_started) == {"loaded": 0, "load_failed": 0, "unconfirmed": 0}
     assert record.status == GpuUsageRecord.STATUS_SUBMITTED
     assert usage.status_calls == []
 
@@ -429,8 +462,9 @@ def test_reconcile_does_not_status_check_stale_rows(db, make_project):
     service, usage = _service()
     usage.status_resources = [_status_error(stale, "old error")]
 
-    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
-    assert stale.status == GpuUsageRecord.STATUS_SUBMITTED
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0, "unconfirmed": 1}
+    assert stale.status == GpuUsageRecord.STATUS_FAILED
+    assert stale.last_error == UNCONFIRMED_ERROR  # not the status-endpoint "old error"
     assert usage.status_calls == []
 
 

@@ -498,7 +498,7 @@ class GpuAccountingService:
         window they fall in, and batches sent after *cycle_started_at* are not
         status-checked yet (ACCESS loads asynchronously).
         """
-        counters = {"loaded": 0, "load_failed": 0}
+        counters = {"loaded": 0, "load_failed": 0, "unconfirmed": 0}
         submitted = (
             db.query(GpuUsageRecord)
             .filter(GpuUsageRecord.status == GpuUsageRecord.STATUS_SUBMITTED)
@@ -542,6 +542,16 @@ class GpuAccountingService:
             if item is not None and self._loaded_matches(record, item):
                 self._mark_loaded(record, item, now)
                 counters["loaded"] += 1
+            else:
+                # ACCESS never confirmed it. Failed rows are re-sent next cycle with
+                # the same LocalRecordID (ACCESS overwrites), which also frees this
+                # lookup slot instead of starving newer stale rows forever.
+                record.status = GpuUsageRecord.STATUS_FAILED
+                record.last_error = (
+                    f"Not confirmed by ACCESS within {self.reconcile_lookback_days} days; "
+                    "will re-send"
+                )
+                counters["unconfirmed"] += 1
 
         # Rows from one POST batch share submitted_at; a batch's errors can only
         # appear after it was sent, so query status per batch from just before it.
@@ -591,6 +601,7 @@ class GpuAccountingService:
             "failed": 0,
             "loaded": 0,
             "load_failed": 0,
+            "unconfirmed": 0,
         }
         cycle_started_at = datetime.now(UTC)
         counters.update(self.sync_ledger(db))
