@@ -166,11 +166,31 @@ class GpuAccountingService:
             range_end,
         )
         holders = self._ledger_holders(db, by_namespace, range_start, range_end)
+        reported_elsewhere = self._reported_elsewhere(
+            db,
+            {w.project.kubernetes_namespace for w in windows.values()},
+            {w.project.id for entries in by_namespace.values() for w in entries},
+            range_start,
+            range_end,
+        )
 
         attributor = GpuUsageAttributor(db)
         desired: dict[uuid.UUID, DesiredRecords] = defaultdict(dict)
         pi_missing_from: dict[uuid.UUID, date] = {}
+        skipped_reported: set[tuple[str, date]] = set()
         for row in rows:
+            if (row.namespace, row.date) in reported_elsewhere:
+                # A project now out of export scope already sent this date to ACCESS;
+                # reporting it again under another project would double count.
+                if (row.namespace, row.date) not in skipped_reported:
+                    skipped_reported.add((row.namespace, row.date))
+                    logger.info(
+                        "Skipping GPU usage for namespace=%s date=%s: already reported "
+                        "by a project no longer in export scope",
+                        row.namespace,
+                        row.date,
+                    )
+                continue
             owner = self._owner_for_row(row, by_namespace, holders)
             if (
                 owner is None
@@ -266,6 +286,34 @@ class GpuAccountingService:
         for project_id, usage_date in query:
             holders[(namespace_of[project_id], usage_date)].add(project_id)
         return holders
+
+    @staticmethod
+    def _reported_elsewhere(
+        db: Session,
+        namespaces: set[str],
+        excluded_project_ids: set[uuid.UUID],
+        range_start: date,
+        range_end: date,
+    ) -> set[tuple[str, date]]:
+        """(namespace, usage_date) pairs already sent to ACCESS by other projects.
+
+        Covers projects that left export scope (tagged debug, lost a site project
+        id, changed resource, ...): their sent dates must not be reported again by
+        another project on the same namespace. Rows never sent do not block.
+        """
+        query = (
+            db.query(Project.kubernetes_namespace, GpuUsageRecord.usage_date)
+            .join(Project, Project.id == GpuUsageRecord.project_id)
+            .filter(
+                Project.kubernetes_namespace.in_(namespaces),
+                GpuUsageRecord.usage_date >= range_start,
+                GpuUsageRecord.usage_date <= range_end,
+                GpuUsageRecord.submitted_charge.is_not(None),
+                GpuUsageRecord.project_id.not_in(excluded_project_ids),
+            )
+            .distinct()
+        )
+        return {(namespace, usage_date) for namespace, usage_date in query}
 
     @staticmethod
     def _owner_for_row(

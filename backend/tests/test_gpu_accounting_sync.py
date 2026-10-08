@@ -400,3 +400,39 @@ def test_accounting_api_failure_leaves_ledger_untouched(db, make_project, make_u
     assert record.status == GpuUsageRecord.STATUS_LOADED
     db.refresh(project)
     assert project.gpu_usage_synced_through == date(2026, 10, 3)
+
+
+@pytest.mark.parametrize(
+    ("old_row_sent", "expected_dates"),
+    [
+        (True, [date(2026, 10, 3)]),
+        (False, [date(2026, 10, 2), date(2026, 10, 3)]),
+    ],
+)
+def test_dates_reported_by_out_of_scope_project_are_not_reported_again(
+    db, make_project, make_user, make_project_user, old_row_sent, expected_dates
+):
+    old = gpu_project(db, make_project, site_project_id="p.old")
+    new = gpu_project(db, make_project, site_project_id="p.new")
+    alice = make_user(db, remote_site_login=ALICE)
+    make_project_user(db, new, alice, remote_site_login="alice_nrp")
+    _add_sent_record(db, old, date(2026, 10, 2))
+    if not old_row_sent:
+        [row] = _records_for(db, old)
+        row.submitted_charge = None
+        row.status = GpuUsageRecord.STATUS_PENDING
+    old.tags = ["debug"]  # leaves GPU export scope after (maybe) reporting
+    db.commit()
+    service, _ = _service([
+        usage_row(ALICE, date(2026, 10, 2), "2.5"),
+        usage_row(ALICE, date(2026, 10, 3), "1"),
+    ])
+
+    service.sync_ledger(db)
+
+    assert [r.usage_date for r in _records_for(db, new)] == expected_dates
+    assert [r.usage_date for r in _records_for(db, old)] == [date(2026, 10, 2)]
+    first = _snapshot(db)
+
+    service.sync_ledger(db)
+    assert _snapshot(db) == first
