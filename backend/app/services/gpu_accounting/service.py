@@ -14,16 +14,22 @@ import hashlib
 import logging
 import uuid
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import NamedTuple
 
+from amieclient.usage import ComputeUsageRecord
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.gpu_usage_record import GpuUsageRecord
 from app.models.project import Project
-from app.services.aime.usage_api import AccessUsageApiClient
+from app.services.aime.usage_api import (
+    MAX_RECORDS_PER_POST,
+    AccessUsageApiClient,
+    UsageApiError,
+    iso_utc,
+)
 from app.services.gpu_accounting.attribution import GpuUsageAttributor
 from app.services.gpu_accounting.scope import is_exportable_gpu_project
 from app.services.nrp_accounting.client import GpuUsageRow, NrpAccountingClient
@@ -35,6 +41,11 @@ PI_LOGIN_MISSING = "PI has no site login yet"
 
 # (usage_date, username) -> (gpu_hours, attribution)
 DesiredRecords = dict[tuple[date, str], tuple[Decimal, str]]
+
+
+def _as_utc(value: datetime) -> datetime:
+    """SQLite returns naive datetimes; treat them as UTC."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 class _Window(NamedTuple):
@@ -296,3 +307,180 @@ class GpuAccountingService:
         record.charge = self._charge(hours)
         record.status = GpuUsageRecord.STATUS_PENDING
         record.last_error = None if record.username else PI_LOGIN_MISSING
+
+    # ------------------------------------------------------------------
+    # Submit
+    # ------------------------------------------------------------------
+
+    def _compute_record(self, record: GpuUsageRecord) -> ComputeUsageRecord:
+        """Build one ACCESS Compute usage record (a whole UTC day) for a ledger row."""
+        start = datetime.combine(record.usage_date, time.min, tzinfo=UTC)
+        return ComputeUsageRecord(
+            username=record.username,
+            local_project_id=record.project.site_project_id,
+            local_record_id=record.local_record_id,
+            local_reference=str(record.id),
+            resource=self.resource,
+            submit_time=iso_utc(start),
+            start_time=iso_utc(start),
+            end_time=iso_utc(start + timedelta(days=1)),
+            charge=str(Decimal(record.charge).quantize(QUANT)),
+            node_count=1,
+            queue="gpu",
+            job_name="nrp-gpu-daily",
+        )
+
+    def submit_pending(self, db: Session) -> dict[str, int]:
+        """POST pending and failed ledger rows to ACCESS as Compute records."""
+        counters = {"submitted": 0, "failed": 0}
+        candidates = (
+            db.query(GpuUsageRecord)
+            .filter(
+                GpuUsageRecord.status.in_(
+                    [GpuUsageRecord.STATUS_PENDING, GpuUsageRecord.STATUS_FAILED]
+                ),
+                GpuUsageRecord.username != "",
+            )
+            .order_by(GpuUsageRecord.usage_date, GpuUsageRecord.local_record_id)
+            .all()
+        )
+        # Zero-charge rows are only sent to overwrite a previously sent charge.
+        sendable = [
+            record
+            for record in candidates
+            if Decimal(record.charge) > 0 or record.submitted_charge is not None
+        ]
+
+        for offset in range(0, len(sendable), MAX_RECORDS_PER_POST):
+            batch = sendable[offset : offset + MAX_RECORDS_PER_POST]
+            now = datetime.now(UTC)
+            try:
+                failures = self.usage.post_compute([self._compute_record(r) for r in batch])
+            except UsageApiError as exc:
+                logger.error("ACCESS usage POST failed for %d records: %s", len(batch), exc)
+                for record in batch:
+                    record.status = GpuUsageRecord.STATUS_FAILED
+                    record.last_error = str(exc)
+                    record.attempts = (record.attempts or 0) + 1
+                counters["failed"] += len(batch)
+                db.commit()
+                continue
+
+            errors = {
+                str(failure.record.local_record_id): str(failure.error or "validation failed")
+                for failure in failures
+            }
+            for record in batch:
+                record.attempts = (record.attempts or 0) + 1
+                if record.local_record_id in errors:
+                    record.status = GpuUsageRecord.STATUS_FAILED
+                    record.last_error = errors[record.local_record_id]
+                    counters["failed"] += 1
+                else:
+                    record.status = GpuUsageRecord.STATUS_SUBMITTED
+                    record.submitted_charge = record.charge
+                    record.submitted_at = now
+                    record.loaded_at = None
+                    record.accounting_db_record_id = None
+                    record.last_error = None
+                    counters["submitted"] += 1
+            db.commit()
+        return counters
+
+    # ------------------------------------------------------------------
+    # Reconcile
+    # ------------------------------------------------------------------
+
+    def reconcile(self, db: Session) -> dict[str, int]:
+        """Mark submitted rows loaded/failed using ACCESS load status."""
+        counters = {"loaded": 0, "load_failed": 0}
+        submitted = (
+            db.query(GpuUsageRecord)
+            .filter(GpuUsageRecord.status == GpuUsageRecord.STATUS_SUBMITTED)
+            .all()
+        )
+        if not submitted:
+            return counters
+
+        now = datetime.now(UTC)
+        since = min(_as_utc(r.submitted_at) if r.submitted_at else now for r in submitted)
+        since -= timedelta(hours=1)
+        by_id = {record.local_record_id: record for record in submitted}
+
+        try:
+            loaded = self.usage.loaded(since)
+        except UsageApiError:
+            logger.exception("ACCESS usage/loaded reconcile failed")
+            loaded = []
+        try:
+            statuses = self.usage.status(since, now)
+        except UsageApiError:
+            logger.exception("ACCESS usage/status reconcile failed")
+            statuses = []
+
+        # Loaded wins: process it first so a stale status error can't override it.
+        for item in loaded:
+            record = by_id.get(str(item.local_record_id))
+            if record is None or record.status != GpuUsageRecord.STATUS_SUBMITTED:
+                continue
+            if str(item.resource or self.resource) != self.resource:
+                continue
+            try:
+                charge = Decimal(str(item.charge)).quantize(QUANT)
+            except ArithmeticError:
+                continue
+            if record.submitted_charge is None or charge != Decimal(
+                record.submitted_charge
+            ).quantize(QUANT):
+                continue
+            record.status = GpuUsageRecord.STATUS_LOADED
+            record.accounting_db_record_id = (
+                str(item.accounting_db_record_id) if item.accounting_db_record_id else None
+            )
+            record.loaded_at = now
+            record.last_error = None
+            counters["loaded"] += 1
+
+        for resource in statuses:
+            if str(resource.resource or self.resource) != self.resource:
+                continue
+            for error in resource.errors:
+                message = str(error.error or "load failed")
+                for failed in error.message.records:
+                    record = by_id.get(str(failed.local_record_id))
+                    if record is None or record.status != GpuUsageRecord.STATUS_SUBMITTED:
+                        continue
+                    record.status = GpuUsageRecord.STATUS_FAILED
+                    record.last_error = message
+                    counters["load_failed"] += 1
+
+        db.commit()
+        return counters
+
+    # ------------------------------------------------------------------
+    # Cycle
+    # ------------------------------------------------------------------
+
+    def run_cycle(self, db: Session) -> dict[str, int]:
+        """Sync the ledger, then submit and reconcile when an API key is set."""
+        counters = {
+            "projects": 0,
+            "rows": 0,
+            "dropped": 0,
+            "records_changed": 0,
+            "submitted": 0,
+            "failed": 0,
+            "loaded": 0,
+            "load_failed": 0,
+        }
+        counters.update(self.sync_ledger(db))
+        if not self.usage.api_key:
+            logger.warning(
+                "AMIE_API_KEY is not configured; GPU usage ledger updated "
+                "without submitting to ACCESS."
+            )
+            return counters
+        counters.update(self.submit_pending(db))
+        counters.update(self.reconcile(db))
+        logger.info("GPU accounting cycle complete: %s", counters)
+        return counters
