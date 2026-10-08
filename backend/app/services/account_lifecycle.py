@@ -427,7 +427,9 @@ class AccountLifecycleService:
             nac.AccountActivityTime = datetime.now(UTC)
             nac.ProjectID = project_id
             nac.ResourceList = [resource]
-            nac.UserRemoteSiteLogin = remote_login
+            # Same 30-char AMIE login that GPU usage records send as Username
+            # (see app.services.aime.logins.amie_login).
+            nac.UserRemoteSiteLogin = amie_login(remote_login)
 
             outbound = OutboundPacketService.start_or_resume(
                 db,

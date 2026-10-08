@@ -144,7 +144,7 @@ NRP accounting API: POST /query_resource_usage (resource=gpu, group_by=date,name
 **Identity field semantics** — do not confuse:
 - `User.remote_site_login` — CILogon subject ID (set during OAuth invite callback)
 - `ProjectUser.remote_site_login` — HPC/site login sent as AMIE `Username`
-- GPU usage `Username` = `amie_login(ProjectUser.remote_site_login)` (`services/aime/logins.py`: last 30 chars, AMIE's varchar(30) limit), matching `PiRemoteSiteLogin` in the PI notify packet.
+- AMIE login = `amie_login(remote_site_login)` (`services/aime/logins.py`: last 30 chars, AMIE's varchar(30) limit). It is used for `UserRemoteSiteLogin` (notify_account_create), `PiRemoteSiteLogin` (notify_project_create) and GPU usage `Username`, so account creation and usage always send the same identifier.
 
 ---
 

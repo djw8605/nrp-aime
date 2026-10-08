@@ -264,7 +264,9 @@ class AccountLifecycleTests(unittest.TestCase):
             Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
         )
 
-    def test_reconcile_pending_confirmations_sends_notify_account_create(self) -> None:
+    def _send_account_confirmation(self, login: str) -> tuple[ProjectUser, dict, object]:
+        """Ingest a request_account_create, complete onboarding with *login*,
+        and run the confirmation reconciler; return (membership, result, packet)."""
         source_packet = request_account_create_packet()
         self.service.ingest_packet(self.db, source_packet)
 
@@ -274,8 +276,8 @@ class AccountLifecycleTests(unittest.TestCase):
             .filter_by(project_id=project.id, resource="cluster.example.org")
             .one()
         )
-        membership.remote_site_login = "member-login"
-        membership.user.remote_site_login = "member-login"
+        membership.remote_site_login = login
+        membership.user.remote_site_login = login
 
         lifecycle = AccountLifecycleService()
         self.assertTrue(lifecycle.account_confirmation_required(self.db, membership))
@@ -295,6 +297,12 @@ class AccountLifecycleTests(unittest.TestCase):
         ):
             result = lifecycle.reconcile_pending_confirmations(self.db)
 
+        self.db.refresh(membership)
+        return membership, result, FakeAMIEClient.sent_packets[0]
+
+    def test_reconcile_pending_confirmations_sends_notify_account_create(self) -> None:
+        membership, result, sent_packet = self._send_account_confirmation("member-login")
+
         self.assertEqual(result["confirmations_sent"], 1)
         self.assertEqual(result["failures"], 0)
 
@@ -303,8 +311,6 @@ class AccountLifecycleTests(unittest.TestCase):
             .filter_by(event_type="notify_account_create", source_packet_rec_id=2001)
             .one()
         )
-        self.db.refresh(membership)
-        sent_packet = FakeAMIEClient.sent_packets[0]
 
         self.assertEqual(outbound.status, OutboundPacketLog.STATUS_SENT)
         self.assertEqual(outbound.ack_status, OutboundPacketLog.ACK_ACKED)
@@ -314,6 +320,18 @@ class AccountLifecycleTests(unittest.TestCase):
         self.assertEqual(sent_packet.ResourceList, ["cluster.example.org"])
         self.assertEqual(sent_packet.UserRemoteSiteLogin, "member-login")
         self.assertEqual(sent_packet.UserPersonID, "USER-2001")
+
+    def test_notify_account_create_sends_amie_length_login(self) -> None:
+        """A CILogon URL login is sent as its 30-char AMIE form, the same
+        identifier GPU usage records use as Username; the stored membership
+        login stays the full CILogon subject ID."""
+        cilogon_id = "http://cilogon.org/serverA/users/31351"
+        membership, result, sent_packet = self._send_account_confirmation(cilogon_id)
+
+        self.assertEqual(result["confirmations_sent"], 1)
+        self.assertEqual(sent_packet.UserRemoteSiteLogin, "ilogon.org/serverA/users/31351")
+        self.assertEqual(len(sent_packet.UserRemoteSiteLogin), 30)
+        self.assertEqual(membership.remote_site_login, cilogon_id)
 
     def _ingest_project_create_with_data_reply(self) -> Project:
         """Ingest an RPC + its data_project_create reply in one transaction."""
