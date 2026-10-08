@@ -47,6 +47,8 @@ class _FakeUsageClient:
         self.kwargs = {"site_name": site_name, "api_key": api_key, "usage_url": usage_url}
         self.sent = []
         self.loaded_calls = []
+        self.loaded_ids = []
+        self.loaded_error = None
         self.send_result = [UsageResponse(message="queued", failed_records=[])]
         self.send_error = None
         self.pages = []
@@ -66,7 +68,12 @@ class _FakeUsageClient:
         return self.send_result
 
     def loaded(self, min_loaded_time=None, limit=None, offset=None, local_record_id=None):
-        self.loaded_calls.append((min_loaded_time, limit, offset))
+        if self.loaded_error:
+            raise self.loaded_error
+        if local_record_id is not None:
+            self.loaded_ids.append(local_record_id)
+        else:
+            self.loaded_calls.append((min_loaded_time, limit, offset))
         return UsageLoaded(records=self.pages.pop(0))
 
     def status(self, from_time=None, to_time=None):
@@ -158,6 +165,39 @@ def test_loaded_pages_until_short_page(fake_factory):
 
     assert [r.local_record_id for r in records] == ["r1", "r2", "r3"]
     assert _FakeUsageClient.instances[0].loaded_calls == [(since, 2, 0), (since, 2, 2)]
+
+
+def _loaded_rec(local_record_id, charge=2.5):
+    return UsageLoadedRecord(
+        accounting_db_record_id="99",
+        local_record_id=local_record_id,
+        resource="pnrp.sdsc.access-ci.org",
+        submit_time=None,
+        loaded_time=None,
+        charge=charge,
+    )
+
+
+def test_loaded_record_queries_by_local_record_id(fake_factory):
+    fake_factory.configure["pages"] = [[_loaded_rec("other"), _loaded_rec("r1")]]
+
+    record = _adapter(fake_factory).loaded_record("r1")
+
+    assert record.local_record_id == "r1"
+    assert _FakeUsageClient.instances[0].loaded_ids == ["r1"]
+
+
+def test_loaded_record_returns_none_when_absent(fake_factory):
+    fake_factory.configure["pages"] = [[]]
+
+    assert _adapter(fake_factory).loaded_record("r1") is None
+
+
+def test_loaded_record_wraps_errors(fake_factory):
+    fake_factory.configure["loaded_error"] = UsageResponseError("Bad request")
+
+    with pytest.raises(UsageApiError):
+        _adapter(fake_factory).loaded_record("r1")
 
 
 def test_status_returns_resources_and_wraps_parse_errors(fake_factory, monkeypatch):

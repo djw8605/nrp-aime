@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 
-from amieclient.usage import UsageRecordError
+from amieclient.usage import UsageLoadedRecord, UsageRecordError
 
 from app.services.aime.usage_api import UsageApiError
 from app.services.nrp_accounting.client import GpuUsageRow
@@ -42,7 +43,13 @@ class FakeUsageClient:
         self.validation_errors: dict[str, str] = {}  # LocalRecordID -> error
         self.post_error: UsageApiError | None = None
         self.loaded_records: list = []  # UsageLoadedRecord
-        self.status_resources: list = []  # UsageStatusResource
+        self.loaded_calls: list = []  # min_loaded_time per bulk loaded() call
+        self.loaded_by_id: dict[str, UsageLoadedRecord] = {}
+        self.loaded_record_calls: list[str] = []
+        self.loaded_record_error: UsageApiError | None = None
+        # UsageStatusResource list, or callable(from_time, to_time) -> list
+        self.status_resources: list | Callable = []
+        self.status_calls: list = []  # (from_time, to_time)
         self.status_error: UsageApiError | None = None
 
     def post_compute(self, records):
@@ -56,11 +63,21 @@ class FakeUsageClient:
         ]
 
     def loaded(self, min_loaded_time):
+        self.loaded_calls.append(min_loaded_time)
         return list(self.loaded_records)
 
+    def loaded_record(self, local_record_id):
+        self.loaded_record_calls.append(local_record_id)
+        if self.loaded_record_error is not None:
+            raise self.loaded_record_error
+        return self.loaded_by_id.get(local_record_id)
+
     def status(self, from_time, to_time):
+        self.status_calls.append((from_time, to_time))
         if self.status_error is not None:
             raise self.status_error
+        if callable(self.status_resources):
+            return list(self.status_resources(from_time, to_time))
         return list(self.status_resources)
 
 

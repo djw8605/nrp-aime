@@ -174,6 +174,7 @@ npm run dev
 | `AMIE_PROCESSED_CLIENT_STATE` | `nrp-processed` | Client state set after successful ingestion |
 | `AMIE_USAGE_URL` | `https://usage.access-ci.org/api/v1` | ACCESS Usage API base URL (test: `https://usage.access-ci.org/api/v1_test`) |
 | `AMIE_USAGE_RESTATEMENT_DAYS` | `7` | Days re-fetched each cycle so restated usage is re-submitted |
+| `AMIE_USAGE_RECONCILE_LOOKBACK_DAYS` | `14` | Max look-back of the bulk `/usage/loaded` and `/usage/status` reconcile queries; older unconfirmed rows are checked one by one (up to 200 per cycle) |
 | `AMIE_USAGE_INTERVAL_MINUTES` | `1440` | Usage export interval and record bucket size (once daily) |
 | `AMIE_USAGE_GPU_CHARGE_FACTOR` | `1.0` | Multiplier applied to GPU usage when computing charge |
 | `AMIE_USAGE_ALERT_EMAIL_ENABLED` | `true` | Send email for usage-worker stale/failure alerts; logs/webhooks/slack remain active when disabled |

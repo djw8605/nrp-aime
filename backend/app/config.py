@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Days before the last synced date that are re-fetched each cycle so restated
     # accounting data is re-submitted (same LocalRecordID overwrites at ACCESS).
     amie_usage_restatement_days: int = 7
+    # Bulk /usage/loaded and /usage/status reconcile windows reach back at most
+    # this many days; older submitted rows are checked one by one instead.
+    amie_usage_reconcile_lookback_days: int = 14
     amie_usage_alert_email_enabled: bool = True
     amie_account_confirmation_enabled: bool = True
     amie_packet_reprocess_max_retries: int = 5

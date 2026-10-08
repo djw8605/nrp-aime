@@ -113,6 +113,17 @@ class AccessUsageApiClient:
         except _CLIENT_ERRORS as exc:
             raise UsageApiError(f"ACCESS usage/loaded failed: {exc}") from exc
 
+    def loaded_record(self, local_record_id: str) -> UsageLoadedRecord | None:
+        """Return the loaded record for *local_record_id*, or None if not loaded."""
+        try:
+            with self._client() as client:
+                records = client.loaded(local_record_id=local_record_id).records
+        except _CLIENT_ERRORS as exc:
+            raise UsageApiError(f"ACCESS usage/loaded failed: {exc}") from exc
+        return next(
+            (r for r in records if str(r.local_record_id) == local_record_id), None
+        )
+
     def status(
         self, from_time: datetime, to_time: datetime
     ) -> list[UsageStatusResource]:

@@ -18,7 +18,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import NamedTuple
 
-from amieclient.usage import ComputeUsageRecord
+from amieclient.usage import ComputeUsageRecord, UsageLoadedRecord
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 
 QUANT = Decimal("0.000001")
 PI_LOGIN_MISSING = "PI has no site login yet"
+# A /usage/loaded charge within this of the submitted charge confirms the load
+# (ACCESS may store Charge at lower precision than the 6 decimals we send).
+LOADED_CHARGE_TOLERANCE = Decimal("0.01")
+# Submitted rows older than the reconcile look-back are checked one by one.
+RECONCILE_STALE_LOOKUPS_PER_CYCLE = 200
+# /usage/status is queried from this long before a batch's submitted_at.
+STATUS_WINDOW_LEAD = timedelta(minutes=5)
 
 # (usage_date, username) -> (gpu_hours, attribution)
 DesiredRecords = dict[tuple[date, str], tuple[Decimal, str]]
@@ -71,6 +78,7 @@ class GpuAccountingService:
         self.resource = settings.amie_gpu_resource_name
         self.charge_factor = Decimal(str(settings.amie_usage_gpu_charge_factor))
         self.restatement_days = max(0, settings.amie_usage_restatement_days)
+        self.reconcile_lookback_days = max(1, settings.amie_usage_reconcile_lookback_days)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -391,8 +399,43 @@ class GpuAccountingService:
     # Reconcile
     # ------------------------------------------------------------------
 
-    def reconcile(self, db: Session) -> dict[str, int]:
-        """Mark submitted rows loaded/failed using ACCESS load status."""
+    def _loaded_matches(self, record: GpuUsageRecord, item: UsageLoadedRecord) -> bool:
+        """True when *item* confirms ACCESS loaded *record*'s submitted charge."""
+        if str(item.local_record_id) != record.local_record_id:
+            return False
+        if str(item.resource or self.resource) != self.resource:
+            return False
+        if record.submitted_charge is None:
+            return False
+        try:
+            charge = Decimal(str(item.charge))
+        except ArithmeticError:
+            return False
+        if not charge.is_finite():
+            return False
+        # ACCESS may store Charge at lower precision than we send.
+        return abs(charge - Decimal(record.submitted_charge)) < LOADED_CHARGE_TOLERANCE
+
+    @staticmethod
+    def _mark_loaded(record: GpuUsageRecord, item: UsageLoadedRecord, now: datetime) -> None:
+        record.status = GpuUsageRecord.STATUS_LOADED
+        record.accounting_db_record_id = (
+            str(item.accounting_db_record_id) if item.accounting_db_record_id else None
+        )
+        record.loaded_at = now
+        record.last_error = None
+
+    def reconcile(
+        self, db: Session, *, cycle_started_at: datetime | None = None
+    ) -> dict[str, int]:
+        """Mark submitted rows loaded/failed using ACCESS load status.
+
+        Rows submitted within the look-back window are matched against one bulk
+        ``/usage/loaded`` query; older rows are looked up one by one (capped per
+        cycle). ``/usage/status`` errors only apply to the submission batch whose
+        window they fall in, and batches sent after *cycle_started_at* are not
+        status-checked yet (ACCESS loads asynchronously).
+        """
         counters = {"loaded": 0, "load_failed": 0}
         submitted = (
             db.query(GpuUsageRecord)
@@ -403,56 +446,72 @@ class GpuAccountingService:
             return counters
 
         now = datetime.now(UTC)
-        since = min(_as_utc(r.submitted_at) if r.submitted_at else now for r in submitted)
-        since -= timedelta(hours=1)
-        by_id = {record.local_record_id: record for record in submitted}
+        cutoff = now - timedelta(days=self.reconcile_lookback_days)
 
+        def sent_at(record: GpuUsageRecord) -> datetime:
+            return _as_utc(record.submitted_at) if record.submitted_at else now
+
+        # Loaded wins: process it first so a status error can't override it.
+        since = max(min(sent_at(r) for r in submitted) - timedelta(hours=1), cutoff)
+        by_id = {record.local_record_id: record for record in submitted}
         try:
             loaded = self.usage.loaded(since)
         except UsageApiError:
             logger.exception("ACCESS usage/loaded reconcile failed")
             loaded = []
-        try:
-            statuses = self.usage.status(since, now)
-        except UsageApiError:
-            logger.exception("ACCESS usage/status reconcile failed")
-            statuses = []
-
-        # Loaded wins: process it first so a stale status error can't override it.
         for item in loaded:
             record = by_id.get(str(item.local_record_id))
             if record is None or record.status != GpuUsageRecord.STATUS_SUBMITTED:
                 continue
-            if str(item.resource or self.resource) != self.resource:
-                continue
-            try:
-                charge = Decimal(str(item.charge)).quantize(QUANT)
-            except ArithmeticError:
-                continue
-            if record.submitted_charge is None or charge != Decimal(
-                record.submitted_charge
-            ).quantize(QUANT):
-                continue
-            record.status = GpuUsageRecord.STATUS_LOADED
-            record.accounting_db_record_id = (
-                str(item.accounting_db_record_id) if item.accounting_db_record_id else None
-            )
-            record.loaded_at = now
-            record.last_error = None
-            counters["loaded"] += 1
+            if self._loaded_matches(record, item):
+                self._mark_loaded(record, item, now)
+                counters["loaded"] += 1
 
-        for resource in statuses:
-            if str(resource.resource or self.resource) != self.resource:
+        pending = [r for r in submitted if r.status == GpuUsageRecord.STATUS_SUBMITTED]
+        stale = sorted((r for r in pending if sent_at(r) < cutoff), key=sent_at)
+        for record in stale[:RECONCILE_STALE_LOOKUPS_PER_CYCLE]:
+            try:
+                item = self.usage.loaded_record(record.local_record_id)
+            except UsageApiError:
+                logger.exception(
+                    "ACCESS usage/loaded lookup failed for %s", record.local_record_id
+                )
                 continue
-            for error in resource.errors:
-                message = str(error.error or "load failed")
-                for failed in error.message.records:
-                    record = by_id.get(str(failed.local_record_id))
-                    if record is None or record.status != GpuUsageRecord.STATUS_SUBMITTED:
-                        continue
-                    record.status = GpuUsageRecord.STATUS_FAILED
-                    record.last_error = message
-                    counters["load_failed"] += 1
+            if item is not None and self._loaded_matches(record, item):
+                self._mark_loaded(record, item, now)
+                counters["loaded"] += 1
+
+        # Rows from one POST batch share submitted_at; a batch's errors can only
+        # appear after it was sent, so query status per batch from just before it.
+        groups: dict[datetime, dict[str, GpuUsageRecord]] = defaultdict(dict)
+        for record in pending:
+            if record.status != GpuUsageRecord.STATUS_SUBMITTED:
+                continue
+            when = sent_at(record)
+            if when < cutoff:
+                continue
+            if cycle_started_at is not None and when >= cycle_started_at:
+                continue
+            groups[when][record.local_record_id] = record
+        for when in sorted(groups):
+            try:
+                statuses = self.usage.status(when - STATUS_WINDOW_LEAD, now)
+            except UsageApiError:
+                logger.exception("ACCESS usage/status reconcile failed for batch sent %s", when)
+                continue
+            group = groups[when]
+            for resource in statuses:
+                if str(resource.resource or self.resource) != self.resource:
+                    continue
+                for error in resource.errors:
+                    message = str(error.error or "load failed")
+                    for failed in error.message.records:
+                        record = group.get(str(failed.local_record_id))
+                        if record is None or record.status != GpuUsageRecord.STATUS_SUBMITTED:
+                            continue
+                        record.status = GpuUsageRecord.STATUS_FAILED
+                        record.last_error = message
+                        counters["load_failed"] += 1
 
         db.commit()
         return counters
@@ -473,6 +532,7 @@ class GpuAccountingService:
             "loaded": 0,
             "load_failed": 0,
         }
+        cycle_started_at = datetime.now(UTC)
         counters.update(self.sync_ledger(db))
         if not self.usage.api_key:
             logger.warning(
@@ -481,6 +541,6 @@ class GpuAccountingService:
             )
             return counters
         counters.update(self.submit_pending(db))
-        counters.update(self.reconcile(db))
+        counters.update(self.reconcile(db, cycle_started_at=cycle_started_at))
         logger.info("GPU accounting cycle complete: %s", counters)
         return counters

@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pytest
 from amieclient.usage import ComputeUsageRecord, UsageLoadedRecord, UsageMessage
 from amieclient.usage.message import UsageMessageError
 from amieclient.usage.response import UsageStatusResource
@@ -41,12 +42,12 @@ def _record(db, project, **overrides):
 
 
 def _submitted(db, project, charge="2.5", **overrides):
+    overrides.setdefault("submitted_at", datetime.now(UTC) - timedelta(hours=2))
     return _record(
         db,
         project,
         status=GpuUsageRecord.STATUS_SUBMITTED,
         submitted_charge=Decimal(charge),
-        submitted_at=datetime.now(UTC) - timedelta(hours=2),
         **overrides,
     )
 
@@ -223,6 +224,179 @@ def test_reconcile_loaded_wins_and_status_failure_is_tolerated(db, make_project)
     assert record.status == GpuUsageRecord.STATUS_LOADED
 
 
+@pytest.mark.parametrize("loaded_charge", [2.5, "2.500000", 2.504, "2.496"])
+def test_reconcile_tolerates_access_charge_precision(db, make_project, loaded_charge):
+    project = gpu_project(db, make_project)
+    record = _submitted(db, project)
+    service, usage = _service()
+    usage.loaded_records = [_loaded(record, charge=loaded_charge)]
+
+    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0}
+    assert record.status == GpuUsageRecord.STATUS_LOADED
+
+
+def test_reconcile_rejects_charge_outside_tolerance(db, make_project):
+    project = gpu_project(db, make_project)
+    record = _submitted(db, project)
+    service, usage = _service()
+    usage.loaded_records = [_loaded(record, charge=2.6), _loaded(record, charge=2.51)]
+
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert record.status == GpuUsageRecord.STATUS_SUBMITTED
+
+
+def test_reconcile_bulk_lookback_is_capped(db, make_project):
+    project = gpu_project(db, make_project)
+    _submitted(db, project, username="old", submitted_at=datetime.now(UTC) - timedelta(days=60))
+    _submitted(db, project, username="new")
+    service, usage = _service()
+    floor = datetime.now(UTC) - timedelta(days=14)
+
+    service.reconcile(db)
+
+    [since] = usage.loaded_calls
+    assert since >= floor
+    assert since <= datetime.now(UTC) - timedelta(hours=2)
+
+
+def test_reconcile_lookback_follows_setting(db, make_project, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "amie_usage_reconcile_lookback_days", 3)
+    project = gpu_project(db, make_project)
+    _submitted(db, project, submitted_at=datetime.now(UTC) - timedelta(days=10))
+    service, usage = _service()
+    floor = datetime.now(UTC) - timedelta(days=3)
+
+    service.reconcile(db)
+
+    assert usage.loaded_calls[0] >= floor
+
+
+def test_reconcile_confirms_stale_row_via_per_record_lookup(db, make_project):
+    project = gpu_project(db, make_project)
+    stale = _submitted(db, project, username="old", submitted_at=datetime.now(UTC) - timedelta(days=30))
+    recent = _submitted(db, project, username="new")
+    service, usage = _service()
+    usage.loaded_by_id = {stale.local_record_id: _loaded(stale, charge="2.50")}
+
+    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0}
+    assert stale.status == GpuUsageRecord.STATUS_LOADED
+    assert stale.accounting_db_record_id == "134919900"
+    assert recent.status == GpuUsageRecord.STATUS_SUBMITTED
+    assert usage.loaded_record_calls == [stale.local_record_id]
+
+
+def test_reconcile_stale_lookup_rejects_mismatched_charge(db, make_project):
+    project = gpu_project(db, make_project)
+    stale = _submitted(db, project, submitted_at=datetime.now(UTC) - timedelta(days=30))
+    service, usage = _service()
+    usage.loaded_by_id = {stale.local_record_id: _loaded(stale, charge=1.0)}
+
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert stale.status == GpuUsageRecord.STATUS_SUBMITTED
+
+
+def test_reconcile_skips_per_record_lookup_when_bulk_confirms(db, make_project):
+    project = gpu_project(db, make_project)
+    stale = _submitted(db, project, submitted_at=datetime.now(UTC) - timedelta(days=30))
+    service, usage = _service()
+    usage.loaded_records = [_loaded(stale)]
+
+    assert service.reconcile(db) == {"loaded": 1, "load_failed": 0}
+    assert usage.loaded_record_calls == []
+
+
+def test_reconcile_stale_lookups_are_capped_oldest_first(db, make_project, monkeypatch):
+    from app.services.gpu_accounting import service as service_module
+
+    monkeypatch.setattr(service_module, "RECONCILE_STALE_LOOKUPS_PER_CYCLE", 2)
+    project = gpu_project(db, make_project)
+    now = datetime.now(UTC)
+    rows = [
+        _submitted(db, project, username=f"u{age}", submitted_at=now - timedelta(days=age))
+        for age in (20, 40, 30)
+    ]
+    service, usage = _service()
+
+    service.reconcile(db)
+
+    assert usage.loaded_record_calls == [rows[1].local_record_id, rows[2].local_record_id]
+
+
+def test_reconcile_stale_lookup_error_skips_row(db, make_project):
+    project = gpu_project(db, make_project)
+    stale = _submitted(db, project, submitted_at=datetime.now(UTC) - timedelta(days=30))
+    service, usage = _service()
+    usage.loaded_record_error = UsageApiError("ACCESS usage/loaded failed: down")
+
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert stale.status == GpuUsageRecord.STATUS_SUBMITTED
+
+
+def test_reconcile_does_not_refail_resent_row_from_earlier_error(db, make_project):
+    project = gpu_project(db, make_project)
+    resent_at = datetime.now(UTC) - timedelta(hours=2)
+    record = _submitted(db, project, submitted_at=resent_at)
+    service, usage = _service()
+
+    def status(from_time, to_time):
+        # The old error is only visible to windows that reach back before the re-send.
+        if from_time < resent_at - timedelta(minutes=5):
+            return [_status_error(record, "Allocation could not be found")]
+        return []
+
+    usage.status_resources = status
+
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert record.status == GpuUsageRecord.STATUS_SUBMITTED
+    [(from_time, _)] = usage.status_calls
+    assert from_time == resent_at - timedelta(minutes=5)
+
+
+def test_reconcile_status_errors_apply_only_to_their_submission_group(db, make_project):
+    project = gpu_project(db, make_project)
+    now = datetime.now(UTC)
+    first = _submitted(db, project, username="first", submitted_at=now - timedelta(hours=3))
+    second = _submitted(db, project, username="second", submitted_at=now - timedelta(hours=1))
+    service, usage = _service()
+
+    def status(from_time, to_time):
+        # Only the later group's window reports an error, and it names the earlier row.
+        if from_time >= second.submitted_at.replace(tzinfo=UTC) - timedelta(minutes=5):
+            return [_status_error(first, "stale error")]
+        return []
+
+    usage.status_resources = status
+
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert first.status == GpuUsageRecord.STATUS_SUBMITTED
+    assert len(usage.status_calls) == 2
+
+
+def test_reconcile_skips_status_for_rows_submitted_this_cycle(db, make_project):
+    project = gpu_project(db, make_project)
+    cycle_started = datetime.now(UTC) - timedelta(minutes=1)
+    record = _submitted(db, project, submitted_at=datetime.now(UTC))
+    service, usage = _service()
+    usage.status_resources = [_status_error(record, "boom")]
+
+    assert service.reconcile(db, cycle_started_at=cycle_started) == {"loaded": 0, "load_failed": 0}
+    assert record.status == GpuUsageRecord.STATUS_SUBMITTED
+    assert usage.status_calls == []
+
+
+def test_reconcile_does_not_status_check_stale_rows(db, make_project):
+    project = gpu_project(db, make_project)
+    stale = _submitted(db, project, submitted_at=datetime.now(UTC) - timedelta(days=30))
+    service, usage = _service()
+    usage.status_resources = [_status_error(stale, "old error")]
+
+    assert service.reconcile(db) == {"loaded": 0, "load_failed": 0}
+    assert stale.status == GpuUsageRecord.STATUS_SUBMITTED
+    assert usage.status_calls == []
+
+
 def _cycle_service(db, make_project, make_user, make_project_user, usage):
     """Service whose accounting fake reports one member usage row on 2026-10-02."""
     project = gpu_project(db, make_project)
@@ -254,5 +428,7 @@ def test_run_cycle_submits_and_reconciles(db, make_project, make_user, make_proj
 
     assert counters["submitted"] == 1
     assert len(usage.posts) == 1
+    # Rows submitted during this cycle are not status-checked yet.
+    assert usage.status_calls == []
     [record] = db.query(GpuUsageRecord).all()
     assert record.status == GpuUsageRecord.STATUS_SUBMITTED
