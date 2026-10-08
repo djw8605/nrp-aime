@@ -113,8 +113,8 @@ kubectl kustomize deployment         # Preview manifests
 | **Lifecycle state** | `Project.lifecycle_state` — the single authoritative project state |
 | **Account state** | `ProjectUser.account_state` — per-user onboarding progression |
 | **Service Units** | Standardized allocation currency (CPU/GPU); debit/credit model |
-| **ClickHouse** | Time-series accounting DB — source of per-user GPU hours for AMIE export |
-| **CILogon ID** | OAuth subject ID stored in `User.remote_site_login`; matched against `created_by` in ClickHouse |
+| **NRP accounting API** | Public OpenAPI bridge over the ClickHouse accounting DB — source of per-user daily GPU hours for ACCESS export |
+| **CILogon ID** | OAuth subject ID stored in `User.remote_site_login`; matched against `created_by` in the NRP accounting API |
 | **Authentik** | Identity provider used for invite-based OAuth onboarding |
 | **Portal RPC** | NRP portal JSON-RPC endpoint for namespace/membership provisioning |
 | **SealedSecret** | Bitnami-encrypted K8s secret; commit the `.yaml`, never the plaintext |
@@ -123,23 +123,22 @@ kubectl kustomize deployment         # Preview manifests
 
 ## GPU Usage Export Pipeline
 
-GPU hours for AMIE reporting come from **ClickHouse**, not Prometheus. Prometheus is only used for the live display endpoint `GET /api/v1/projects/{id}/usage`.
+GPU hours for ACCESS reporting come from the **NRP accounting public API** (`NRP_ACCOUNTING_API_URL`), not Prometheus. Only projects with `allocated_resource == AMIE_GPU_RESOURCE_NAME` (`pnrp.sdsc.access-ci.org`) are reported.
 
 ```
-ClickHouse: access_accounting.cluster_namespace_usage_daily
-  WHERE resource = 'gpu'
-  GROUP BY (namespace, created_by, date)
-       │                │
-       ▼                ▼
-  Project.kubernetes_namespace    User.remote_site_login   ← CILogon subject ID
-       │                │
-       └──── ProjectUser ────┘
+NRP accounting API: POST /query_resource_usage (resource=gpu, group_by=date,namespace,created_by)
+       │                         │
+       ▼                         ▼
+  Project.kubernetes_namespace   created_by
+                                 ├─ CILogon URL → User.remote_site_login → ProjectUser (this project)
+                                 │                   → ProjectUser.remote_site_login (AMIE Username)
+                                 │                   (not a member → dropped)
+                                 └─ anything else  → PI's ProjectUser.remote_site_login
                   │
-          ProjectUser.remote_site_login  ← AMIE Username (HPC site login)
-                  │
-          AdjustmentUsageRecord (debit) → AMIE Usage API
-                  │
-          amie_usage_exports  ← idempotent; local_record_id = nrp-gpu-{project_id}-{YYYYMMDD}-{sha256(cilogon)[:12]}
+          gpu_usage_records (project × day × username; 1 GPU-hour = 1 SU)
+                  │  local_record_id = nrp-gpu-{site_project_id}-{YYYYMMDD}-{sha256(username)[:12]}
+                  ▼
+          amieclient.UsageClient (fork @1700828): POST /usage (Compute, ≤1000/batch) → /usage/loaded + /usage/status reconcile
 ```
 
 **Identity field semantics** — do not confuse:
@@ -201,7 +200,7 @@ All config lives in `backend/app/config.py` as a Pydantic `Settings` class loade
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `AMIE_*` | AMIE client: site names, API key, usage interval |
-| `CLICKHOUSE_*` | ClickHouse accounting database connection (GPU usage source) |
+| `NRP_ACCOUNTING_API_*` | NRP accounting public API (GPU usage source) |
 | `AMIE_GPU_RESOURCE_NAME` | AMIE resource string for GPU records — must match AMIE registration |
 | `PORTAL_RPC_*` | NRP portal JSON-RPC: URL, token, namespace |
 | `AUTH_ADMIN_*` | Admin portal OIDC (separate IdP from invite flow) |
@@ -212,7 +211,7 @@ Multi-site: set `AMIE_SITE_NAMES=NRP,ACCESS` (comma-separated). `AMIE_SITE_NAME`
 
 Dev shortcuts: `AUTH_DEV_BYPASS=true`, `AUTHENTIK_STUB_AUTO_ACCOUNT_MADE=true`.
 
-ClickHouse key vars: `CLICKHOUSE_HOST` (blank = GPU accounting disabled), `CLICKHOUSE_PORT` (default `8443`), `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` (default `access_accounting`), `CLICKHOUSE_TABLE` (default `cluster_namespace_usage_daily`), `CLICKHOUSE_SECURE` (default `true`).
+GPU accounting vars: `NRP_ACCOUNTING_API_URL`, `AMIE_GPU_RESOURCE_NAME` (default `pnrp.sdsc.access-ci.org`), `AMIE_USAGE_URL` (default `https://usage.access-ci.org/api/v1`), `AMIE_USAGE_RESTATEMENT_DAYS` (default `7`).
 
 ---
 

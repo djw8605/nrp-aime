@@ -60,7 +60,7 @@ received → email_invite_sent → user_completed_oauth → aime_notified   (reg
 - `provisioning_state` is a legacy column kept for backwards compat — `lifecycle_state` is the source of truth.
 - `amieclient` is installed `--no-deps` to avoid its stale `python-dateutil<2.7` constraint. Do not add it to `requirements.txt` with deps.
 - Migrations are numbered `NNNN_slug.py`. Always inspect autogenerate output before committing.
-- **GPU usage export** (`services/aime/usage_service.py`) sources data from **ClickHouse** via `services/clickhouse/service.py`. Prometheus is only used for the live display endpoint. `User.remote_site_login` holds the CILogon subject ID matched against `created_by` in ClickHouse; `ProjectUser.remote_site_login` is the AMIE `Username`.
+- GPU usage for ACCESS export comes from the **NRP accounting public API** (`services/nrp_accounting/client.py`), not Prometheus or a direct ClickHouse connection. Only `pnrp.sdsc.access-ci.org` allocations are exported; the ledger is `gpu_usage_records`. Usage is POSTed through `amieclient.UsageClient` (adapter: `services/aime/usage_api.py`). amieclient must be installed `--no-deps` from the pinned fork `djw8605/amieclient@1700828` (see Dockerfile/CI); PyPI 0.6.1 sends `ParentRecordID: [null]` on Compute records and lacks `UsageClient.loaded()`. Switch back to PyPI once upstream (xsede/amieclient#35) releases.
 
 ### Vue / JavaScript
 - All components use `<script setup>` Composition API — no Options API.
@@ -120,14 +120,9 @@ All settings are in `backend/app/config.py` (Pydantic `Settings`, loaded from `.
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `AMIE_*` | AMIE client — site names, API key, usage interval |
-| `CLICKHOUSE_HOST` | ClickHouse hostname — blank disables GPU accounting |
-| `CLICKHOUSE_PORT` | ClickHouse port (default `8443`) |
-| `CLICKHOUSE_USER` | ClickHouse username (default `default`) |
-| `CLICKHOUSE_PASSWORD` | ClickHouse password |
-| `CLICKHOUSE_DATABASE` | ClickHouse database (default `access_accounting`) |
-| `CLICKHOUSE_TABLE` | ClickHouse table (default `cluster_namespace_usage_daily`) |
-| `CLICKHOUSE_SECURE` | Use TLS (default `true`) |
-| `AMIE_GPU_RESOURCE_NAME` | AMIE resource string for GPU records — must match AMIE registration; falls back to `Project.resource_type` |
+| `NRP_ACCOUNTING_API_URL` | NRP accounting public API (default `https://nrp-accounting-mcp.nrp-nautilus.io/openapi`) — source of daily GPU hours |
+| `AMIE_GPU_RESOURCE_NAME` | Projects with this `allocated_resource` are GPU-hour allocations; also the usage record `Resource` (default `pnrp.sdsc.access-ci.org`) |
+| `AMIE_USAGE_RESTATEMENT_DAYS` | Days re-fetched each cycle so restated usage is re-submitted (default `7`) |
 | `PORTAL_RPC_*` | NRP portal JSON-RPC — URL, token, namespace |
 | `AUTH_ADMIN_*` | Admin portal OIDC |
 | `AUTHENTIK_*` | Invite onboarding OIDC |

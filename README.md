@@ -24,7 +24,7 @@ It currently:
 | Backend API | FastAPI (Python) |
 | Database | PostgreSQL + SQLAlchemy (ORM) + Alembic (migrations) |
 | Allocation ingestion | AMIE client (`amieclient`) |
-| Usage accounting | ClickHouse (`access_accounting` database) |
+| Usage accounting | NRP accounting public API (ClickHouse `access_accounting`) |
 | Usage metrics (live display) | Prometheus (NRP endpoint) |
 | Frontend | Vue 3 + PrimeVue + TailwindCSS + Axios |
 | Container orchestration | Docker Compose + Kubernetes (Kustomize) |
@@ -43,7 +43,8 @@ nrp-aime/
 │   │   ├── api/              # FastAPI route handlers
 │   │   └── services/
 │   │       ├── aime/         # AMIE packet ingestion + usage export
-│   │       ├── clickhouse/   # ClickHouse accounting queries (GPU usage)
+│   │       ├── gpu_accounting/  # GPU-hour ledger sync, ACCESS submit + reconcile
+│   │       ├── nrp_accounting/  # NRP accounting public API client
 │   │       ├── invites/      # Magic-link invite + callback flow
 │   │       ├── email/        # Invite email template + sending stub
 │   │       ├── prometheus/   # NRP metrics queries (live display only)
@@ -113,10 +114,9 @@ pip install -r requirements.txt
 export DATABASE_URL=postgresql://nrp:nrp@localhost:5432/nrp_aime
 export PROMETHEUS_URL=https://prometheus.nrp-nautilus.io
 
-# ClickHouse accounting (required for GPU usage export)
-export CLICKHOUSE_HOST=clickhouse.example.org
-export CLICKHOUSE_PASSWORD=secret
-export AMIE_GPU_RESOURCE_NAME=nrp.example.access-ci.org
+# GPU accounting (defaults shown)
+export NRP_ACCOUNTING_API_URL=https://nrp-accounting-mcp.nrp-nautilus.io/openapi
+export AMIE_GPU_RESOURCE_NAME=pnrp.sdsc.access-ci.org
 
 # Run migrations
 alembic upgrade head
@@ -164,23 +164,18 @@ npm run dev
 |---|---|---|
 | `DATABASE_URL` | `postgresql://nrp:nrp@localhost:5432/nrp_aime` | PostgreSQL connection string |
 | `PROMETHEUS_URL` | `https://prometheus.nrp-nautilus.io` | NRP Prometheus endpoint (live usage display) |
-| `CLICKHOUSE_HOST` | `` | ClickHouse hostname for GPU accounting queries |
-| `CLICKHOUSE_PORT` | `8443` | ClickHouse HTTPS port |
-| `CLICKHOUSE_USER` | `default` | ClickHouse username |
-| `CLICKHOUSE_PASSWORD` | `` | ClickHouse password |
-| `CLICKHOUSE_DATABASE` | `access_accounting` | ClickHouse accounting database name |
-| `CLICKHOUSE_TABLE` | `cluster_namespace_usage_daily` | ClickHouse daily usage table name |
-| `CLICKHOUSE_SECURE` | `true` | Use TLS for ClickHouse connection |
-| `AMIE_GPU_RESOURCE_NAME` | `` | AMIE resource string for GPU records — must match the resource registered in AMIE; falls back to `Project.resource_type` if blank |
+| `NRP_ACCOUNTING_API_URL` | `https://nrp-accounting-mcp.nrp-nautilus.io/openapi` | NRP accounting public API (source of daily GPU hours) |
+| `NRP_ACCOUNTING_API_TIMEOUT_SECONDS` | `120` | Timeout for accounting API calls |
+| `AMIE_GPU_RESOURCE_NAME` | `pnrp.sdsc.access-ci.org` | Projects with this `allocated_resource` are GPU-hour allocations; also the usage record `Resource` |
 | `AMIE_SITE_NAME` | `NRP` | Site name for AMIE client |
 | `AMIE_SITE_NAMES` | `` | Optional comma-separated AMIE site names to poll one-by-one (for example `NRP,ACCESS`) |
 | `AMIE_API_KEY` | `` | API key for AMIE client |
 | `AMIE_URL` | `https://amieclient.xsede.org/v0.10/` | AMIE API base URL |
 | `AMIE_PROCESSED_CLIENT_STATE` | `nrp-processed` | Client state set after successful ingestion |
-| `AMIE_USAGE_URL` | `https://usage.xsede.org/api/v1` | AMIE usage API base URL |
+| `AMIE_USAGE_URL` | `https://usage.access-ci.org/api/v1` | ACCESS Usage API base URL (test: `https://usage.access-ci.org/api/v1_test`) |
+| `AMIE_USAGE_RESTATEMENT_DAYS` | `7` | Days re-fetched each cycle so restated usage is re-submitted |
 | `AMIE_USAGE_INTERVAL_MINUTES` | `1440` | Usage export interval and record bucket size (once daily) |
 | `AMIE_USAGE_GPU_CHARGE_FACTOR` | `1.0` | Multiplier applied to GPU usage when computing charge |
-| `AMIE_USAGE_DEFAULT_USERNAME` | `nrp-system` | Fallback username for usage records when no login is mapped |
 | `AMIE_USAGE_ALERT_EMAIL_ENABLED` | `true` | Send email for usage-worker stale/failure alerts; logs/webhooks/slack remain active when disabled |
 | `APP_SECRET_KEY` | `dev-change-me` | Secret used for signed invite state and token hashing pepper |
 | `FRONTEND_BASE_URL` | `http://localhost:5173` | Base URL used for invite accept/success/error redirects |
@@ -220,14 +215,21 @@ npm run dev
 | `AUTHENTIK_STUB_LOGIN_EMAIL` | `` | Stub callback email for local testing without real OIDC |
 | `DEBUG` | `false` | Enable debug mode |
 
+Note: the removed variables (`CLICKHOUSE_*`, `AMIE_USAGE_DEFAULT_USERNAME`) must be deleted from any local `.env` file, because the settings loader rejects unknown keys in `.env`.
+
 See the full backend configuration reference in [backend/README.md](/Users/derekweitzel/git/nrp-aime/backend/README.md).
 
 ## Architecture Notes
 
 - The **PostgreSQL database** acts as the central interface between the frontend dashboard and the backend services.
 - The **AIME worker** (`workers/aime_worker.py`) polls one or more AMIE sites (`AMIE_SITE_NAMES`) each cycle (incoming + outgoing queues), logs packet receipt, and persists normalized Project + User lifecycle records tagged with `source_site_name`, `allocated_resource`, and `service_units_*`.
-- The **Usage worker** (`workers/usage_worker.py`) sends periodic usage records to the AMIE Usage API using `amieclient.UsageClient`. Usage data is sourced from ClickHouse (see below).
-- The **ClickHouse accounting service** (`services/clickhouse/service.py`) queries the `access_accounting.cluster_namespace_usage_daily` table for GPU hours, filtered to `resource = 'gpu'` and grouped per `(namespace, created_by, date)`. Each `created_by` value is a CILogon subject ID that is matched to a `User` record via `User.remote_site_login`. One AMIE adjustment-debit record is submitted per user × namespace × calendar day; records are idempotent via the `amie_usage_exports.local_record_id` uniqueness constraint.
+- The **Usage worker** (`workers/usage_worker.py`) runs `GpuAccountingService.run_cycle` (`services/gpu_accounting/service.py`) each interval:
+  1. Pulls daily GPU hours for GPU allocations (`allocated_resource == AMIE_GPU_RESOURCE_NAME`) from the NRP accounting public API (`POST /query_resource_usage`, grouped by date × namespace × `created_by`).
+  2. Attributes each row: a CILogon `created_by` must be a project member (`User.remote_site_login` → `ProjectUser.remote_site_login`), otherwise it is dropped; non-person creators (service accounts) are charged to the PI.
+  3. Upserts `gpu_usage_records` (one row per project × day × AMIE username; 1 GPU-hour = 1 SU), catching up from `projects.gpu_usage_synced_through`.
+  4. Submits pending/failed rows to the ACCESS Usage API as Compute records (≤ 1000 per POST) through `amieclient.UsageClient` (adapter in `services/aime/usage_api.py`) and reconciles them via `/usage/loaded` and `/usage/status`.
+- `amieclient` is installed `--no-deps` from the pinned fork `djw8605/amieclient@1700828` (upstream PR xsede/amieclient#35) until upstream publishes a release with those fixes.
+- The projects API exposes `gpu_accounting` (GPU hours used, SU loaded/submitted/pending/failed) per GPU project.
 - The **Prometheus service** (`services/prometheus/service.py`) is used only for live GPU/CPU display in the project-detail API response — it is not part of the AMIE usage export pipeline.
 - The **Invite service** (`services/invites/service.py`) provides person-centric magic-link onboarding:
   - admin sends invite from person page

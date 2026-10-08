@@ -142,8 +142,10 @@ services:
       AMIE_SITE_NAME: NRP
       AMIE_SITE_NAMES: ${AMIE_SITE_NAMES:-}
       AMIE_API_KEY: ${AMIE_API_KEY:-}
-      AMIE_USAGE_URL: ${AMIE_USAGE_URL:-https://usage.xsede.org/api/v1}
+      AMIE_USAGE_URL: ${AMIE_USAGE_URL:-https://usage.access-ci.org/api/v1}
       AMIE_USAGE_INTERVAL_MINUTES: 1440
+      AMIE_GPU_RESOURCE_NAME: ${AMIE_GPU_RESOURCE_NAME:-pnrp.sdsc.access-ci.org}
+      NRP_ACCOUNTING_API_URL: ${NRP_ACCOUNTING_API_URL:-https://nrp-accounting-mcp.nrp-nautilus.io/openapi}
       ACCOUNTING_STUB_ENABLED: ${ACCOUNTING_STUB_ENABLED:-true}
       ACCOUNTING_STUB_CPU_RATIO: ${ACCOUNTING_STUB_CPU_RATIO:-0.35}
       ACCOUNTING_STUB_GPU_RATIO: ${ACCOUNTING_STUB_GPU_RATIO:-0.20}

@@ -20,7 +20,7 @@ All changes go to the branch specified at session start (usually `claude/<slug>`
 - `AUTH_DEV_BYPASS=true` skips admin auth in dev. It is set in `docker-compose.yml` — do not commit it to K8s config.
 - `[skip deploy]` in the commit message prevents the build-and-deploy workflow from firing.
 - **`User.remote_site_login` stores the CILogon subject ID** (not an HPC username). `ProjectUser.remote_site_login` stores the actual AMIE/HPC site login. Do not confuse them.
-- GPU usage for AMIE export comes from **ClickHouse** (`services/clickhouse/service.py`), not Prometheus. Prometheus is only used for the live display API. Set `CLICKHOUSE_HOST` to enable; leave blank to disable gracefully.
+- GPU usage for ACCESS export comes from the **NRP accounting public API** (`services/nrp_accounting/client.py`), not Prometheus or a direct ClickHouse connection. Only `pnrp.sdsc.access-ci.org` allocations are exported; the ledger is `gpu_usage_records`. Usage is POSTed through `amieclient.UsageClient` (adapter: `services/aime/usage_api.py`). amieclient must be installed `--no-deps` from the pinned fork `djw8605/amieclient@1700828` (see Dockerfile/CI); PyPI 0.6.1 sends `ParentRecordID: [null]` on Compute records and lacks `UsageClient.loaded()`. Switch back to PyPI once upstream (xsede/amieclient#35) releases.
 
 ### Personal overrides
 Put per-developer notes, local paths, and experimental flags in `CLAUDE.local.md` (gitignored).
