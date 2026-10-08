@@ -135,6 +135,8 @@ class Project(Base):
     gpu_allocated: Mapped[int] = mapped_column(Integer, default=0)
     kubernetes_namespace: Mapped[str | None] = mapped_column(String, nullable=True)
     authentik_group_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Last accounting date fully synced into gpu_usage_records (GPU allocations only).
+    gpu_usage_synced_through: Mapped[date | None] = mapped_column(Date, nullable=True)
     lifecycle_state: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
@@ -185,6 +187,11 @@ class Project(Base):
     )
     usage_exports: Mapped[list["AMIEUsageExport"]] = relationship(
         "AMIEUsageExport",
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    gpu_usage_records: Mapped[list["GpuUsageRecord"]] = relationship(
+        "GpuUsageRecord",
         back_populates="project",
         cascade="all, delete-orphan",
     )

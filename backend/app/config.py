@@ -12,18 +12,14 @@ class Settings(BaseSettings):
     # Prometheus (used for live usage display in the API)
     prometheus_url: str = "https://prometheus.nrp-nautilus.io"
 
-    # ClickHouse accounting database
-    clickhouse_host: str = ""
-    clickhouse_port: int = 8443
-    clickhouse_user: str = "default"
-    clickhouse_password: str = ""
-    clickhouse_database: str = "access_accounting"
-    clickhouse_table: str = "cluster_namespace_usage_daily"
-    clickhouse_secure: bool = True
+    # NRP accounting public API (OpenAPI bridge over the ClickHouse accounting DB).
+    # Source of daily GPU hours reported to the ACCESS Usage API.
+    nrp_accounting_api_url: str = "https://nrp-accounting-mcp.nrp-nautilus.io/openapi"
+    nrp_accounting_api_timeout_seconds: float = 120.0
 
-    # GPU resource name sent to AMIE Usage API — must match the resource registered in AMIE.
-    # Falls back to Project.resource_type when blank.
-    amie_gpu_resource_name: str = ""
+    # GPU-hour allocations: projects whose allocated_resource equals this value are
+    # reported to ACCESS, using this value as the usage record Resource.
+    amie_gpu_resource_name: str = "pnrp.sdsc.access-ci.org"
 
     # AIME / AMIE
     amie_site_name: str = "NRP"
@@ -33,10 +29,12 @@ class Settings(BaseSettings):
     amie_api_key: str = ""
     amie_url: str = "https://amieclient.xsede.org/v0.10/"
     amie_processed_client_state: str = "nrp-processed"
-    amie_usage_url: str = "https://usage.xsede.org/api/v1"
+    amie_usage_url: str = "https://usage.access-ci.org/api/v1"
     amie_usage_interval_minutes: int = 1440
     amie_usage_gpu_charge_factor: float = 1.0
-    amie_usage_default_username: str = "nrp-system"
+    # Days before the last synced date that are re-fetched each cycle so restated
+    # accounting data is re-submitted (same LocalRecordID overwrites at ACCESS).
+    amie_usage_restatement_days: int = 7
     amie_usage_alert_email_enabled: bool = True
     amie_account_confirmation_enabled: bool = True
     amie_packet_reprocess_max_retries: int = 5

@@ -7,6 +7,7 @@ from app.models.amie_packet import AMIEPacket
 from app.models.amie_unprocessed_packet import AMIEUnprocessedPacket
 from app.models.amie_usage_export import AMIEUsageExport
 from app.models.alert_notification import AlertNotification
+from app.models.gpu_usage_record import GpuUsageRecord
 from app.models.outbound_packet_log import OutboundPacketLog
 from app.models.project import Project
 from app.models.project_invite import ProjectInvite
@@ -25,6 +26,7 @@ __all__ = [
     "AMIEUnprocessedPacket",
     "AMIEUsageExport",
     "AlertNotification",
+    "GpuUsageRecord",
     "OutboundPacketLog",
     "Project",
     "ProjectInvite",
