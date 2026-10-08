@@ -1,6 +1,7 @@
 """Tests for syncing NRP accounting rows into the GPU usage ledger."""
 
 import hashlib
+import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -192,3 +193,69 @@ def test_vanished_usage_deletes_unsent_and_zeroes_sent(db, make_project, make_us
     assert remaining.usage_date == date(2026, 10, 3)
     assert remaining.gpu_hours == Decimal("0")
     assert remaining.status == GpuUsageRecord.STATUS_PENDING
+
+
+def _records_for(db, project):
+    return db.query(GpuUsageRecord).filter(GpuUsageRecord.project_id == project.id).all()
+
+
+def test_shared_namespace_row_goes_to_exactly_one_project(db, make_project, make_user, make_project_user):
+    # Equal starts: the tie is broken by lowest str(id), so A (id a000...) owns the row.
+    project_a = gpu_project(
+        db, make_project, id=uuid.UUID("a0000000-0000-0000-0000-000000000001"), site_project_id="p.a", gpu_usage_synced_through=date(2026, 10, 20)
+    )
+    project_b = gpu_project(db, make_project, id=uuid.UUID("b0000000-0000-0000-0000-000000000002"), site_project_id="p.b")
+    alice = make_user(db, remote_site_login=ALICE)
+    for project in (project_a, project_b):
+        make_project_user(db, project, alice, remote_site_login="alice_nrp")
+    db.add(
+        GpuUsageRecord(
+            project_id=project_a.id,
+            usage_date=date(2026, 10, 2),
+            username="alice_nrp",
+            attribution=GpuUsageRecord.ATTRIBUTION_MEMBER,
+            gpu_hours=Decimal("2.5"),
+            charge=Decimal("2.5"),
+            submitted_charge=Decimal("2.5"),
+            local_record_id=GpuAccountingService.local_record_id(project_a, date(2026, 10, 2), "alice_nrp"),
+            status=GpuUsageRecord.STATUS_LOADED,
+            attempts=1,
+        )
+    )
+    db.commit()
+    service, accounting = _service([usage_row(ALICE, date(2026, 10, 2), "2.5")])
+    accounting.latest = date(2026, 10, 20)
+
+    service.sync_ledger(db)
+
+    # The row belongs to A (already in A's ledger, outside A's fetch range): it is
+    # skipped rather than falling through to B, so it is not double counted.
+    assert _records_for(db, project_b) == []
+    [record] = _records_for(db, project_a)
+    assert record.status == GpuUsageRecord.STATUS_LOADED
+
+    service.sync_ledger(db)
+    assert _records_for(db, project_b) == []
+    [record] = _records_for(db, project_a)
+    assert record.status == GpuUsageRecord.STATUS_LOADED
+    assert record.gpu_hours == Decimal("2.5")
+
+
+def test_shared_namespace_later_start_owns_its_dates(db, make_project, make_user, make_project_user):
+    project_a = gpu_project(db, make_project, site_project_id="p.a", gpu_usage_synced_through=date(2026, 10, 20))
+    project_b = gpu_project(db, make_project, site_project_id="p.b", start_date=date(2026, 10, 10))
+    alice = make_user(db, remote_site_login=ALICE)
+    for project in (project_a, project_b):
+        make_project_user(db, project, alice, remote_site_login="alice_nrp")
+    db.commit()
+    service, accounting = _service([
+        usage_row(ALICE, date(2026, 10, 5), "1"),
+        usage_row(ALICE, date(2026, 10, 12), "2"),
+    ])
+    accounting.latest = date(2026, 10, 20)
+
+    service.sync_ledger(db)
+
+    assert [r.usage_date for r in _records_for(db, project_b)] == [date(2026, 10, 12)]
+    # 2026-10-05 belongs to A but is outside A's fetch range (10-13..): skipped, not given to B.
+    assert _records_for(db, project_a) == []

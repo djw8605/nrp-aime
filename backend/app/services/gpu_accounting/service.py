@@ -16,6 +16,7 @@ import uuid
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import NamedTuple
 
 from sqlalchemy.orm import Session
 
@@ -34,6 +35,15 @@ PI_LOGIN_MISSING = "PI has no site login yet"
 
 # (usage_date, username) -> (gpu_hours, attribution)
 DesiredRecords = dict[tuple[date, str], tuple[Decimal, str]]
+
+
+class _Window(NamedTuple):
+    """A project's full allocation window and (optional) range to re-fetch."""
+
+    project: Project
+    alloc_start: date
+    alloc_end: date
+    fetch_start: date | None  # None: nothing to fetch this cycle
 
 
 class GpuAccountingService:
@@ -64,22 +74,25 @@ class GpuAccountingService:
     def _charge(self, gpu_hours: Decimal) -> Decimal:
         return (gpu_hours * self.charge_factor).quantize(QUANT)
 
-    def _fetch_window(self, project: Project, latest: date) -> tuple[date, date] | None:
-        """Inclusive date range to (re)fetch for *project*, or None."""
+    def _window(self, project: Project, latest: date) -> _Window | None:
+        """Full allocation window plus fetch start for *project*, or None."""
         start = project.start_date
         if start is None and project.created_at is not None:
             start = project.created_at.date()
         if start is None:
             return None
         end = min(project.end_date or latest, latest)
+        if start > end:
+            return None
+        fetch_start: date | None = start
         if project.gpu_usage_synced_through is not None:
-            start = max(
+            fetch_start = max(
                 start,
                 project.gpu_usage_synced_through - timedelta(days=self.restatement_days),
             )
-        if start > end:
-            return None
-        return start, end
+            if fetch_start > end:
+                fetch_start = None
+        return _Window(project, start, end, fetch_start)
 
     # ------------------------------------------------------------------
     # Ledger sync
@@ -90,33 +103,41 @@ class GpuAccountingService:
         counters = {"projects": 0, "rows": 0, "dropped": 0, "records_changed": 0}
         latest = self.accounting.latest_data_date()
 
-        windows: dict[uuid.UUID, tuple[Project, date, date]] = {}
+        # Full allocation windows for every exportable project: they decide which
+        # project owns a usage row, even when that project has nothing to fetch.
+        by_namespace: dict[str, list[_Window]] = defaultdict(list)
         for project in db.query(Project).all():
             if not is_exportable_gpu_project(project):
                 continue
-            window = self._fetch_window(project, latest)
+            window = self._window(project, latest)
             if window is not None:
-                windows[project.id] = (project, *window)
+                by_namespace[project.kubernetes_namespace].append(window)
+
+        windows: dict[uuid.UUID, _Window] = {
+            w.project.id: w
+            for entries in by_namespace.values()
+            for w in entries
+            if w.fetch_start is not None
+        }
         if not windows:
             return counters
 
-        by_namespace: dict[str, list[tuple[Project, date, date]]] = defaultdict(list)
-        for entry in windows.values():
-            by_namespace[entry[0].kubernetes_namespace].append(entry)
-
         rows = self.accounting.gpu_usage(
-            list(by_namespace),
-            min(start for _, start, _ in windows.values()),
-            max(end for _, _, end in windows.values()),
+            sorted({w.project.kubernetes_namespace for w in windows.values()}),
+            min(w.fetch_start for w in windows.values()),
+            max(w.alloc_end for w in windows.values()),
         )
 
         attributor = GpuUsageAttributor(db)
         desired: dict[uuid.UUID, DesiredRecords] = defaultdict(dict)
         pi_missing_from: dict[uuid.UUID, date] = {}
         for row in rows:
-            project = self._project_for_row(row, by_namespace)
-            if project is None:
+            owner = self._owner_for_row(row, by_namespace)
+            if owner is None or owner.fetch_start is None or row.date < owner.fetch_start:
+                # No owner, or the owner already holds this date in its ledger;
+                # never fall through to another project (would double count).
                 continue
+            project = owner.project
             attribution = attributor.attribute(project, row.created_by)
             if attribution is None:
                 counters["dropped"] += 1
@@ -135,9 +156,10 @@ class GpuAccountingService:
             if not attribution.username:
                 pi_missing_from[project.id] = min(row.date, pi_missing_from.get(project.id, row.date))
 
-        for project_id, (project, start, end) in windows.items():
+        for project_id, window in windows.items():
+            project = window.project
             counters["records_changed"] += self._apply(
-                db, project, start, end, desired.get(project_id, {})
+                db, project, window.fetch_start, window.alloc_end, desired.get(project_id, {})
             )
             missing = pi_missing_from.get(project_id)
             if missing is None:
@@ -153,14 +175,23 @@ class GpuAccountingService:
         return counters
 
     @staticmethod
-    def _project_for_row(
+    def _owner_for_row(
         row: GpuUsageRow,
-        by_namespace: dict[str, list[tuple[Project, date, date]]],
-    ) -> Project | None:
-        for project, start, end in by_namespace.get(row.namespace, []):
-            if start <= row.date <= end:
-                return project
-        return None
+        by_namespace: dict[str, list[_Window]],
+    ) -> _Window | None:
+        """The single project owning *row*: latest allocation start, then lowest id."""
+        candidates = [
+            w
+            for w in by_namespace.get(row.namespace, [])
+            if w.alloc_start <= row.date <= w.alloc_end
+        ]
+        if not candidates:
+            return None
+        latest_start = max(w.alloc_start for w in candidates)
+        return min(
+            (w for w in candidates if w.alloc_start == latest_start),
+            key=lambda w: str(w.project.id),
+        )
 
     def _apply(
         self,
