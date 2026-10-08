@@ -48,6 +48,17 @@ class TestAttribution:
 
         assert result == Attribution("alice_nrp", GpuUsageRecord.ATTRIBUTION_MEMBER)
 
+    def test_member_with_cilogon_url_login_gets_amie_tail(self, db, make_project, make_user, make_project_user):
+        project = _gpu_project(db, make_project)
+        alice = make_user(db, remote_site_login=ALICE)
+        make_project_user(db, project, alice, remote_site_login="http://cilogon.org/serverE/users/546379")
+
+        result = GpuUsageAttributor(db).attribute(project, ALICE)
+
+        assert result == Attribution(
+            "logon.org/serverE/users/546379", GpuUsageRecord.ATTRIBUTION_MEMBER
+        )
+
     def test_person_not_in_project_is_dropped(self, db, make_project, make_user, make_project_user):
         project = _gpu_project(db, make_project)
         other = _gpu_project(db, make_project, kubernetes_namespace="ns-other", site_project_id="p.other")
@@ -76,6 +87,21 @@ class TestAttribution:
         result = GpuUsageAttributor(db).attribute(project, "system:serviceaccount:ns-gpu:runner")
 
         assert result == Attribution("pi_nrp", GpuUsageRecord.ATTRIBUTION_PI)
+
+    def test_pi_with_cilogon_url_login_gets_amie_tail(self, db, make_project, make_user, make_project_user):
+        project = _gpu_project(db, make_project)
+        pi = make_user(db)
+        make_project_user(
+            db, project, pi, role="PI",
+            remote_site_login="http://cilogon.org/serverE/users/546379",
+        )
+        db.refresh(project)
+
+        result = GpuUsageAttributor(db).attribute(project, "system:serviceaccount:ns-gpu:runner")
+
+        assert result == Attribution(
+            "logon.org/serverE/users/546379", GpuUsageRecord.ATTRIBUTION_PI
+        )
 
     def test_service_account_with_pi_missing_login_is_pending(self, db, make_project, make_user, make_project_user):
         project = _gpu_project(db, make_project)

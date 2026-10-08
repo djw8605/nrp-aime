@@ -20,6 +20,7 @@ from app.models.gpu_usage_record import GpuUsageRecord
 from app.models.project import Project
 from app.models.project_user import ProjectUser
 from app.models.user import User
+from app.services.aime.logins import amie_login
 
 CILOGON_SUBJECT_RE = re.compile(r"^https?://cilogon\.org/", re.IGNORECASE)
 
@@ -44,7 +45,7 @@ def _preferred_login(memberships: Iterable[ProjectUser]) -> str | None:
             not pu.is_active,
         )
     )
-    return with_login[0].remote_site_login.strip()
+    return amie_login(with_login[0].remote_site_login)
 
 
 class GpuUsageAttributor:

@@ -19,6 +19,7 @@ from app.models.project import Project
 from app.models.project_invite import ProjectInvite
 from app.models.project_invite_event import ProjectInviteEvent
 from app.models.project_user import ProjectUser
+from app.services.aime.logins import amie_login
 from app.services.outbound_packets import OutboundPacketService
 from app.services.project_provisioning import ProjectProvisioningService
 
@@ -1148,12 +1149,10 @@ class AccountLifecycleService:
                         else None
                     )
                     # AMIE's system_accounts.username is varchar(30). CILogon subject
-                    # URLs (used as the primary identity at NRP) are longer, so take
-                    # the last 30 characters which preserve the unique trailing ID.
-                    pi_remote_login = (
-                        _pi_raw_login[-30:] if _pi_raw_login and len(_pi_raw_login) > 30
-                        else _pi_raw_login
-                    )
+                    # URLs (used as the primary identity at NRP) are longer, so send
+                    # the last 30 characters (see services/aime/logins.py); GPU usage
+                    # Username uses the same helper.
+                    pi_remote_login = amie_login(_pi_raw_login)
                     pi_person_id = (
                         project.pi_person_id
                         or self._clean_scalar(
