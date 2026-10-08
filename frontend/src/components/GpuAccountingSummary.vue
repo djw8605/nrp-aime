@@ -16,6 +16,7 @@
       v-if="hasAllocation"
       :value="percentUsed"
       :showValue="false"
+      :aria-label="`GPU hours used: ${percentOfAllocation}% of allocation`"
       style="height: 0.5rem"
     />
     <div class="grid grid-cols-2 gap-2 text-xs">
@@ -29,9 +30,15 @@
       </div>
     </div>
     <div
-      v-if="accounting.su_pending > 0 || accounting.failed_records > 0"
+      v-if="isOverAllocation || accounting.su_pending > 0 || accounting.failed_records > 0"
       class="flex flex-wrap gap-2"
     >
+      <Tag
+        v-if="isOverAllocation"
+        :value="`Over allocation (${percentOfAllocation}%)`"
+        severity="danger"
+        rounded
+      />
       <Tag
         v-if="accounting.su_pending > 0"
         :value="`${formatUnits(accounting.su_pending)} SU not yet sent`"
@@ -66,11 +73,20 @@ const props = defineProps({
 
 const hasAllocation = computed(() => Number(props.allocated || 0) > 0)
 
-const percentUsed = computed(() => {
+// Uncapped, so over-allocation can be reported (the bar itself stays capped).
+const percentOfAllocation = computed(() => {
   if (!hasAllocation.value) return 0
   const used = Number(props.accounting.gpu_hours_used || 0)
-  return Math.min(100, Math.round((used / Number(props.allocated)) * 100))
+  return Math.round((used / Number(props.allocated)) * 100)
 })
+
+const percentUsed = computed(() => Math.min(100, percentOfAllocation.value))
+
+const isOverAllocation = computed(
+  () =>
+    hasAllocation.value &&
+    Number(props.accounting.gpu_hours_used || 0) > Number(props.allocated),
+)
 
 function formatUnits(value) {
   return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })
