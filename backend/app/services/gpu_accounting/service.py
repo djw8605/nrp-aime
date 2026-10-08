@@ -122,17 +122,20 @@ class GpuAccountingService:
         if not windows:
             return counters
 
+        range_start = min(w.fetch_start for w in windows.values())
+        range_end = max(w.alloc_end for w in windows.values())
         rows = self.accounting.gpu_usage(
             sorted({w.project.kubernetes_namespace for w in windows.values()}),
-            min(w.fetch_start for w in windows.values()),
-            max(w.alloc_end for w in windows.values()),
+            range_start,
+            range_end,
         )
+        holders = self._ledger_holders(db, by_namespace, range_start, range_end)
 
         attributor = GpuUsageAttributor(db)
         desired: dict[uuid.UUID, DesiredRecords] = defaultdict(dict)
         pi_missing_from: dict[uuid.UUID, date] = {}
         for row in rows:
-            owner = self._owner_for_row(row, by_namespace)
+            owner = self._owner_for_row(row, by_namespace, holders)
             if owner is None or owner.fetch_start is None or row.date < owner.fetch_start:
                 # No owner, or the owner already holds this date in its ledger;
                 # never fall through to another project (would double count).
@@ -175,16 +178,55 @@ class GpuAccountingService:
         return counters
 
     @staticmethod
+    def _ledger_holders(
+        db: Session,
+        by_namespace: dict[str, list[_Window]],
+        range_start: date,
+        range_end: date,
+    ) -> dict[tuple[str, date], set[uuid.UUID]]:
+        """(namespace, usage_date) -> ids of projects that already hold ledger rows."""
+        namespace_of = {
+            w.project.id: namespace
+            for namespace, entries in by_namespace.items()
+            if len(entries) > 1  # ownership only matters when a namespace is shared
+            for w in entries
+        }
+        holders: dict[tuple[str, date], set[uuid.UUID]] = defaultdict(set)
+        if not namespace_of:
+            return holders
+        query = (
+            db.query(GpuUsageRecord.project_id, GpuUsageRecord.usage_date)
+            .filter(
+                GpuUsageRecord.project_id.in_(list(namespace_of)),
+                GpuUsageRecord.usage_date >= range_start,
+                GpuUsageRecord.usage_date <= range_end,
+            )
+            .distinct()
+        )
+        for project_id, usage_date in query:
+            holders[(namespace_of[project_id], usage_date)].add(project_id)
+        return holders
+
+    @staticmethod
     def _owner_for_row(
         row: GpuUsageRow,
         by_namespace: dict[str, list[_Window]],
+        holders: dict[tuple[str, date], set[uuid.UUID]],
     ) -> _Window | None:
-        """The single project owning *row*: latest allocation start, then lowest id."""
+        """The single project owning *row*.
+
+        A project that already has ledger rows for the date keeps it; otherwise
+        (and among equals) the latest allocation start wins, then the lowest id.
+        """
         candidates = [
             w
             for w in by_namespace.get(row.namespace, [])
             if w.alloc_start <= row.date <= w.alloc_end
         ]
+        held = holders.get((row.namespace, row.date))
+        if held:
+            holding = [w for w in candidates if w.project.id in held]
+            candidates = holding or candidates
         if not candidates:
             return None
         latest_start = max(w.alloc_start for w in candidates)

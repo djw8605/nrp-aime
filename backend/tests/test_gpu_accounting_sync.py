@@ -5,6 +5,8 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.models.gpu_usage_record import GpuUsageRecord
 from app.services.gpu_accounting.service import PI_LOGIN_MISSING, GpuAccountingService
 from tests.gpu_accounting_support import (
@@ -199,46 +201,89 @@ def _records_for(db, project):
     return db.query(GpuUsageRecord).filter(GpuUsageRecord.project_id == project.id).all()
 
 
-def test_shared_namespace_row_goes_to_exactly_one_project(db, make_project, make_user, make_project_user):
-    # Equal starts: the tie is broken by lowest str(id), so A (id a000...) owns the row.
-    project_a = gpu_project(
-        db, make_project, id=uuid.UUID("a0000000-0000-0000-0000-000000000001"), site_project_id="p.a", gpu_usage_synced_through=date(2026, 10, 20)
-    )
-    project_b = gpu_project(db, make_project, id=uuid.UUID("b0000000-0000-0000-0000-000000000002"), site_project_id="p.b")
-    alice = make_user(db, remote_site_login=ALICE)
-    for project in (project_a, project_b):
-        make_project_user(db, project, alice, remote_site_login="alice_nrp")
+LOW_ID = uuid.UUID("a0000000-0000-0000-0000-000000000001")
+HIGH_ID = uuid.UUID("b0000000-0000-0000-0000-000000000002")
+
+
+def _add_sent_record(db, project, day, hours="2.5"):
     db.add(
         GpuUsageRecord(
-            project_id=project_a.id,
-            usage_date=date(2026, 10, 2),
+            project_id=project.id,
+            usage_date=day,
             username="alice_nrp",
             attribution=GpuUsageRecord.ATTRIBUTION_MEMBER,
-            gpu_hours=Decimal("2.5"),
-            charge=Decimal("2.5"),
-            submitted_charge=Decimal("2.5"),
-            local_record_id=GpuAccountingService.local_record_id(project_a, date(2026, 10, 2), "alice_nrp"),
+            gpu_hours=Decimal(hours),
+            charge=Decimal(hours),
+            submitted_charge=Decimal(hours),
+            local_record_id=GpuAccountingService.local_record_id(project, day, "alice_nrp"),
             status=GpuUsageRecord.STATUS_LOADED,
             attempts=1,
         )
     )
+
+
+def _snapshot(db):
+    return [(str(r.project_id), r.usage_date, r.status, r.gpu_hours) for r in _records(db)]
+
+
+@pytest.mark.parametrize("holder_has_lower_id", [True, False])
+def test_shared_namespace_row_stays_with_project_that_reported_it(
+    db, make_project, make_user, make_project_user, holder_has_lower_id
+):
+    holder_id, new_id = (LOW_ID, HIGH_ID) if holder_has_lower_id else (HIGH_ID, LOW_ID)
+    holder = gpu_project(
+        db, make_project, id=holder_id, site_project_id="p.holder", gpu_usage_synced_through=date(2026, 10, 20)
+    )
+    new = gpu_project(db, make_project, id=new_id, site_project_id="p.new")
+    alice = make_user(db, remote_site_login=ALICE)
+    for project in (holder, new):
+        make_project_user(db, project, alice, remote_site_login="alice_nrp")
+    _add_sent_record(db, holder, date(2026, 10, 2))
     db.commit()
     service, accounting = _service([usage_row(ALICE, date(2026, 10, 2), "2.5")])
     accounting.latest = date(2026, 10, 20)
 
     service.sync_ledger(db)
 
-    # The row belongs to A (already in A's ledger, outside A's fetch range): it is
-    # skipped rather than falling through to B, so it is not double counted.
-    assert _records_for(db, project_b) == []
-    [record] = _records_for(db, project_a)
-    assert record.status == GpuUsageRecord.STATUS_LOADED
-
-    service.sync_ledger(db)
-    assert _records_for(db, project_b) == []
-    [record] = _records_for(db, project_a)
+    assert _records_for(db, new) == []
+    [record] = _records_for(db, holder)
     assert record.status == GpuUsageRecord.STATUS_LOADED
     assert record.gpu_hours == Decimal("2.5")
+    first = _snapshot(db)
+
+    service.sync_ledger(db)
+    assert _snapshot(db) == first
+
+
+def test_shared_namespace_handoff_keeps_reported_dates_with_original_project(
+    db, make_project, make_user, make_project_user
+):
+    project_a = gpu_project(
+        db, make_project, id=HIGH_ID, site_project_id="p.a", gpu_usage_synced_through=date(2026, 10, 20)
+    )
+    project_b = gpu_project(db, make_project, id=LOW_ID, site_project_id="p.b", start_date=date(2026, 10, 10))
+    alice = make_user(db, remote_site_login=ALICE)
+    for project in (project_a, project_b):
+        make_project_user(db, project, alice, remote_site_login="alice_nrp")
+    for day in (10, 11, 12):
+        _add_sent_record(db, project_a, date(2026, 10, day))
+    db.commit()
+    service, accounting = _service([
+        usage_row(ALICE, date(2026, 10, 11), "2.5"),
+        usage_row(ALICE, date(2026, 10, 15), "1"),
+    ])
+    accounting.latest = date(2026, 10, 20)
+
+    service.sync_ledger(db)
+
+    assert [r.usage_date for r in _records_for(db, project_a)] == [
+        date(2026, 10, 10), date(2026, 10, 11), date(2026, 10, 12)
+    ]
+    assert [r.usage_date for r in _records_for(db, project_b)] == [date(2026, 10, 15)]
+    first = _snapshot(db)
+
+    service.sync_ledger(db)
+    assert _snapshot(db) == first
 
 
 def test_shared_namespace_later_start_owns_its_dates(db, make_project, make_user, make_project_user):
