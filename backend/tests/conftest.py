@@ -3,6 +3,13 @@
 Uses an in-memory SQLite database so tests run without PostgreSQL.
 """
 
+# Import the real amieclient (pinned fork) before any test module installs its
+# placeholder stub, so the ACCESS Usage adapter always sees the real package.
+try:
+    import amieclient.usage  # noqa: F401
+except ImportError:  # pragma: no cover - modules fall back to their own stubs
+    pass
+
 import uuid
 from datetime import UTC, datetime
 

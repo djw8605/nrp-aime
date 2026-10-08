@@ -26,7 +26,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --no-cache-dir "amieclient>=0.4.0" --no-deps
+          pip install --no-cache-dir --no-deps "amieclient @ https://github.com/djw8605/amieclient/archive/1700828b80fce7e5c97f690bc1a0f9b4c9ffd001.tar.gz"
           pip install --no-cache-dir -r requirements.txt
 
       - name: Run tests

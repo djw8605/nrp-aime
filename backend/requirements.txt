@@ -6,9 +6,9 @@ psycopg2-binary>=2.9.9
 pydantic[email]>=2.0.0
 pydantic-settings>=2.0.0
 httpx>=0.27.0
-# amieclient is installed via Dockerfile with --no-deps to avoid its stale
-# python-dateutil<2.7 constraint, which is broken on Python 3.11+.
-# Its other dependency (requests) is listed here explicitly as a result.
+# amieclient is installed by the Dockerfile and CI from the pinned fork
+# djw8605/amieclient@1700828 with --no-deps (its python-dateutil pin is stale).
+# Its runtime dependencies are listed here explicitly as a result.
 requests>=2.20.0
 python-dateutil>=2.8.2
 python-multipart>=0.0.9
