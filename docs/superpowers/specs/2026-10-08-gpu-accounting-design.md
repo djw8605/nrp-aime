@@ -1,7 +1,7 @@
 # GPU Hour Accounting → ACCESS Usage API — Design
 
 **Date:** 2026-10-08
-**Status:** Approved in chat; pending spec review
+**Status:** Approved (2026-10-08); amended for the amieclient fork pin `1700828` and 1000-record batches
 **Branch:** `claude/gpu-accounting`
 
 ## Goal
@@ -51,17 +51,29 @@ Replaces `app/services/clickhouse/` and the `clickhouse-connect` dependency.
   (no partial ledger writes based on incomplete data).
 - Uses `httpx.Client`; tests inject an `httpx.MockTransport`.
 
-### 2. ACCESS Usage API client — `app/services/aime/usage_api.py`
+### 2. ACCESS Usage API adapter — `app/services/aime/usage_api.py`
 
-Thin `httpx` client (amieclient 0.6.1 serializes `ParentRecordID` as a tuple and has no
-`/usage/loaded`; an upstream fix will be proposed separately). Headers `XA-SITE`, `XA-API-KEY`.
+Uses `amieclient.UsageClient`, installed `--no-deps` from the pinned fork
+`https://github.com/djw8605/amieclient/archive/1700828b80fce7e5c97f690bc1a0f9b4c9ffd001.tar.gz`
+(upstream PR xsede/amieclient#35) in the Dockerfile, CI, and the dev venv. The fork fixes
+Compute `ParentRecordID` serialization (PyPI 0.6.1 sends `[null]`), adds `UsageClient.loaded()`,
+splits POSTs over 192 KiB to stay under the guide's 256 KB limit, and defaults to
+`https://usage.access-ci.org/api/v1` (`usage.xsede.org` fails TLS with an expired certificate).
+Switch back to PyPI once upstream releases.
 
-- `post_compute(records: list[dict]) -> PostResult(message, validation_failed: list[dict])` —
-  `POST {base}/usage` with `{"UsageType": "Compute", "Records": [...]}`. Batches of ≤ 500
-  records to stay under the 256 KB limit.
-- `loaded(min_loaded_time, *, limit=25000, offset=0) -> list[dict]` — `GET /usage/loaded`, paged by `Offset`.
-- `status(from_time, to_time) -> list[dict]` — `GET /usage/status`.
-- Non-2xx → `UsageApiError` (includes the response `Message`).
+The thin `AccessUsageApiClient` adapter keeps batching, paging, and error handling in one
+place so the service can be tested with fakes:
+
+- `post_compute(records: list[ComputeUsageRecord]) -> list[UsageRecordError]` — at most
+  `MAX_RECORDS_PER_POST = 1000` records per call (the guide: about 1,000 records fit in 256 KB);
+  merges failures across any extra responses from the fork's chunking.
+- `loaded(min_loaded_time) -> list[UsageLoadedRecord]` — pages `UsageClient.loaded()` by 25,000.
+- `status(from_time, to_time) -> list[UsageStatusResource]`.
+- Library, transport, and parse errors (`UsageResponseError`, `requests.RequestException`,
+  `KeyError`, …) → `UsageApiError`.
+
+Tests import the real fork: `tests/conftest.py` imports `amieclient.usage` before the per-module
+`amieclient` placeholder stubs in older tests can be installed.
 
 ### 3. Ledger model — `gpu_usage_records` (migration `0022`)
 
@@ -120,7 +132,8 @@ Rows mapping to the same (project, date, username) are summed.
    - existing key with changed `gpu_hours` → update; if previously submitted/loaded,
      reset to `pending` (re-POST overwrites at ACCESS via same LocalRecordID/SubmitTime).
    - Only dates inside the fetched range are compared, so older ledger rows are never touched.
-5. Send all `pending` and `failed` rows with charge > 0 as Compute records:
+5. Send all `pending` and `failed` rows with charge > 0 (or a previously sent charge) as
+   `amieclient.usage.ComputeUsageRecord`s, in batches of at most 1000:
    `SubmitTime = StartTime = {date}T00:00:00Z`, `EndTime = {date+1}T00:00:00Z`,
    `Charge = str(charge)`, `LocalProjectID = site_project_id`, `Resource = amie_gpu_resource_name`,
    `Username`, `LocalRecordID`, `LocalReference = ledger id`,
@@ -156,9 +169,11 @@ If the accounting API fails, the cycle aborts before touching the ledger.
 ### 8. Config & deployment
 
 - New: `NRP_ACCOUNTING_API_URL`, `NRP_ACCOUNTING_API_TIMEOUT_SECONDS`, `AMIE_USAGE_RESTATEMENT_DAYS`.
-- Changed defaults: `AMIE_USAGE_URL=https://usage.access-ci.org/api/v1`,
+- Changed defaults: `AMIE_USAGE_URL=https://usage.access-ci.org/api/v1` (replaces the dead
+  `usage.xsede.org` in `config.py`, `app.env`, `docker-compose.yml`, README),
   `AMIE_GPU_RESOURCE_NAME=pnrp.sdsc.access-ci.org`.
 - Removed: `CLICKHOUSE_*`, `AMIE_USAGE_DEFAULT_USERNAME`; `clickhouse-connect` dependency.
+- amieclient install source: PyPI → pinned fork (Dockerfile, `.github/workflows/test.yml`).
 - Update `deployment/config/app.env`, `docker-compose.yml`, README, AGENTS.md, CLAUDE.md,
   `.github/copilot-instructions.md`.
 
@@ -171,7 +186,8 @@ If the accounting API fails, the cycle aborts before touching the ledger.
 ## Testing (pytest, in-memory SQLite)
 
 - Accounting client: request shape, bisection on row cap, error handling (MockTransport).
-- Usage API client: headers, batching, validation-failure parsing, paging of `/usage/loaded`.
+- Usage API adapter: batch cap, failure merging, `/usage/loaded` paging, error wrapping, and one
+  end-to-end POST through the real fork `UsageClient` (no `ParentRecordID`, `XA-*` headers).
 - Attribution: member match, non-member human dropped, service account → PI, PI without login → pending.
 - Cycle: GPU-only filter, project window clipping, aggregation per username, idempotent re-run,
   restatement resets to pending, failed rows retried, no-API-key mode.
