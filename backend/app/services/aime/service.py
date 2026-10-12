@@ -258,12 +258,10 @@ class AIMEService:
                 site_name=site_name,
                 allow_other_sites_when_missing=False,
             )
-            if user is not None:
-                return user
             # Suffix match: AMIE truncates CILogon subject URLs to 30
             # chars and echoes the truncated value in subsequent packets.
             # Match when the stored person_id ends with the incoming value.
-            if len(person_id) >= 20:
+            if user is None and len(person_id) >= 20:
                 query = db.query(User).filter(
                     User.person_id.endswith(person_id),
                     User.person_id != person_id,
@@ -274,8 +272,21 @@ class AIMEService:
                     site_name=site_name,
                     allow_other_sites_when_missing=True,
                 )
-                if user is not None:
-                    return user
+            # When a request_project_create carries no PiPersonID, NRP sends
+            # amie_login(remote_site_login) as the PI's PersonID, and AMIE
+            # echoes it back while person_id holds the Authentik subject.
+            if user is None and len(person_id) >= 20:
+                query = db.query(User).filter(User.remote_site_login.endswith(person_id))
+                user = self._site_scoped_first(
+                    query,
+                    site_field=User.source_site_name,
+                    site_name=site_name,
+                    allow_other_sites_when_missing=True,
+                )
+            if user is not None:
+                return self._absorb_placeholder_user(
+                    db, user, person_id=person_id, email=email
+                )
         if email:
             query = db.query(User).filter(User.email == email)
             user = self._site_scoped_first(
@@ -297,6 +308,48 @@ class AIMEService:
             if user is not None:
                 return user
         return None
+
+    def _absorb_placeholder_user(
+        self,
+        db: Session,
+        user: User,
+        *,
+        person_id: str,
+        email: str | None,
+    ) -> User:
+        """Fold an email-less placeholder (created from a data_* packet) into
+        the real user that owns ``email`` or the matching AMIE login.
+
+        Without this, the PI upsert copies ``email`` onto the placeholder and
+        violates ``ix_users_email`` on every poll.
+        """
+        if user.email:
+            return user
+        owner = None
+        if email:
+            owner = (
+                db.query(User).filter(User.email == email, User.id != user.id).first()
+            )
+        if owner is None and len(person_id) >= 20:
+            owner = (
+                db.query(User)
+                .filter(
+                    User.remote_site_login.endswith(person_id),
+                    User.id != user.id,
+                )
+                .first()
+            )
+        if owner is None:
+            return user
+        logger.warning(
+            "Merging placeholder user %s (PersonID=%s) into user %s",
+            user.id,
+            person_id,
+            owner.id,
+        )
+        self._merge_users(db, keep=owner, delete=user)
+        db.flush()
+        return owner
 
     def _get_or_create_user_by_person_id(
         self,
@@ -1274,7 +1327,9 @@ class AIMEService:
                 .first()
             )
             if existing is None:
-                pu.user_id = keep.id
+                # Move via the relationship: setting user_id alone leaves the row
+                # in delete.project_users, and the delete-orphan cascade drops it.
+                pu.user = keep
             else:
                 existing.role = existing.role or pu.role
                 existing.allocated_resource = (
@@ -1289,6 +1344,11 @@ class AIMEService:
                 )
                 existing.is_active = existing.is_active or pu.is_active
                 db.delete(pu)
+
+        for invite in list(delete.invites):
+            invite.user = keep
+        for action_log in list(delete.action_logs):
+            action_log.user = keep
 
         keep.is_active = keep.is_active or delete.is_active
         db.delete(delete)

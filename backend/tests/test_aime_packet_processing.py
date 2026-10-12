@@ -186,6 +186,88 @@ class AIMEPacketProcessingTests(unittest.TestCase):
             ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
         )
 
+    def _make_onboarded_pi(self) -> User:
+        """A PI created from a request_project_create without PiPersonID, then
+        onboarded: person_id is the Authentik subject, remote_site_login the
+        CILogon URL whose last 30 chars NRP sent AMIE as the PI's PersonID."""
+        user = self._make_user(
+            person_id="d0374b500e7c9367298221b8178e7be858989584ea452f6ab7125b93cd9c14d5",
+            email="pi@example.org",
+            name="Pat Investigator",
+        )
+        user.remote_site_login = "http://cilogon.org/serverE/users/546379"
+        self.db.flush()
+        return user
+
+    def test_data_project_create_matches_pi_by_amie_login(self) -> None:
+        pi = self._make_onboarded_pi()
+
+        self.service.ingest_packet(
+            self.db,
+            data_project_create_packet(
+                PersonID="logon.org/serverE/users/546379",
+                GlobalID="358959",
+            ),
+        )
+
+        self.assertEqual(self.db.query(User).count(), 1)
+        self.db.refresh(pi)
+        self.assertEqual(pi.global_id, "358959")
+
+    def test_request_project_create_merges_placeholder_into_onboarded_pi(self) -> None:
+        pi = self._make_onboarded_pi()
+        pi_id = pi.id
+        other_project = self._make_project()
+        placeholder = User(
+            person_id="logon.org/serverE/users/546379",
+            global_id="358959",
+            name="logon.org/serverE/users/546379",
+            source_site_name="ACCESS",
+            is_active=True,
+            dn_list=["/CN=Pat"],
+        )
+        self.db.add(placeholder)
+        self.db.flush()
+        self.db.add(
+            ProjectUser(
+                project_id=other_project.id,
+                user_id=placeholder.id,
+                role="member",
+                resource="other.example.org",
+                is_active=True,
+                account_state=ProjectUser.ACCOUNT_STATE_RECEIVED,
+            )
+        )
+        self.db.commit()
+
+        result = self.service.ingest_packet(
+            self.db,
+            request_project_create_packet(
+                PiPersonID="logon.org/serverE/users/546379",
+                PiEmail="pi@example.org",
+                ProjectID="PROJECT-002",
+                GrantNumber="TG-TEST456",
+            ),
+        )
+
+        self.assertTrue(result.handled)
+        users = self.db.query(User).all()
+        self.assertEqual([u.id for u in users], [pi_id])
+        merged = users[0]
+        self.assertEqual(merged.person_id, "logon.org/serverE/users/546379")
+        self.assertEqual(merged.global_id, "358959")
+        self.assertEqual(
+            merged.remote_site_login, "http://cilogon.org/serverE/users/546379"
+        )
+        self.assertIn("/CN=Pat", merged.dn_list)
+        memberships = {
+            (pu.project_id, pu.role)
+            for pu in self.db.query(ProjectUser).filter_by(user_id=pi_id)
+        }
+        new_project = self.db.query(Project).filter_by(site_project_id="PROJECT-002").one()
+        self.assertIn((new_project.id, "pi"), memberships)
+        self.assertIn((other_project.id, "member"), memberships)
+
     def test_request_account_create_preserves_project_source_packet_linkage(self) -> None:
         self.service.ingest_packet(self.db, request_project_create_packet())
         self.service.ingest_packet(self.db, request_account_create_packet())
