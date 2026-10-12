@@ -58,6 +58,8 @@ class AlertService:
         title: str,
         message: str,
         payload: dict[str, Any] | None = None,
+        action_url: str | None = None,
+        action_label: str | None = None,
     ) -> str:
         """Build a styled HTML email body for an alert."""
         severity_colors: dict[str, tuple[str, str]] = {
@@ -85,6 +87,24 @@ class AlertService:
                         f"{rendered_value}</td>"
                         f"</tr>"
                     )
+
+        action_section = ""
+        if action_url:
+            escaped_action_url = escape(action_url, quote=True)
+            action_text = escape(action_label or "Open in NRP AIME", quote=True)
+            action_section = (
+                '<div style="margin-top:20px;">'
+                f'<a href="{escaped_action_url}" '
+                f'style="display:inline-block;background:{header_color};color:#ffffff;'
+                'font-size:14px;font-weight:600;text-decoration:none;'
+                'padding:10px 18px;border-radius:6px;">'
+                f"{action_text}</a>"
+                '<p style="margin:8px 0 0;font-size:12px;color:#6b7280;'
+                'word-break:break-all;">'
+                f'<a href="{escaped_action_url}" style="color:#2563eb;">'
+                f"{escaped_action_url}</a></p>"
+                "</div>"
+            )
 
         details_section = ""
         if detail_rows:
@@ -130,6 +150,7 @@ class AlertService:
             'border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;">'
             f'<p style="margin:0;font-size:15px;color:#374151;line-height:1.7;">'
             f"{message_text}</p>"
+            f"{action_section}"
             f"{details_section}"
             "</div>"
             '<div style="background:#f9fafb;border:1px solid #e5e7eb;border-top:none;'
@@ -155,6 +176,8 @@ class AlertService:
         title: str,
         message: str,
         payload: dict[str, Any] | None = None,
+        action_url: str | None = None,
+        action_label: str | None = None,
     ) -> bool:
         recipients = cls._parse_recipients(settings.alert_email_to)
         sender = settings.alert_email_from.strip()
@@ -174,6 +197,8 @@ class AlertService:
             "",
             message,
         ]
+        if action_url:
+            plain_lines += ["", f"{action_label or 'Open in NRP AIME'}: {action_url}"]
         if payload:
             plain_lines += ["", "Details:"]
             plain_lines += [
@@ -188,6 +213,8 @@ class AlertService:
             title=title,
             message=message,
             payload=payload,
+            action_url=action_url,
+            action_label=action_label,
         )
         email_message.add_alternative(html_body, subtype="html")
 
@@ -252,8 +279,14 @@ class AlertService:
         payload: dict[str, Any] | None = None,
         email_enabled: bool = True,
         force: bool = False,
+        action_url: str | None = None,
+        action_label: str | None = None,
     ) -> dict[str, Any]:
-        """Send alert to configured hooks with DB-backed throttling."""
+        """Send alert to configured hooks with DB-backed throttling.
+
+        ``action_url`` links to the admin page where the alert can be acted
+        on; it is rendered as a button in emails and appended to Slack.
+        """
         now = datetime.now(UTC)
         row = (
             db.query(AlertNotification)
@@ -293,6 +326,7 @@ class AlertService:
             "title": title,
             "message": message,
             "payload": payload or {},
+            "action_url": action_url,
             "timestamp": datetime.now(UTC).isoformat(),
         }
         sent_channels: list[str] = []
@@ -307,9 +341,10 @@ class AlertService:
                 logger.exception("Failed to send webhook alert")
 
         if settings.alert_slack_webhook_url:
-            slack_payload = {
-                "text": f"[{severity.upper()}] {title}\n{message}\n`{alert_key}`"
-            }
+            slack_text = f"[{severity.upper()}] {title}\n{message}"
+            if action_url:
+                slack_text += f"\n<{action_url}|{action_label or 'Open in NRP AIME'}>"
+            slack_payload = {"text": f"{slack_text}\n`{alert_key}`"}
             try:
                 cls._post_json(settings.alert_slack_webhook_url, slack_payload)
                 sent_channels.append("slack")
@@ -326,6 +361,8 @@ class AlertService:
                     title=title,
                     message=message,
                     payload=payload,
+                    action_url=action_url,
+                    action_label=action_label,
                 ):
                     sent_channels.append("email")
             except Exception as exc:  # noqa: BLE001

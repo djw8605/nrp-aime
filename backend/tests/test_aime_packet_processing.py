@@ -217,6 +217,31 @@ class AIMEPacketProcessingTests(unittest.TestCase):
         self.assertEqual(new_user_packet.user_person_id, "USER-2001")
         self.assertEqual(new_user_packet.project_id, "PROJECT-001")
 
+    def test_request_account_create_alert_links_to_person_page(self) -> None:
+        with patch(
+            "app.services.frontend_links.settings.frontend_base_url",
+            "https://portal.example.org",
+        ):
+            self.service.ingest_packet(self.db, request_account_create_packet())
+
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        user = self.db.query(User).filter_by(person_id="USER-2001").one()
+        user_alerts = [
+            call.kwargs
+            for call in self.mock_alert.call_args_list
+            if call.kwargs["category"] == "user_packet"
+        ]
+        self.assertEqual(len(user_alerts), 1)
+        alert = user_alerts[0]
+        person_page = f"https://portal.example.org/people/{user.id}"
+        self.assertEqual(alert["action_url"], person_page)
+        self.assertEqual(alert["action_label"], "Send user invite")
+        self.assertEqual(alert["payload"]["person_page"], person_page)
+        self.assertEqual(
+            alert["payload"]["project_page"],
+            f"https://portal.example.org/projects/{project.id}",
+        )
+
     def test_data_account_create_does_not_downgrade_terminal_account_state(self) -> None:
         self.service.ingest_packet(self.db, request_account_create_packet())
         project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()

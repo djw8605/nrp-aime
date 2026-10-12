@@ -24,6 +24,12 @@ from app.models.project_user import ProjectUser
 from app.models.user import User
 from app.services.authentik.service import AuthentikService
 from app.services.alerts import AlertService
+from app.services.frontend_links import (
+    packet_logs_url,
+    person_url,
+    project_url,
+    transaction_url,
+)
 from app.services.aime.bindings import (
     DataAccountCreatePacketBinding,
     DataProjectCreatePacketBinding,
@@ -2197,6 +2203,8 @@ class AIMEService:
         packet_record: AMIEPacket,
         processed_ok: bool,
         extra_payload: dict[str, Any] | None = None,
+        user: User | None = None,
+        project: Project | None = None,
     ) -> None:
         """Send alert for new user account request packets."""
         alert_info = ObservabilityService.project_user_packet_alert_fields(packet_record)
@@ -2204,15 +2212,35 @@ class AIMEService:
             return
         category, title = alert_info
         severity = "info" if processed_ok else "warn"
-        message = (
-            "A new user account request has been received and awaits admin action."
-            if processed_ok
-            else (
-                f"User account request packet was received but not fully processed "
-                f"(packet_rec_id={packet_record.packet_rec_id}, status={packet_record.processing_status})"
-            )
-        )
         payload: dict[str, Any] = {}
+        if processed_ok and user is not None:
+            message = (
+                "A new user account request has been received and awaits admin "
+                "action. Send the user their invite from their person page."
+            )
+            action_url = person_url(user.id)
+            action_label = "Send user invite"
+            payload["person_page"] = action_url
+        elif processed_ok:
+            message = (
+                "A new user account request has been received and awaits admin action."
+            )
+            action_url = packet_logs_url(q=packet_record.packet_rec_id)
+            action_label = "Review packet"
+        else:
+            message = (
+                f"User account request packet was received but not fully processed "
+                f"(packet_rec_id={packet_record.packet_rec_id}, status={packet_record.processing_status}). "
+                "Review and re-ingest it from the packet page."
+            )
+            action_url = (
+                transaction_url(packet_record.transaction_id)
+                if packet_record.transaction_id is not None
+                else packet_logs_url(q=packet_record.packet_rec_id)
+            )
+            action_label = "Review packet"
+        if project is not None:
+            payload["project_page"] = project_url(project.id)
         if extra_payload:
             payload.update(extra_payload)
         payload.update(
@@ -2231,6 +2259,8 @@ class AIMEService:
             title=title,
             message=message,
             payload=payload,
+            action_url=action_url,
+            action_label=action_label,
         )
 
     def ingest_packet(
@@ -2299,6 +2329,7 @@ class AIMEService:
         project: Project | None = None
         project_needs_provision_alert = False
         extra_alert_payload: dict[str, Any] | None = None
+        alert_user: User | None = None
         source_site_name = self._packet_site_name(packet_record)
 
         if isinstance(bound_packet, RequestProjectCreatePacketBinding):
@@ -2418,6 +2449,7 @@ class AIMEService:
                 source_trans_rec_id=packet_record.trans_rec_id,
                 source_transaction_id=packet_record.transaction_id,
             )
+            alert_user = user
             body = bound_packet.body
             extra_alert_payload = {
                 "name": " ".join(
@@ -2504,5 +2536,7 @@ class AIMEService:
                 packet_record=packet_record,
                 processed_ok=True,
                 extra_payload=extra_alert_payload,
+                user=alert_user,
+                project=project,
             )
         return IngestResult(handled=True, packet_type=bound_packet.type, project=project)

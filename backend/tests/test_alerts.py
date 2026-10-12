@@ -37,6 +37,76 @@ def test_build_html_email_renders_project_page_url_as_clickable_link():
     assert f">{project_url}</a>" in html
 
 
+def test_build_html_email_renders_action_button():
+    action_url = "https://portal.example.org/people/abc"
+
+    html = AlertService._build_html_email(
+        alert_key="user_packet:2001",
+        category="user_packet",
+        severity="info",
+        title="New user account request received",
+        message="A new user account request has been received.",
+        action_url=action_url,
+        action_label="Send user invite",
+    )
+
+    assert f'href="{action_url}"' in html
+    assert ">Send user invite</a>" in html
+
+
+def test_send_includes_action_url_in_email_text_and_slack(db):
+    action_url = "https://portal.example.org/people/abc"
+    with (
+        patch("app.services.alerts.settings.alert_email_to", "ops@example.org"),
+        patch("app.services.alerts.settings.alert_email_from", "alerts@example.org"),
+        patch("app.services.alerts.settings.alert_smtp_host", "smtp.example.org"),
+        patch("app.services.alerts.settings.alert_smtp_username", ""),
+        patch("app.services.alerts.settings.alert_slack_webhook_url", "https://slack.example/hook"),
+        patch("app.services.alerts.AlertService._post_json") as mock_post,
+        patch("app.services.alerts.smtplib.SMTP") as mock_smtp,
+    ):
+        AlertService.send(
+            db,
+            alert_key="user_packet:2001",
+            category="user_packet",
+            severity="info",
+            title="New user account request received",
+            message="A new user account request has been received.",
+            action_url=action_url,
+            action_label="Send user invite",
+        )
+
+    slack_text = mock_post.call_args.args[1]["text"]
+    assert f"<{action_url}|Send user invite>" in slack_text
+    email_message = mock_smtp.return_value.__enter__.return_value.send_message.call_args.args[0]
+    plain_text = email_message.get_body(preferencelist=("plain",)).get_content()
+    assert f"Send user invite: {action_url}" in plain_text
+
+
+def test_provisioning_failure_alert_links_project_page(db, make_project):
+    project = make_project(db)
+    service = ProjectProvisioningService()
+
+    with (
+        patch(
+            "app.services.frontend_links.settings.frontend_base_url",
+            "https://portal.example.org",
+        ),
+        patch.object(
+            service.kubernetes_service,
+            "ensure_project_namespace",
+            return_value={"ok": False},
+        ),
+        patch("app.services.project_provisioning.AlertService.send") as mock_send,
+    ):
+        result = service.provision_project(db, project=project)
+
+    assert result["ok"] is False
+    project_page = f"https://portal.example.org/projects/{project.id}"
+    assert mock_send.call_args.kwargs["action_url"] == project_page
+    assert mock_send.call_args.kwargs["payload"]["project_page"] == project_page
+
+
 def test_parse_recipients_accepts_comma_separated_email_list():
     recipients = AlertService._parse_recipients(
         "ops@example.org, admin@example.org, , alerts@example.org "
@@ -91,7 +161,7 @@ def test_emit_required_alert_includes_project_page_link(db, make_project):
 
     with (
         patch(
-            "app.services.project_provisioning.settings.frontend_base_url",
+            "app.services.frontend_links.settings.frontend_base_url",
             "https://portal.example.org",
         ),
         patch("app.services.project_provisioning.AlertService.send") as mock_send,
@@ -100,7 +170,9 @@ def test_emit_required_alert_includes_project_page_link(db, make_project):
 
     mock_send.assert_called_once()
     payload = mock_send.call_args.kwargs["payload"]
-    assert payload["project_page"] == f"https://portal.example.org/projects/{project.id}"
+    project_page = f"https://portal.example.org/projects/{project.id}"
+    assert payload["project_page"] == project_page
+    assert mock_send.call_args.kwargs["action_url"] == project_page
 
     db.refresh(project)
     assert project.provisioning_alerted_at is not None

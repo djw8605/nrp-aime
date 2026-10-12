@@ -8,9 +8,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models.project import Project
 from app.services.alerts import AlertService
+from app.services.frontend_links import project_url
 from app.services.kubernetes.service import KubernetesProvisioningService
 
 logger = logging.getLogger(__name__)
@@ -63,9 +63,7 @@ class ProjectProvisioningService:
 
     @staticmethod
     def _project_frontend_url(project: Project) -> str:
-        base = str(settings.frontend_base_url or "").rstrip("/")
-        path = f"/projects/{project.id}"
-        return f"{base}{path}" if base else path
+        return project_url(project.id)
 
     def mark_received(self, db: Session, *, project: Project, reason: str) -> bool:
         """Mark project as received and pending manual provisioning.
@@ -145,8 +143,10 @@ class ProjectProvisioningService:
             title="New project request received",
             message=(
                 f"Project {project.name} ({project.aime_allocation_id}) was received "
-                "and awaits admin provisioning."
+                "and awaits admin provisioning. Provision it from the project page."
             ),
+            action_url=self._project_frontend_url(project),
+            action_label="Provision project",
             payload={
                 "allocation_id": project.aime_allocation_id,
                 "project_name": project.name,
@@ -217,10 +217,13 @@ class ProjectProvisioningService:
                     title="Project provisioning failed",
                     message=(
                         f"Provisioning failed for project {project.name} "
-                        f"({project.aime_allocation_id})."
+                        f"({project.aime_allocation_id}). Retry from the project page."
                     ),
+                    action_url=self._project_frontend_url(project),
+                    action_label="Retry provisioning",
                     payload={
                         "project_id": str(project.id),
+                        "project_page": self._project_frontend_url(project),
                         "requested_by": requested_by,
                         "errors": errors,
                         "namespace_result": namespace_result,
@@ -264,10 +267,13 @@ class ProjectProvisioningService:
                 title="Project provisioning failed",
                 message=(
                     f"Provisioning failed for project {project.name} "
-                    f"({project.aime_allocation_id})."
+                    f"({project.aime_allocation_id}). Retry from the project page."
                 ),
+                action_url=self._project_frontend_url(project),
+                action_label="Retry provisioning",
                 payload={
                     "project_id": str(project.id),
+                    "project_page": self._project_frontend_url(project),
                     "requested_by": requested_by,
                     "errors": [str(exc)],
                 },
