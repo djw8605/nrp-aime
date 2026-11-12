@@ -21,6 +21,7 @@ import app.services.account_lifecycle as account_lifecycle
 from app.models.outbound_packet_log import OutboundPacketLog
 from app.models.project import Project
 from app.models.project_user import ProjectUser
+from app.models.user import User
 from app.services.account_lifecycle import AccountLifecycleService
 from app.services.aime.service import AIMEService
 from tests.support import (
@@ -264,6 +265,50 @@ class AccountLifecycleTests(unittest.TestCase):
             project.lifecycle_state,
             Project.LIFECYCLE_STATE_WAITING_PI_ACCOUNT,
         )
+
+    def test_notify_project_create_uses_active_onboarded_pi_login(self) -> None:
+        # A deactivated duplicate PI membership (no login) listed first must
+        # not be picked as the PI, or the notification defers forever with
+        # deferred_pi_login_missing.
+        source_packet = request_project_create_packet()
+        self.service.ingest_packet(self.db, source_packet)
+        project = self.db.query(Project).filter_by(site_project_id="PROJECT-001").one()
+        duplicate = (
+            self.db.query(ProjectUser).filter_by(project_id=project.id, role="pi").one()
+        )
+        duplicate.is_active = False
+
+        pi = User(email="pi-real@example.org", name="Real PI", is_active=True, dn_list=[])
+        pi.remote_site_login = "pi-login"
+        self.db.add(pi)
+        self.db.flush()
+        membership = ProjectUser(
+            project_id=project.id,
+            user_id=pi.id,
+            role="pi",
+            resource="cluster.example.org",
+            source_packet_rec_id=duplicate.source_packet_rec_id,
+            is_active=True,
+            account_state=ProjectUser.ACCOUNT_STATE_RECEIVED,
+        )
+        self.db.add(membership)
+        self.db.flush()
+        membership.remote_site_login = "pi-login"
+        AccountLifecycleService.mark_email_sent(membership)
+        AccountLifecycleService.mark_account_made(membership)
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
+        self.db.commit()
+        self.db.expire_all()
+        self.assertEqual(project.project_users[0].id, duplicate.id)
+
+        FakeAMIEClient.source_packets[1001] = FakeSourcePacket(
+            "request_project_create",
+            source_packet["body"],
+        )
+        result = AccountLifecycleService().reconcile_pending_project_notifications(self.db)
+
+        self.assertEqual(result["notifications_sent"], 1)
+        self.assertEqual(FakeAMIEClient.sent_packets[0].PiRemoteSiteLogin, "pi-login")
 
     def _send_account_confirmation(self, login: str) -> tuple[ProjectUser, dict, object]:
         """Ingest a request_account_create, complete onboarding with *login*,

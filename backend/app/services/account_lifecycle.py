@@ -1149,8 +1149,21 @@ class AccountLifecycleService:
                         or project.resource_type
                         or self._source_packet_resource(source_packet)
                     )
+                    # Active PI memberships only (a deactivated duplicate has no
+                    # login); prefer one that already has a site login.
+                    pi_users = [
+                        pu
+                        for pu in project.project_users
+                        if pu.role == "pi" and pu.is_active
+                    ]
                     pi_user = next(
-                        (pu for pu in project.project_users if pu.role == "pi"), None
+                        (
+                            pu
+                            for pu in pi_users
+                            if pu.remote_site_login
+                            or (pu.user and pu.user.remote_site_login)
+                        ),
+                        pi_users[0] if pi_users else None,
                     )
                     _pi_raw_login = (
                         (
