@@ -1313,6 +1313,10 @@ class AccountLifecycleService:
                         outbound_packet_rec_id=outbound_packet_rec_id,
                     )
                     OutboundPacketService.mark_sent(db, outbound, send_result=send_result)
+                    if not project.site_project_id:
+                        # AMIE now knows the project by this ProjectID; GPU usage
+                        # export and later packet lookups key on it.
+                        project.site_project_id = project_site_id
                     covered_count = self._mark_project_create_pi_memberships_covered(
                         db,
                         project,

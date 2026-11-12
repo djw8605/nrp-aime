@@ -123,6 +123,74 @@ class AccountLifecycleTests(unittest.TestCase):
             [{"PersonID": "pi-local", "Site": "X-PORTAL"}],
         )
 
+    def _ingest_new_project_without_project_id(self) -> tuple[Project, dict]:
+        """A brand-new allocation: AMIE sends no ProjectID, the site picks it."""
+        source_packet = request_project_create_packet()
+        del source_packet["body"]["ProjectID"]
+        self.service.ingest_packet(self.db, source_packet)
+
+        project = self.db.query(Project).filter_by(grant_number="TG-TEST123").one()
+        self.assertFalse(project.site_project_id)
+        project.kubernetes_namespace = "nrp-test123"
+        membership = (
+            self.db.query(ProjectUser)
+            .filter_by(project_id=project.id, role="pi", resource="cluster.example.org")
+            .one()
+        )
+        membership.remote_site_login = "pi-login"
+        membership.user.remote_site_login = "pi-login"
+        AccountLifecycleService.mark_email_sent(membership)
+        AccountLifecycleService.mark_account_made(membership)
+        project.lifecycle_state = Project.LIFECYCLE_STATE_PROVISIONED
+        self.db.commit()
+        return project, source_packet
+
+    def test_notify_project_create_persists_namespace_project_id(self) -> None:
+        # The ProjectID the site announces to AMIE must be stored, or GPU usage
+        # export (which needs site_project_id) silently skips the project.
+        project, source_packet = self._ingest_new_project_without_project_id()
+        FakeAMIEClient.source_packets[1001] = FakeSourcePacket(
+            "request_project_create",
+            source_packet["body"],
+        )
+
+        result = AccountLifecycleService().reconcile_pending_project_notifications(self.db)
+
+        self.assertEqual(result["notifications_sent"], 1)
+        self.assertEqual(FakeAMIEClient.sent_packets[0].ProjectID, "nrp-test123")
+        self.db.expire_all()
+        self.assertEqual(project.site_project_id, "nrp-test123")
+
+    def test_data_project_create_backfills_project_id_by_transaction(self) -> None:
+        # Projects notified before site_project_id was persisted: the
+        # data_project_create reply (same transaction) must still find the
+        # project and record its ProjectID.
+        project, _ = self._ingest_new_project_without_project_id()
+        project.set_lifecycle_state(Project.LIFECYCLE_STATE_AIME_NOTIFIED)
+        self.db.commit()
+
+        dpc = data_project_create_packet(ProjectID="nrp-test123")
+        dpc["header"]["trans_rec_id"] = project.source_trans_rec_id
+        self.kubernetes.ensure_calls.clear()
+        self.service.ingest_packet(self.db, dpc)
+
+        self.db.expire_all()
+        self.assertEqual(project.site_project_id, "nrp-test123")
+        # The PI's namespace access is ensured, as for a project found by ProjectID.
+        self.assertEqual(len(self.kubernetes.ensure_calls), 1)
+
+    def test_data_project_create_never_overwrites_existing_project_id(self) -> None:
+        project, _ = self._ingest_new_project_without_project_id()
+        project.site_project_id = "nrp-original"
+        self.db.commit()
+
+        dpc = data_project_create_packet(ProjectID="nrp-other")
+        dpc["header"]["trans_rec_id"] = project.source_trans_rec_id
+        self.service.ingest_packet(self.db, dpc)
+
+        self.db.expire_all()
+        self.assertEqual(project.site_project_id, "nrp-original")
+
     def test_reconcile_project_notifications_waits_for_pi_onboarding(self) -> None:
         source_packet = request_project_create_packet()
         self.service.ingest_packet(self.db, source_packet)
