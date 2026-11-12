@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.models.amie_allocation_packet import AMIEAllocationPacket
@@ -288,15 +288,18 @@ class AIMEService:
                     db, user, person_id=person_id, email=email
                 )
         if email:
-            query = db.query(User).filter(User.email == email)
-            user = self._site_scoped_first(
-                query,
-                site_field=User.source_site_name,
-                site_name=site_name,
-                allow_other_sites_when_missing=True,
-            )
-            if user is not None:
-                return user
+            # Exact match first, then case-insensitive: OAuth onboarding stores
+            # the IdP's (often lowercased) email, while AMIE keeps re-sending
+            # the original casing on still-open transactions.
+            for email_filter in (User.email == email, func.lower(User.email) == email.lower()):
+                user = self._site_scoped_first(
+                    db.query(User).filter(email_filter),
+                    site_field=User.source_site_name,
+                    site_name=site_name,
+                    allow_other_sites_when_missing=True,
+                )
+                if user is not None:
+                    return user
         if global_id:
             query = db.query(User).filter(User.global_id == global_id)
             user = self._site_scoped_first(
@@ -329,6 +332,9 @@ class AIMEService:
         if email:
             owner = (
                 db.query(User).filter(User.email == email, User.id != user.id).first()
+                or db.query(User)
+                .filter(func.lower(User.email) == email.lower(), User.id != user.id)
+                .first()
             )
         if owner is None and len(person_id) >= 20:
             owner = (

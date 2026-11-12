@@ -199,6 +199,31 @@ class AIMEPacketProcessingTests(unittest.TestCase):
         self.db.flush()
         return user
 
+    def test_redelivered_project_create_matches_pi_email_case_insensitively(self) -> None:
+        # The PI onboarded after the first delivery and OAuth replaced the
+        # email with the IdP's lowercase form. AMIE re-sends the still-open
+        # request_project_create (no PiPersonID) with the original casing; it
+        # must reuse the onboarded PI, not create a second PI membership.
+        pi = self._make_onboarded_pi()
+        packet = request_project_create_packet(PiEmail="Pi@Example.org")
+        del packet["body"]["PiPersonID"]
+
+        self.service.ingest_packet(self.db, packet)
+
+        self.assertEqual([u.id for u in self.db.query(User).all()], [pi.id])
+        pi_memberships = self.db.query(ProjectUser).filter_by(role="pi").all()
+        self.assertEqual([m.user_id for m in pi_memberships], [pi.id])
+
+    def test_exact_email_match_preferred_over_case_insensitive(self) -> None:
+        lower = self._make_user(person_id="P-LOWER", email="pi@example.org", name="Lower")
+        exact = self._make_user(person_id="P-EXACT", email="Pi@Example.org", name="Exact")
+        self.db.commit()
+
+        found = self.service._resolve_user(self.db, email="Pi@Example.org")
+
+        self.assertEqual(found.id, exact.id)
+        self.assertNotEqual(found.id, lower.id)
+
     def test_data_project_create_matches_pi_by_amie_login(self) -> None:
         pi = self._make_onboarded_pi()
 
