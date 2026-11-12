@@ -1035,6 +1035,19 @@ class AIMEService:
             site_project_id=packet.body.ProjectID,
             source_site_name=source_site_name,
         )
+        if project is None and packet_record.trans_rec_id is not None:
+            # A new project's ProjectID is chosen by the site in
+            # notify_project_create; this reply shares that transaction.
+            project = self._site_scoped_first(
+                db.query(Project).filter(
+                    Project.source_trans_rec_id == packet_record.trans_rec_id
+                ),
+                site_field=Project.source_site_name,
+                site_name=source_site_name,
+                allow_other_sites_when_missing=False,
+            )
+        if project is not None and not project.site_project_id and packet.body.ProjectID:
+            project.site_project_id = packet.body.ProjectID
         user = self._get_or_create_user_by_person_id(
             db,
             person_id=packet.body.PersonID,
