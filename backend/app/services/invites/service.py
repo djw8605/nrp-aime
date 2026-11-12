@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import settings
@@ -568,6 +569,7 @@ class InviteService:
         if user is None:
             user = (
                 db.query(User).filter(User.email == auth_email).first()
+                or db.query(User).filter(func.lower(User.email) == auth_email.lower()).first()
                 or db.query(User).filter(User.person_id == str(identity.get("subject") or "")).first()
             )
         if user is None:
