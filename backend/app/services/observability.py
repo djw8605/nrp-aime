@@ -524,6 +524,18 @@ class ObservabilityService:
             .order_by(ProjectUser.created_at.asc())
             .all()
         )
+        # Only memberships AMIE is waiting on: a request_account_create to
+        # answer, or a PI covered by notify_project_create. Memberships from
+        # admin invites outside ACCESS have nothing to notify.
+        from app.services.account_lifecycle import AccountLifecycleService
+
+        lifecycle = AccountLifecycleService()
+        aime_pending_rows = [
+            (pu, u, p)
+            for pu, u, p in aime_pending_rows
+            if lifecycle.is_project_create_pi_membership(db, pu)
+            or lifecycle._find_source_packet_rec_id(db, pu) is not None
+        ]
 
         def _project_item(p: Project) -> dict[str, Any]:
             return {

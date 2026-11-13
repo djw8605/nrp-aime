@@ -76,13 +76,40 @@ class AccountLifecycleService:
 
     @staticmethod
     def mark_user_completed_oauth(project_user: ProjectUser) -> None:
-        """Set state when user completed the OAuth onboarding flow."""
-        project_user.set_account_state(ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH)
+        """Set state when user completed the OAuth onboarding flow.
+
+        Forward only: completing OAuth again (e.g. after an admin re-invite)
+        must not move an ``aime_notified`` / ``covered_by_project_notification``
+        membership back to ``user_completed_oauth``.
+        """
+        rank = ProjectUser.ACCOUNT_STATE_RANK
+        target = ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH
+        if rank.get(project_user.account_state, 0) <= rank[target]:
+            project_user.set_account_state(target)
         if project_user.account_made_at is None:
             project_user.account_made_at = datetime.now(UTC)
 
     # Legacy alias – callers that used mark_account_made now mean OAuth complete.
     mark_account_made = mark_user_completed_oauth
+
+    @staticmethod
+    def _select_pi_membership(
+        memberships: list[ProjectUser],
+    ) -> ProjectUser | None:
+        """The PI membership whose login identifies the PI to AMIE.
+
+        Active PI memberships only (a deactivated duplicate has no login),
+        preferring one that already has a site login; independent of order.
+        """
+        pi_users = [pu for pu in memberships if pu.role == "pi" and pu.is_active]
+        return next(
+            (
+                pu
+                for pu in pi_users
+                if pu.remote_site_login or (pu.user and pu.user.remote_site_login)
+            ),
+            pi_users[0] if pi_users else None,
+        )
 
     @staticmethod
     def mark_aime_notified(project_user: ProjectUser) -> None:
@@ -1149,22 +1176,7 @@ class AccountLifecycleService:
                         or project.resource_type
                         or self._source_packet_resource(source_packet)
                     )
-                    # Active PI memberships only (a deactivated duplicate has no
-                    # login); prefer one that already has a site login.
-                    pi_users = [
-                        pu
-                        for pu in project.project_users
-                        if pu.role == "pi" and pu.is_active
-                    ]
-                    pi_user = next(
-                        (
-                            pu
-                            for pu in pi_users
-                            if pu.remote_site_login
-                            or (pu.user and pu.user.remote_site_login)
-                        ),
-                        pi_users[0] if pi_users else None,
-                    )
+                    pi_user = self._select_pi_membership(project.project_users)
                     _pi_raw_login = (
                         (
                             pi_user.remote_site_login
