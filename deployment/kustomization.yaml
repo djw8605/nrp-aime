@@ -24,7 +24,7 @@ generatorOptions:
 images:
 - name: ghcr.io/your-org/nrp-aime-backend
   newName: ghcr.io/djw8605/nrp-aime-backend
-  newTag: 113eb06b8f043e7979b6c2d0a0c5b3234e701c9e
+  newTag: 127856d82a6fb4540e6d09d292d9335449c5463c
 - name: ghcr.io/your-org/nrp-aime-frontend
   newName: ghcr.io/djw8605/nrp-aime-frontend
-  newTag: 113eb06b8f043e7979b6c2d0a0c5b3234e701c9e
+  newTag: 127856d82a6fb4540e6d09d292d9335449c5463c
