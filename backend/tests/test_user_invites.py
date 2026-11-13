@@ -58,3 +58,44 @@ class TestCreateUserInvite:
         assert legacy_membership.account_state == ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT
         assert received_membership.email_sent_at is not None
         assert legacy_membership.email_sent_at is not None
+
+
+class TestReinviteKeepsNotifiedMemberships:
+    """Completing OAuth again (admin re-invite) must not undo AMIE progress."""
+
+    def test_completing_oauth_does_not_downgrade_notified_states(
+        self,
+        db,
+        make_project,
+        make_user,
+        make_project_user,
+    ):
+        from app.services.account_lifecycle import AccountLifecycleService
+
+        user = make_user(db)
+        covered = make_project_user(
+            db,
+            make_project(db),
+            user,
+            account_state=ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT,
+        )
+        notified = make_project_user(
+            db,
+            make_project(db),
+            user,
+            account_state=ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED,
+        )
+        pending = make_project_user(
+            db,
+            make_project(db),
+            user,
+            account_state=ProjectUser.ACCOUNT_STATE_EMAIL_INVITE_SENT,
+        )
+
+        for membership in (covered, notified, pending):
+            AccountLifecycleService.mark_user_completed_oauth(membership)
+
+        assert covered.account_state == ProjectUser.ACCOUNT_STATE_COVERED_BY_PROJECT
+        assert notified.account_state == ProjectUser.ACCOUNT_STATE_AIME_NOTIFIED
+        assert pending.account_state == ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH
+        assert covered.account_made_at is not None

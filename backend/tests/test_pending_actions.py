@@ -101,10 +101,26 @@ class TestPendingActionsUserAIMENotification:
         make_project_user(
             db, project, user,
             account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+            source_packet_rec_id=2001,
         )
         db.flush()
         result = ObservabilityService.pending_actions(db)
         assert len(result["users_pending_aime_notification"]) == 1
+
+    def test_membership_without_amie_request_not_pending(
+        self, db, make_project, make_user, make_project_user,
+    ):
+        # An admin invite outside ACCESS: no request_account_create exists,
+        # so there is nothing to notify AMIE about.
+        project = make_project(db, lifecycle_state=Project.LIFECYCLE_STATE_ACTIVE)
+        user = make_user(db)
+        make_project_user(
+            db, project, user,
+            account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+        )
+        db.flush()
+        result = ObservabilityService.pending_actions(db)
+        assert result["users_pending_aime_notification"] == []
 
     def test_aime_notified_user_not_pending(
         self, db, make_project, make_user, make_project_user,
@@ -142,6 +158,7 @@ class TestPendingActionsTotalCount:
         make_project_user(
             db, p, u2,
             account_state=ProjectUser.ACCOUNT_STATE_USER_COMPLETED_OAUTH,
+            source_packet_rec_id=2001,
         )
         db.flush()
         result = ObservabilityService.pending_actions(db)

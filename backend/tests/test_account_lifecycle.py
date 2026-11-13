@@ -367,7 +367,6 @@ class AccountLifecycleTests(unittest.TestCase):
         project.set_lifecycle_state(Project.LIFECYCLE_STATE_PROVISIONED)
         self.db.commit()
         self.db.expire_all()
-        self.assertEqual(project.project_users[0].id, duplicate.id)
 
         FakeAMIEClient.source_packets[1001] = FakeSourcePacket(
             "request_project_create",
@@ -377,6 +376,19 @@ class AccountLifecycleTests(unittest.TestCase):
 
         self.assertEqual(result["notifications_sent"], 1)
         self.assertEqual(FakeAMIEClient.sent_packets[0].PiRemoteSiteLogin, "pi-login")
+
+    def test_select_pi_membership_skips_inactive_duplicate_in_any_order(self) -> None:
+        duplicate = ProjectUser(role="pi", is_active=False)
+        onboarded = ProjectUser(role="pi", is_active=True, remote_site_login="pi-login")
+        not_yet = ProjectUser(role="pi", is_active=True)
+        member = ProjectUser(role="member", is_active=True, remote_site_login="m")
+        select = AccountLifecycleService._select_pi_membership
+
+        self.assertIs(select([duplicate, onboarded]), onboarded)
+        self.assertIs(select([onboarded, duplicate]), onboarded)
+        self.assertIs(select([not_yet, onboarded]), onboarded)
+        self.assertIs(select([member, not_yet]), not_yet)
+        self.assertIsNone(select([duplicate, member]))
 
     def _send_account_confirmation(self, login: str) -> tuple[ProjectUser, dict, object]:
         """Ingest a request_account_create, complete onboarding with *login*,
