@@ -302,6 +302,32 @@ class KubernetesProvisioningService:
                 timeout_seconds=create_timeout_seconds,
             )
             if existence_check.get("ok") and existence_check.get("exists"):
+                # Portal CreateNamespace creates the k8s namespace before the
+                # Authentik group, so an existing namespace does not prove the
+                # group exists. GetNSUsers returns no members for a missing
+                # group, while a created group always contains its creator.
+                group_check = self.get_namespace_users(namespace=namespace)
+                if not (group_check.get("ok") and group_check.get("member_ids")):
+                    logger.warning(
+                        "Portal namespace exists but Authentik group is missing "
+                        "project_id=%s namespace=%s rpc=%s group_check=%s",
+                        project.id,
+                        namespace,
+                        rpc,
+                        group_check,
+                    )
+                    return {
+                        "ok": False,
+                        "status": "authentik_group_missing",
+                        "namespace": namespace,
+                        "error": (
+                            f"Namespace {namespace} exists but its Authentik group "
+                            "was not created; users cannot be added until it exists"
+                        ),
+                        "create_error": rpc,
+                        "existence_check": existence_check,
+                        "group_check": group_check,
+                    }
                 logger.warning(
                     "Portal namespace create returned error but namespace exists "
                     "project_id=%s namespace=%s rpc=%s existence_check=%s",
