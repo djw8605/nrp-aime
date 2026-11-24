@@ -154,7 +154,14 @@ class InviteService:
         message: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        """Record invite-flow failure not tied to a specific invite row."""
+        """Record invite-flow failure not tied to a specific invite row.
+
+        Discards any uncommitted work from the failed request first: the flow
+        may have half-applied changes (e.g. marked a membership onboarded)
+        before raising, and committing them here would persist that partial
+        state. Failure details a flow wants kept are committed before it raises.
+        """
+        db.rollback()
         self._record_event(
             db,
             event_type=event_type,
@@ -510,6 +517,7 @@ class InviteService:
                 invite=invite,
                 message="State token hash did not match invite",
             )
+            db.commit()
             raise InviteFlowError(code="invalid_state", message="Invite state mismatch")
 
         if self._expire_if_needed(db, invite):
@@ -610,12 +618,37 @@ class InviteService:
 
         applied_group_names: set[str] = set()
         finalized_memberships: list[ProjectUser] = []
+        failed_access: list[dict[str, Any]] = []
         for membership in memberships:
             if membership.project is None:
                 continue
-            membership.is_active = True
+
+            # Grant namespace access before touching onboarding state, so a
+            # project whose namespace/group is broken stays un-onboarded and
+            # does not block the user's other projects.
+            previous_login = membership.remote_site_login
             # Authentik callback username is the authoritative namespace identity.
             membership.remote_site_login = auth_username
+            access_result = self.kubernetes_service.ensure_user_project_access(
+                project=membership.project,
+                user=user,
+                project_user=membership,
+            )
+            if not access_result.get("ok", False):
+                membership.remote_site_login = previous_login
+                failed_access.append(
+                    {
+                        "project_id": str(membership.project_id),
+                        "project_user_id": str(membership.id),
+                        "namespace": access_result.get("namespace")
+                        or membership.project.kubernetes_namespace,
+                        "status": access_result.get("status"),
+                        "error": str(access_result.get("error") or ""),
+                    }
+                )
+                continue
+
+            membership.is_active = True
             AccountLifecycleService.mark_account_made(membership)
 
             # If this PI completing OAuth was blocking project progression,
@@ -627,17 +660,6 @@ class InviteService:
             ):
                 ProjectProvisioningService.mark_pi_account_ready(membership.project)
 
-            access_result = self.kubernetes_service.ensure_user_project_access(
-                project=membership.project,
-                user=user,
-                project_user=membership,
-            )
-            if not access_result.get("ok", False):
-                raise InviteFlowError(
-                    code="namespace_access_failed",
-                    message="Failed to assign namespace/group membership",
-                )
-
             group_name = (
                 membership.project.authentik_group_name
                 or access_result.get("authentik_group_name")
@@ -646,6 +668,35 @@ class InviteService:
             if group_name:
                 applied_group_names.add(str(group_name))
             finalized_memberships.append(membership)
+
+        if failed_access:
+            # Keep the projects that worked, leave the invite pending so the
+            # user can retry once the broken namespace/group is fixed, and
+            # commit before raising (the error path rolls back pending work).
+            logger.warning(
+                "Invite callback namespace access failed invite_id=%s failed=%s",
+                invite.id,
+                failed_access,
+            )
+            self._record_event(
+                db,
+                event_type="invite_namespace_access_failed",
+                event_status="error",
+                invite=invite,
+                message="Failed to assign namespace/group membership",
+                payload={
+                    "user_id": str(user.id),
+                    "failed": failed_access,
+                    "completed_project_user_ids": [
+                        str(row.id) for row in finalized_memberships
+                    ],
+                },
+            )
+            db.commit()
+            raise InviteFlowError(
+                code="namespace_access_failed",
+                message="Failed to assign namespace/group membership",
+            )
 
         if not finalized_memberships and invite.authentik_group_name:
             applied_group_names.add(invite.authentik_group_name)
